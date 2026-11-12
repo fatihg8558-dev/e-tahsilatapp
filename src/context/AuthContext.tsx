@@ -83,8 +83,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     // Süper Admin ve Sınırsız kontrolleri
     const isSuperAdmin =
       p?.rol === 'superadmin' ||
-      u?.email?.toLowerCase() === 'conqueror58@gmail.com' ||
-      u?.email?.toLowerCase() === 'fatihgtakim85@gmail.com' ||
       f?.sinirsiz === true;
 
     if (isSuperAdmin) {
@@ -231,21 +229,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           }
         }
 
-        // Süper Admin kontrolü: conqueror58@gmail.com, fatihgtakim85@gmail.com veya ADMİN firması
-        const userEmail = (profileData.email || '').toLowerCase();
-        const isSuperAdminEmail =
-          userEmail === 'conqueror58@gmail.com' ||
-          userEmail === 'fatihgtakim85@gmail.com' ||
-          profileData.rol === 'superadmin';
-
-        if (isSuperAdminEmail) {
-          profileData.rol = 'superadmin';
-          supabase
-            .from('profiles')
-            .update({ rol: 'superadmin' })
-            .eq('id', profileData.id)
-            .then(() => {}, () => {});
-        }
+        // Yönetici yetkisi yalnızca veritabanındaki rol alanından gelir (sunucu tarafında korunur).
 
         setProfile(profileData);
         setCachedData('tahsilatim_profile', profileData);
@@ -283,25 +267,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           }
 
           const f = (firmaData as Firma) || null;
-          if (f) {
-            const isFirmaAdmin =
-              isSuperAdminEmail ||
-              f.unvan?.trim().toUpperCase() === 'ADMİN' ||
-              f.unvan?.trim().toUpperCase() === 'ADMIN';
-
-            if (isFirmaAdmin) {
-              f.sinirsiz = true;
-              profileData.rol = 'superadmin';
-              setProfile({ ...profileData, rol: 'superadmin' });
-              setCachedData('tahsilatim_profile', { ...profileData, rol: 'superadmin' });
-              // Veritabanını da güncelle
-              supabase
-                .from('firmalar')
-                .update({ sinirsiz: true })
-                .eq('id', f.id)
-                .then(() => {}, () => {});
-            }
-          }
           setFirma(f);
           setCachedData('tahsilatim_firma', f);
         }
@@ -537,11 +502,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const isSuper =
     profile?.rol === 'superadmin' ||
-    user?.email?.toLowerCase() === 'conqueror58@gmail.com' ||
-    user?.email?.toLowerCase() === 'fatihgtakim85@gmail.com' ||
-    firma?.sinirsiz === true ||
-    firma?.unvan?.trim().toUpperCase() === 'ADMİN' ||
-    firma?.unvan?.trim().toUpperCase() === 'ADMIN';
+    firma?.sinirsiz === true;
 
   const periodInfo = isSuper
     ? { isExpired: false, status: 'unlimited' as const, kalanGun: 9999, bitisTarihi: null }
