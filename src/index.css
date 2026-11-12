@@ -1,0 +1,62 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    background-color: #0b1322;
+    color: #f8fafc;
+    font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+}
+
+/* Koyu fintech ve zarif gece ışıma efekti */
+.fintech-glow {
+  background-image: 
+    radial-gradient(circle at 85% 5%, rgba(14, 165, 233, 0.12) 0%, transparent 40%),
+    radial-gradient(circle at 10% 90%, rgba(45, 212, 191, 0.08) 0%, transparent 45%);
+}
+
+/* Özel şık kaydırma çubuğu */
+::-webkit-scrollbar {
+  width: 7px;
+  height: 7px;
+}
+::-webkit-scrollbar-track {
+  background: #0b1322;
+}
+::-webkit-scrollbar-thumb {
+  background: #334155;
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #475569;
+}
+
+/* Mobil safe area (Tüm telefon tiplerinde donanımsal çentik ve alt navigasyon çakışmasını kesin çözer) */
+.pt-safe {
+  padding-top: max(env(safe-area-inset-top, 0px), 48px);
+}
+.pb-safe {
+  padding-bottom: max(env(safe-area-inset-bottom, 0px), 28px);
+}
+.pb-nav-safe {
+  padding-bottom: calc(max(env(safe-area-inset-bottom, 0px), 28px) + 80px);
+}
+
+/* Yazdırma Sırasında UI Temizleme */
+@media print {
+  .no-print {
+    display: none !important;
+  }
+  body {
+    background-color: #ffffff !important;
+    color: #000000 !important;
+  }
+  @page {
+    margin: 1cm;
+    size: auto;
+  }
+}

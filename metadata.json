@@ -1,0 +1,6 @@
+{
+  "name": "Tahsilat ve Tediye Makbuzu",
+  "description": "Mobil ve masaüstü uyumlu, Supabase tabanlı Tahsilat ve Tediye Makbuzu SaaS uygulaması",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

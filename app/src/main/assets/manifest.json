@@ -1,0 +1,16 @@
+{
+  "short_name": "Tahsilatım",
+  "name": "Tahsilat ve Tediye Makbuzu",
+  "icons": [
+    {
+      "src": "/favicon.ico",
+      "sizes": "64x64 32x32 24x24 16x16",
+      "type": "image/x-icon"
+    }
+  ],
+  "start_url": "/",
+  "background_color": "#0b1322",
+  "theme_color": "#0b1322",
+  "display": "standalone",
+  "orientation": "portrait"
+}
