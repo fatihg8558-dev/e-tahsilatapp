@@ -14,7 +14,7 @@ interface Paket {
 }
 
 export const SubscriptionLockScreen: React.FC = () => {
-  const { firma, refreshProfileAndFirma, signOut } = useAuth();
+  const { firma, refreshProfileAndFirma, signOut, isPeriodExpired, periodInfo } = useAuth();
   const [paketler, setPaketler] = useState<Paket[]>([]);
   const [iban, setIban] = useState<string>('');
   const [hesapSahibi, setHesapSahibi] = useState<string>('');
@@ -70,6 +70,7 @@ export const SubscriptionLockScreen: React.FC = () => {
     <div className="min-h-screen bg-[#0a0e13] text-gray-100 flex flex-col justify-between p-4 sm:p-8 fintech-glow">
       <div className="max-w-4xl mx-auto w-full pt-6">
         {/* ÜST BİLGİLENDİRME BANNERI */}
+        {isPeriodExpired ? (
         <div className="bg-red-500/10 border border-red-500/20 rounded-2xl p-6 mb-8 flex flex-col sm:flex-row items-center gap-4 text-center sm:text-left">
           <div className="w-12 h-12 rounded-2xl bg-red-500/20 text-red-400 flex items-center justify-center shrink-0">
             <ShieldAlert className="w-6 h-6" />
@@ -91,6 +92,31 @@ export const SubscriptionLockScreen: React.FC = () => {
             Çıkış Yap
           </button>
         </div>
+        ) : (
+          <div className="bg-teal-400/10 border border-teal-400/20 rounded-2xl p-6 mb-8 flex flex-col sm:flex-row items-center gap-4 text-center sm:text-left">
+            <div className="w-12 h-12 rounded-2xl bg-teal-400/20 text-teal-400 flex items-center justify-center shrink-0">
+              <Sparkles className="w-6 h-6" />
+            </div>
+            <div className="flex-1">
+              <h2 className="text-base font-bold text-teal-400">
+                {periodInfo.status === 'unlimited' ? 'Sınırsız Kullanım' : 'Aboneliğiniz Aktif'}
+              </h2>
+              <p className="text-xs text-gray-300 mt-1 leading-relaxed">
+                {periodInfo.status === 'unlimited' ? (
+                  'Hesabınızda süre sınırı yoktur.'
+                ) : (
+                  <>
+                    Firma hesabınızın ({firma?.unvan}) süresi{' '}
+                    <span className="text-white font-medium">
+                      {formatDate(firma?.paket_bitis || firma?.deneme_bitis)}
+                    </span>{' '}
+                    tarihinde dolacak ({periodInfo.kalanGun} gün kaldı). Süre bitmeden yeni paket alabilirsiniz.
+                  </>
+                )}
+              </p>
+            </div>
+          </div>
+        )}
 
         {/* BAŞLIK & PAKETLER */}
         <div className="text-center mb-8">
