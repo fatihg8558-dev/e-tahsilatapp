@@ -10,13 +10,33 @@ interface SubscriptionLockScreenProps {
 }
 
 export const SubscriptionLockScreen: React.FC<SubscriptionLockScreenProps> = ({ isLockMode = true }) => {
-  const { firma, periodInfo, refreshProfileAndFirma, signOut } = useAuth();
+  const { firma, profile, periodInfo, refreshProfileAndFirma, signOut } = useAuth();
   const [paketler, setPaketler] = useState<Paket[]>([]);
   const [iban, setIban] = useState<string>('');
   const [hesapSahibi, setHesapSahibi] = useState<string>('');
   const [copied, setCopied] = useState(false);
   const [loading, setLoading] = useState(true);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
+  const [secili, setSecili] = useState<Paket | null>(null);
+  const [dosya, setDosya] = useState<File | null>(null);
+  const [aciklama, setAciklama] = useState('');
+  const [gonderiyor, setGonderiyor] = useState(false);
+  const [hata, setHata] = useState('');
+  const [bildirimler, setBildirimler] = useState<any[]>([]);
+
+  const yukleBildirimler = async () => {
+    if (!firma?.id) return;
+    const { data } = await supabase
+      .from('odeme_bildirimleri')
+      .select('id,tutar,durum,tarih')
+      .eq('firma_id', firma.id)
+      .order('tarih', { ascending: false })
+      .limit(5);
+    setBildirimler(data ?? []);
+  };
+  useEffect(() => {
+    yukleBildirimler();
+  }, [firma?.id]);
 
   useEffect(() => {
     const fetchPackagesAndSettings = async () => {
@@ -57,9 +77,44 @@ export const SubscriptionLockScreen: React.FC<SubscriptionLockScreenProps> = ({ 
   };
 
   const handlePaketSecimi = (p: Paket) => {
+    setSecili(p);
+    setDosya(null);
+    setHata('');
     setActionMessage(
-      `"${p.ad}" paketi seçildi (${formatCurrency(p.fiyat)}). Lütfen aşağıdaki IBAN numarasına firma unvanınızı açıklama kısmına yazarak havale/EFT yapınız.`
+      `"${p.ad}" paketi seçildi (${formatCurrency(p.fiyat)}). Aşağıdaki IBAN'a havale/EFT yapın, sonra dekontu yükleyip bildirimi gönderin. Onaylanınca süreniz uzatılır.`
     );
+  };
+
+  const bildirimGonder = async () => {
+    if (!secili || !firma?.id) return;
+    if (profile?.rol !== 'ana') return setHata('Ödeme bildirimi yalnızca ana hesap tarafından yapılabilir.');
+    if (!dosya) return setHata('Lütfen dekont dosyasını seçin.');
+    if (dosya.size > 5 * 1024 * 1024) return setHata('Dosya 5 MB’tan küçük olmalı.');
+    if (!['image/jpeg', 'image/png', 'application/pdf'].includes(dosya.type)) return setHata('Yalnızca JPG, PNG veya PDF yükleyebilirsiniz.');
+    setGonderiyor(true);
+    setHata('');
+    const ext = dosya.type === 'application/pdf' ? 'pdf' : dosya.type === 'image/png' ? 'png' : 'jpg';
+    const yol = `${firma.id}/${Date.now()}.${ext}`;
+    const up = await supabase.storage.from('dekontlar').upload(yol, dosya, { contentType: dosya.type });
+    if (up.error) {
+      setGonderiyor(false);
+      return setHata('Dekont yüklenemedi: ' + up.error.message);
+    }
+    const ins = await supabase.from('odeme_bildirimleri').insert({
+      firma_id: firma.id,
+      paket_id: secili.id,
+      tutar: secili.fiyat,
+      dekont_url: yol,
+      durum: 'bekliyor',
+      tarih: new Date().toISOString(),
+      'not': aciklama.trim() || null,
+    });
+    setGonderiyor(false);
+    if (ins.error) return setHata('Bildirim kaydedilemedi: ' + ins.error.message);
+    setSecili(null);
+    setAciklama('');
+    setActionMessage('Ödeme bildiriminiz alındı. Kontrol edilip onaylandığında süreniz uzatılacak.');
+    yukleBildirimler();
   };
 
   return (
@@ -135,6 +190,54 @@ export const SubscriptionLockScreen: React.FC<SubscriptionLockScreenProps> = ({ 
           <div className="mb-6 p-4 rounded-xl bg-teal-500/10 border border-teal-500/20 text-teal-300 text-xs flex items-start gap-2.5">
             <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5" />
             <span>{actionMessage}</span>
+          </div>
+        )}
+
+        {secili && (
+          <div className="mb-8 rounded-2xl border border-teal-400/30 bg-teal-400/[0.04] p-5">
+            <h3 className="text-sm font-bold text-white">
+              Ödeme bildirimi · {secili.ad} ({formatCurrency(secili.fiyat)})
+            </h3>
+            <p className="text-xs text-gray-400 mt-1">Havale/EFT dekontunun fotoğrafını veya PDF'ini yükleyin (en çok 5 MB).</p>
+            <input
+              type="file"
+              accept="image/jpeg,image/png,application/pdf"
+              onChange={(e) => setDosya(e.target.files?.[0] ?? null)}
+              className="mt-3 block w-full text-xs text-gray-300"
+            />
+            <input
+              value={aciklama}
+              onChange={(e) => setAciklama(e.target.value)}
+              placeholder="Not (isteğe bağlı)"
+              className="mt-3 w-full rounded-xl bg-white/5 border border-white/10 px-3 py-2 text-sm text-white"
+            />
+            {hata && <p className="mt-2 text-xs text-red-400">{hata}</p>}
+            <div className="mt-3 flex gap-2">
+              <button
+                onClick={bildirimGonder}
+                disabled={gonderiyor}
+                className="px-4 py-2.5 rounded-xl bg-teal-400 text-[#0a0e13] text-xs font-bold disabled:opacity-60"
+              >
+                {gonderiyor ? 'Gönderiliyor…' : 'Ödeme bildirimini gönder'}
+              </button>
+              <button onClick={() => setSecili(null)} className="px-4 py-2.5 rounded-xl bg-white/5 text-gray-300 text-xs font-semibold">
+                Vazgeç
+              </button>
+            </div>
+          </div>
+        )}
+
+        {bildirimler.length > 0 && (
+          <div className="mb-8 rounded-2xl border border-white/10 p-4 text-xs text-gray-300">
+            <p className="font-bold text-white mb-2">Son ödeme bildirimleriniz</p>
+            {bildirimler.map((b) => (
+              <div key={b.id} className="flex justify-between py-1.5 border-b border-white/5 last:border-0">
+                <span>{formatDate(b.tarih)} · {formatCurrency(b.tutar)}</span>
+                <span className={b.durum === 'onaylandi' ? 'text-teal-300' : b.durum === 'red' ? 'text-red-400' : 'text-amber-300'}>
+                  {b.durum === 'onaylandi' ? 'Onaylandı' : b.durum === 'red' ? 'Reddedildi' : 'Onay bekliyor'}
+                </span>
+              </div>
+            ))}
           </div>
         )}
 
