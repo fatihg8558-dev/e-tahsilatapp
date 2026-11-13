@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { useAuth, SUPER_ADMIN_EMAIL } from '../context/AuthContext';
+import { OdemelerPanel } from './OdemelerPanel';
 import { supabase } from '../lib/supabase';
 import { Firma, Profile, Paket, UserRole } from '../types/database';
 import { formatCurrency, formatDate } from '../lib/formatters';
@@ -36,7 +37,7 @@ interface SuperAdminPageProps {
   onBackToDashboard?: () => void;
 }
 
-type AdminTab = 'firmalar' | 'paketler' | 'ayarlar';
+type AdminTab = 'firmalar' | 'paketler' | 'ayarlar' | 'odemeler';
 type FirmaFilter = 'all' | 'unlimited' | 'active_package' | 'active_trial' | 'expired';
 
 function extractAdminError(err: unknown, fallback: string): { message: string; isRls: boolean } {
@@ -670,67 +671,9 @@ export const SuperAdminPage: React.FC<SuperAdminPageProps> = ({ onBackToDashboar
     }
   };
 
-  const rlsSqlSnippet = `-- Supabase SQL Editor'de çalıştırarak RLS kurallarını güncelleyin:
-CREATE OR REPLACE FUNCTION is_superadmin()
-RETURNS boolean LANGUAGE sql SECURITY DEFINER AS $$
-  SELECT EXISTS (
-    SELECT 1 FROM profiles
-    WHERE id = auth.uid()
-    AND (rol = 'superadmin' OR lower(email) = 'conqueror58@gmail.com')
-  );
-$$;
-
--- 1) Makbuz (islemler) INSERT/UPDATE izni: sinirsiz, paket_bitis, deneme_bitis veya superadmin
-DROP POLICY IF EXISTS "Superadmin and active firms can insert islemler" ON islemler;
-CREATE POLICY "Superadmin and active firms can insert islemler" ON islemler
-  FOR INSERT WITH CHECK (
-    is_superadmin() OR EXISTS (
-      SELECT 1 FROM profiles p
-      JOIN firmalar f ON f.id = p.firma_id
-      WHERE p.id = auth.uid()
-        AND p.firma_id = islemler.firma_id
-        AND p.aktif = true
-        AND p.rol IN ('ana', 'plasiyer', 'superadmin')
-        AND (f.sinirsiz = true OR f.paket_bitis >= CURRENT_DATE OR f.deneme_bitis >= CURRENT_DATE)
-    )
-  );
-
-DROP POLICY IF EXISTS "Superadmin and active firms can update islemler" ON islemler;
-CREATE POLICY "Superadmin and active firms can update islemler" ON islemler
-  FOR UPDATE USING (
-    is_superadmin() OR EXISTS (
-      SELECT 1 FROM profiles p
-      WHERE p.id = auth.uid() AND p.firma_id = islemler.firma_id AND p.rol IN ('ana', 'plasiyer', 'superadmin')
-    )
-  );
-
-DROP POLICY IF EXISTS "Superadmin and active firms can delete islemler" ON islemler;
-CREATE POLICY "Superadmin and active firms can delete islemler" ON islemler
-  FOR DELETE USING (
-    is_superadmin() OR EXISTS (
-      SELECT 1 FROM profiles p
-      JOIN firmalar f ON f.id = p.firma_id
-      WHERE p.id = auth.uid()
-        AND p.firma_id = islemler.firma_id
-        AND p.aktif = true
-        AND p.rol IN ('ana', 'plasiyer', 'superadmin')
-        AND (f.sinirsiz = true OR f.paket_bitis >= CURRENT_DATE OR f.deneme_bitis >= CURRENT_DATE)
-    )
-  );
-
--- 2) Süper Admin tam yönetim yetkileri
-DROP POLICY IF EXISTS "Superadmin full access firmalar" ON firmalar;
-CREATE POLICY "Superadmin full access firmalar" ON firmalar
-  FOR ALL USING (is_superadmin()) WITH CHECK (is_superadmin());
-DROP POLICY IF EXISTS "Superadmin full access profiles" ON profiles;
-CREATE POLICY "Superadmin full access profiles" ON profiles
-  FOR ALL USING (is_superadmin()) WITH CHECK (is_superadmin());
-DROP POLICY IF EXISTS "Superadmin full access paketler" ON paketler;
-CREATE POLICY "Superadmin full access paketler" ON paketler
-  FOR ALL USING (is_superadmin()) WITH CHECK (is_superadmin());
-DROP POLICY IF EXISTS "Superadmin full access ayarlar" ON ayarlar;
-CREATE POLICY "Superadmin full access ayarlar" ON ayarlar
-  FOR ALL USING (is_superadmin()) WITH CHECK (is_superadmin());`;
+  const rlsSqlSnippet = `-- UYARI: Güvenlik kuralları veritabanında zaten kurulu ve korumalıdır.
+-- Bu pencerede SQL çalıştırmayın; mevcut korumaları zayıflatabilir.
+-- Değişiklik gerekiyorsa geliştiricinize danışın.`;
 
   const handleCopySql = () => {
     navigator.clipboard.writeText(rlsSqlSnippet);
@@ -937,7 +880,21 @@ CREATE POLICY "Superadmin full access ayarlar" ON ayarlar
           <Landmark className="w-4 h-4" />
           <span>IBAN & Ödeme Ayarları</span>
         </button>
+        <button
+          type="button"
+          onClick={() => setActiveTab('odemeler')}
+          className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold whitespace-nowrap transition border ${
+            activeTab === 'odemeler'
+              ? 'bg-teal-400 text-slate-950 border-teal-400 shadow-lg'
+              : 'bg-[#111c2e] text-slate-300 border-slate-700/60 hover:text-white'
+          }`}
+        >
+          <Landmark className="w-4 h-4" />
+          <span>Ödeme Bildirimleri</span>
+        </button>
       </div>
+
+      {activeTab === 'odemeler' && <OdemelerPanel />}
 
       {/* SEKME 1: FİRMALAR & YETKİLER */}
       {activeTab === 'firmalar' && (
