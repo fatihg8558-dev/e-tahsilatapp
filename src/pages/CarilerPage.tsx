@@ -22,16 +22,24 @@ import {
   ExternalLink,
   Printer,
   Download,
+  Upload,
 } from 'lucide-react';
 import { exportToExcel, printPdfReport } from '../lib/exportService';
+import { UblImportModal } from '../components/cari/UblImportModal';
 
 interface CarilerPageProps {
   onNavigate: (tab: string, state?: unknown) => void;
   openNewModalInitially?: boolean;
   onOpenMakbuz?: (islem: Islem) => void;
+  refreshKey?: number;
 }
 
-export const CarilerPage: React.FC<CarilerPageProps> = ({ onNavigate, openNewModalInitially = false, onOpenMakbuz }) => {
+export const CarilerPage: React.FC<CarilerPageProps> = ({
+  onNavigate,
+  openNewModalInitially = false,
+  onOpenMakbuz,
+  refreshKey = 0,
+}) => {
   const { firma } = useAuth();
   const [cariler, setCariler] = useState<Cari[]>([]);
   const [loading, setLoading] = useState(true);
@@ -41,6 +49,7 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({ onNavigate, openNewMod
 
   // Modal States
   const [isModalOpen, setIsModalOpen] = useState(openNewModalInitially);
+  const [isUblModalOpen, setIsUblModalOpen] = useState(false);
   const [editingCari, setEditingCari] = useState<Cari | null>(null);
   const [selectedCariForDetail, setSelectedCariForDetail] = useState<Cari | null>(null);
   const [detailMovements, setDetailMovements] = useState<Array<Islem | (Fatura & { tip: string })>>([]);
@@ -79,7 +88,10 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({ onNavigate, openNewMod
 
   useEffect(() => {
     fetchCariler();
-  }, [firma?.id]);
+    if (selectedCariForDetail) {
+      openDetail(selectedCariForDetail);
+    }
+  }, [firma?.id, refreshKey]);
 
   const openAddModal = () => {
     setEditingCari(null);
@@ -179,6 +191,15 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({ onNavigate, openNewMod
     setLoadingDetail(true);
 
     try {
+      const { data: freshCari } = await supabase
+        .from('cariler')
+        .select('*')
+        .eq('id', cari.id)
+        .maybeSingle();
+      if (freshCari) {
+        setSelectedCariForDetail(freshCari as Cari);
+      }
+
       // 1. İşlemleri getir (yapan kullanıcı profili ile)
       const { data: islemlerData } = await supabase
         .from('islemler')
@@ -291,13 +312,25 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({ onNavigate, openNewMod
           </p>
         </div>
 
-        <button
-          onClick={openAddModal}
-          className="bg-teal-400 hover:bg-teal-300 text-[#0a0e13] font-bold text-xs px-4 py-2.5 rounded-xl transition shadow-[0_0_20px_rgba(45,212,191,0.25)] flex items-center gap-2 self-start sm:self-auto"
-        >
-          <Plus className="w-4 h-4" />
-          <span>Yeni Cari Ekle</span>
-        </button>
+        <div className="flex flex-wrap items-center gap-2 self-start sm:self-auto">
+          <button
+            type="button"
+            onClick={() => setIsUblModalOpen(true)}
+            data-testid="open_ubl_import_button"
+            className="bg-amber-400/15 hover:bg-amber-400/25 border border-amber-400/35 text-amber-300 font-bold text-xs px-4 py-2.5 rounded-xl transition flex items-center gap-2"
+          >
+            <Upload className="w-4 h-4" />
+            <span>UBL / XML Fatura Yükle</span>
+          </button>
+
+          <button
+            onClick={openAddModal}
+            className="bg-teal-400 hover:bg-teal-300 text-[#0a0e13] font-bold text-xs px-4 py-2.5 rounded-xl transition shadow-[0_0_20px_rgba(45,212,191,0.25)] flex items-center gap-2"
+          >
+            <Plus className="w-4 h-4" />
+            <span>Yeni Cari Ekle</span>
+          </button>
+        </div>
       </div>
 
       {error && (
@@ -880,6 +913,13 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({ onNavigate, openNewMod
           </div>
         </div>
       )}
+      {/* UBL / XML FATURA YÜKLEME MODALI */}
+      <UblImportModal
+        isOpen={isUblModalOpen}
+        onClose={() => setIsUblModalOpen(false)}
+        cariler={cariler}
+        onImported={fetchCariler}
+      />
     </div>
   );
 };

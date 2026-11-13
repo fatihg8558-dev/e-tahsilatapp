@@ -95,3 +95,19 @@ export interface Bildirim {
   banka_adi?: string | null;
   durum: BildirimDurum;
 }
+
+export interface Paket {
+  id: string;
+  ad: string;
+  sure_gun: number;
+  fiyat: number;
+  ek_plasiyer_ucreti: number;
+  aktif: boolean;
+}
+
+export interface Ayar {
+  id?: string;
+  anahtar: string;
+  deger: string;
+}
+

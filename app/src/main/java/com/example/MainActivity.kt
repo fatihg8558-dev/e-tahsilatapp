@@ -1,10 +1,12 @@
 package com.example
 
 import android.annotation.SuppressLint
+import android.content.ClipData
 import android.content.Intent
 import android.graphics.Color
 import android.net.Uri
 import android.os.Bundle
+import android.os.Parcelable
 import android.util.Base64
 import android.util.Log
 import android.view.ViewGroup
@@ -16,8 +18,10 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.FrameLayout
 import androidx.activity.ComponentActivity
 import androidx.core.content.FileProvider
+import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -37,21 +41,21 @@ class MainActivity : ComponentActivity() {
 
     try {
       WebView.setWebContentsDebuggingEnabled(true)
-      val wv = WebView(this).apply {
+
+      val rootContainer = FrameLayout(this).apply {
         layoutParams = ViewGroup.LayoutParams(
           ViewGroup.LayoutParams.MATCH_PARENT,
           ViewGroup.LayoutParams.MATCH_PARENT
         )
         setBackgroundColor(Color.parseColor("#0b1322"))
+      }
 
-        // Donanımsal durum çubuğu ve ekran çentiğini (cutout) tanı
-        androidx.core.view.ViewCompat.setOnApplyWindowInsetsListener(this) { v, insets ->
-          val statusBarInset = insets.getInsets(WindowInsetsCompat.Type.statusBars())
-          val displayCutout = insets.getInsets(WindowInsetsCompat.Type.displayCutout())
-          val topPadding = maxOf(statusBarInset.top, displayCutout.top)
-          v.setPadding(0, topPadding, 0, 0)
-          insets
-        }
+      val wv = WebView(this).apply {
+        layoutParams = FrameLayout.LayoutParams(
+          ViewGroup.LayoutParams.MATCH_PARENT,
+          ViewGroup.LayoutParams.MATCH_PARENT
+        )
+        setBackgroundColor(Color.parseColor("#0b1322"))
 
         settings.apply {
           javaScriptEnabled = true
@@ -111,8 +115,40 @@ class MainActivity : ComponentActivity() {
         loadUrl("file:///android_asset/index.html")
       }
 
+      rootContainer.addView(wv)
+
+      // ÖNEMLİ: Padding doğrudan WebView'e değil, kapsayıcı FrameLayout'a uygulanır!
+      // Böylece WebView'in kendi fiziksel yüksekliği (onSizeChanged / window.innerHeight)
+      // durum çubuğunun altında ve klavyenin (IME) tam üstünde olacak şekilde gerçekten daralır.
+      ViewCompat.setOnApplyWindowInsetsListener(rootContainer) { v, insets ->
+        val topSystemInsets = insets.getInsetsIgnoringVisibility(
+          WindowInsetsCompat.Type.statusBars() or WindowInsetsCompat.Type.displayCutout()
+        )
+        val imeInset = insets.getInsets(WindowInsetsCompat.Type.ime())
+        val isImeVisible = insets.isVisible(WindowInsetsCompat.Type.ime())
+
+        val topPadding = topSystemInsets.top
+        val bottomPadding = if (isImeVisible) imeInset.bottom else 0
+
+        if (v.paddingTop != topPadding || v.paddingBottom != bottomPadding) {
+          v.setPadding(0, topPadding, 0, bottomPadding)
+          wv.requestLayout()
+        }
+
+        val density = resources.displayMetrics.density.coerceAtLeast(1f)
+        val cssHeight = (bottomPadding / density).toInt()
+        wv.postDelayed({
+          wv.evaluateJavascript(
+            "window.dispatchEvent(new CustomEvent('androidKeyboardChange', { detail: { open: $isImeVisible, height: $cssHeight } }));",
+            null
+          )
+        }, 120)
+
+        WindowInsetsCompat.CONSUMED
+      }
+
       this.webView = wv
-      setContentView(wv)
+      setContentView(rootContainer)
     } catch (e: Exception) {
       Log.e("MainActivity", "Failed to initialize WebView", e)
     }
@@ -154,10 +190,24 @@ class MainActivity : ComponentActivity() {
     }
   }
 
+  private fun normalizeWhatsAppPhone(raw: String?): String {
+    val digits = raw?.replace(Regex("\\D"), "") ?: ""
+    if (digits.isEmpty()) return ""
+    val without00 = if (digits.startsWith("00")) digits.substring(2) else digits
+    return when {
+      without00.startsWith("90") && without00.length >= 12 -> without00
+      without00.startsWith("0") && without00.length == 11 -> "9$without00"
+      without00.startsWith("5") && without00.length == 10 -> "90$without00"
+      else -> without00
+    }
+  }
+
   inner class AndroidNativeBridge {
     /**
      * PDF Dosyasını Base64 olarak alır, geçici PDF dosyası oluşturur ve
      * hedef uygulamaya (targetApp = "whatsapp", "mail" veya "all") PDF EKİ (Attachment) olarak gönderir.
+     * WhatsApp'ta "jid" parametresi ile carideki telefon numarasını otomatik açar;
+     * Mail'de ise carideki e-posta adresini "Kime" alanına otomatik yazar.
      */
     @JavascriptInterface
     fun sharePdfFile(base64Data: String?, fileName: String?, targetApp: String?, recipient: String?, subject: String?, caption: String?): Boolean {
@@ -189,32 +239,30 @@ class MainActivity : ComponentActivity() {
 
         runOnUiThread {
           try {
+            val cleanRecipient = recipient?.trim() ?: ""
             val shareIntent = Intent(Intent.ACTION_SEND).apply {
               type = "application/pdf"
               putExtra(Intent.EXTRA_STREAM, contentUri)
+              clipData = ClipData.newRawUri(validFileName, contentUri)
               if (!caption.isNullOrBlank()) {
                 putExtra(Intent.EXTRA_TEXT, caption)
               }
               if (!subject.isNullOrBlank()) {
                 putExtra(Intent.EXTRA_SUBJECT, subject)
               }
-              if (!recipient.isNullOrBlank()) {
-                putExtra(Intent.EXTRA_EMAIL, arrayOf(recipient))
-              }
               addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-              flags = Intent.FLAG_ACTIVITY_NEW_TASK
+              addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
 
             val target = targetApp?.lowercase() ?: "all"
 
             if (target == "whatsapp") {
-              // WhatsApp veya WhatsApp Business öncelikli aç
-              val packageManager = packageManager
-              val waIntent = Intent(shareIntent)
-              var targetFound = false
+              val formattedPhone = normalizeWhatsAppPhone(cleanRecipient)
+              val pm = packageManager
+              var targetPkg: String? = null
 
               for (pkg in listOf("com.whatsapp", "com.whatsapp.w4b")) {
-                val resolveInfos = packageManager.queryIntentActivities(
+                val resolveInfos = pm.queryIntentActivities(
                   Intent(Intent.ACTION_SEND).apply {
                     type = "application/pdf"
                     `package` = pkg
@@ -222,28 +270,92 @@ class MainActivity : ComponentActivity() {
                   0
                 )
                 if (resolveInfos.isNotEmpty()) {
-                  waIntent.`package` = pkg
-                  targetFound = true
+                  targetPkg = pkg
                   break
                 }
               }
 
-              if (targetFound) {
+              if (targetPkg != null) {
+                val waIntent = Intent(shareIntent).apply {
+                  `package` = targetPkg
+                  if (formattedPhone.isNotEmpty()) {
+                    putExtra("jid", "$formattedPhone@s.whatsapp.net")
+                  }
+                  addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                  addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                grantUriPermission(targetPkg, contentUri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
                 startActivity(waIntent)
               } else {
-                val chooser = Intent.createChooser(shareIntent, "WhatsApp ile PDF Paylaş")
-                chooser.flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                val chooser = Intent.createChooser(shareIntent, "WhatsApp ile PDF Paylaş").apply {
+                  addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                  addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
                 startActivity(chooser)
               }
             } else if (target == "mail") {
-              // Mail uygulamaları (Gmail, Outlook vb.) ile PDF EKİ olarak aç
-              val mailChooser = Intent.createChooser(shareIntent, "E-posta ile PDF Gönder")
-              mailChooser.flags = Intent.FLAG_ACTIVITY_NEW_TASK
-              startActivity(mailChooser)
+              if (cleanRecipient.isNotEmpty()) {
+                shareIntent.putExtra(Intent.EXTRA_EMAIL, arrayOf(cleanRecipient))
+              }
+
+              // Sadece yüklü E-posta uygulamalarını (Gmail, Outlook vb.) bul
+              val pm = packageManager
+              val mailtoActivities = pm.queryIntentActivities(
+                Intent(Intent.ACTION_SENDTO, Uri.parse("mailto:")),
+                0
+              )
+              val mailPackageNames = mailtoActivities.mapNotNull { it.activityInfo?.packageName }.distinct()
+
+              val targetedIntents = mutableListOf<Intent>()
+              for (pkg in mailPackageNames) {
+                val pdfSendMatches = pm.queryIntentActivities(
+                  Intent(Intent.ACTION_SEND).apply {
+                    type = "application/pdf"
+                    `package` = pkg
+                  },
+                  0
+                )
+                if (pdfSendMatches.isNotEmpty()) {
+                  grantUriPermission(pkg, contentUri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                  val targeted = Intent(shareIntent).apply {
+                    `package` = pkg
+                    if (cleanRecipient.isNotEmpty()) {
+                      putExtra(Intent.EXTRA_EMAIL, arrayOf(cleanRecipient))
+                    }
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                  }
+                  targetedIntents.add(targeted)
+                }
+              }
+
+              when {
+                targetedIntents.size == 1 -> {
+                  startActivity(targetedIntents[0])
+                }
+                targetedIntents.size > 1 -> {
+                  val primary = targetedIntents.removeAt(0)
+                  val chooser = Intent.createChooser(primary, "E-posta ile PDF Gönder").apply {
+                    putExtra(Intent.EXTRA_INITIAL_INTENTS, targetedIntents.toTypedArray<Parcelable>())
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                  }
+                  startActivity(chooser)
+                }
+                else -> {
+                  val mailChooser = Intent.createChooser(shareIntent, "E-posta ile PDF Gönder").apply {
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                  }
+                  startActivity(mailChooser)
+                }
+              }
             } else {
               // Genel Paylaşım Menüsü (Tüm uygulamalar)
-              val chooser = Intent.createChooser(shareIntent, "Makbuz PDF Paylaş")
-              chooser.flags = Intent.FLAG_ACTIVITY_NEW_TASK
+              val chooser = Intent.createChooser(shareIntent, "Makbuz PDF Paylaş").apply {
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+              }
               startActivity(chooser)
             }
           } catch (e: Exception) {
@@ -303,6 +415,7 @@ class MainActivity : ComponentActivity() {
 
   private fun hideSystemBars() {
     val windowInsetsController = WindowCompat.getInsetsController(window, window.decorView)
+    windowInsetsController.isAppearanceLightStatusBars = false
     windowInsetsController.systemBarsBehavior =
       WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
     windowInsetsController.hide(WindowInsetsCompat.Type.navigationBars())

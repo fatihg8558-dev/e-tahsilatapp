@@ -38,6 +38,7 @@ import {
   Trash2,
   Globe,
   Share2,
+  LogOut,
 } from 'lucide-react';
 import { openWhatsApp } from '../../lib/linkHelper';
 
@@ -52,7 +53,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   onClose,
   initialTab = 'plasiyer',
 }) => {
-  const { profile, firma, user, periodInfo, refreshProfileAndFirma } = useAuth();
+  const { profile, firma, user, isSuperAdmin, periodInfo, refreshProfileAndFirma, signOut } = useAuth();
   const [activeTab, setActiveTab] = useState<'firma' | 'plasiyer' | 'pos'>(initialTab);
 
   // Logo Yükleme Durumu
@@ -87,7 +88,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   // Kopyalama bildirim durumu
   const [copiedEmail, setCopiedEmail] = useState<string | null>(null);
 
-  const isAnaHesap = profile?.rol === 'ana' || profile?.rol === 'superadmin';
+  const isAnaHesap = profile?.rol === 'ana' || isSuperAdmin;
 
   // Firma değiştiğinde POS konfigürasyonunu yükle
   useEffect(() => {
@@ -1235,10 +1236,21 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         </div>
 
         {/* MODAL ALT ÇUBUK */}
-        <div className="p-4 border-t border-white/[0.08] bg-black/30 flex items-center justify-between">
-          <span className="text-[11px] text-gray-500">
-            Tahsilatım Bulut Muhasebe Platformu
-          </span>
+        <div className="p-4 border-t border-white/[0.08] bg-black/30 flex items-center justify-between gap-3">
+          <button
+            type="button"
+            onClick={() => {
+              if (window.confirm('Güvenli çıkış yapmak istediğinize emin misiniz?')) {
+                onClose();
+                signOut();
+              }
+            }}
+            data-testid="settings_logout_button"
+            className="px-3.5 py-2 rounded-xl bg-red-500/15 hover:bg-red-500/25 text-red-300 border border-red-500/30 text-xs font-bold flex items-center gap-1.5 transition"
+          >
+            <LogOut className="w-3.5 h-3.5" />
+            <span>Güvenli Çıkış Yap</span>
+          </button>
           <button
             onClick={onClose}
             className="px-4 py-2 rounded-xl bg-white/5 hover:bg-white/10 text-gray-200 text-xs font-bold transition"

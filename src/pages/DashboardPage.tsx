@@ -32,9 +32,16 @@ export interface VadeItem {
 interface DashboardPageProps {
   onNavigate: (tab: string, state?: unknown) => void;
   onOpenMakbuz: (islem: Islem) => void;
+  onOpenNotifications?: () => void;
+  refreshKey?: number;
 }
 
-export const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate, onOpenMakbuz }) => {
+export const DashboardPage: React.FC<DashboardPageProps> = ({
+  onNavigate,
+  onOpenMakbuz,
+  onOpenNotifications,
+  refreshKey = 0,
+}) => {
   const { profile, firma } = useAuth();
   const [loading, setLoading] = useState(true);
   const [toplamTahsilat, setToplamTahsilat] = useState(0);
@@ -77,7 +84,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate, onOpen
         // 1. İşlemleri Çek (Plasiyer ise sadece yapan_user_id = profile.id; Ana hesap ise tüm firma)
         let query = supabase
           .from('islemler')
-          .select('*, cariler:cari_id(unvan, telefon), profiles:yapan_user_id(ad_soyad)')
+          .select('*, cariler:cari_id(unvan, vergi_tc_no, telefon, email), profiles:yapan_user_id(ad_soyad)')
           .eq('firma_id', firma.id)
           .order('tarih', { ascending: false })
           .order('id', { ascending: false });
@@ -123,7 +130,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate, onOpen
         // 2. Vadesi Yaklaşan Çek ve Senetleri Çek
         const { data: cekSenetData, error: cekSenetErr } = await supabase
           .from('islemler')
-          .select('*, cariler:cari_id(unvan, telefon), profiles:yapan_user_id(ad_soyad)')
+          .select('*, cariler:cari_id(unvan, vergi_tc_no, telefon, email), profiles:yapan_user_id(ad_soyad)')
           .eq('firma_id', firma.id)
           .in('tur', ['cek', 'senet'])
           .eq('iptal', false)
@@ -233,7 +240,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate, onOpen
     };
 
     loadDashboardData();
-  }, [firma?.id, profile?.id, profile?.rol, vadeAraligiGun]);
+  }, [firma?.id, profile?.id, profile?.rol, vadeAraligiGun, refreshKey]);
 
   return (
     <div className="space-y-8">
@@ -373,7 +380,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate, onOpen
 
         {/* BEKLEYEN BİLDİRİM */}
         <div
-          onClick={() => onNavigate('islemler')}
+          onClick={() => (onOpenNotifications ? onOpenNotifications() : onNavigate('islemler'))}
           className="bg-[#111820] border border-white/[0.07] rounded-2xl p-5 hover:border-teal-400/30 transition duration-300 group cursor-pointer"
         >
           <div className="flex items-center justify-between mb-3">
@@ -388,7 +395,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate, onOpen
           <div className="text-2xl font-black text-white tracking-tight">
             {loading ? '...' : `${bekleyenBildirimSayisi} Adet`}
           </div>
-          <div className="text-[11px] text-gray-400 font-medium mt-1">Tüm bildirimler ve işlemler</div>
+          <div className="text-[11px] text-gray-400 font-medium mt-1">Bildirim merkezini aç</div>
         </div>
       </div>
 

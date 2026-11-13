@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useAuth } from './context/AuthContext';
 import { AppLayout } from './components/layout/AppLayout';
 import { AuthScreen } from './components/auth/AuthScreen';
@@ -8,15 +8,116 @@ import { CarilerPage } from './pages/CarilerPage';
 import { IslemFormPage } from './pages/IslemFormPage';
 import { IslemlerPage } from './pages/IslemlerPage';
 import { PlasiyerPerformansPage } from './pages/PlasiyerPerformansPage';
+import { SuperAdminPage } from './pages/SuperAdminPage';
 import { MakbuzModal } from './components/makbuz/MakbuzModal';
+import { NotificationsModal } from './components/notifications/NotificationsModal';
 import { Islem } from './types/database';
 
 export const App: React.FC = () => {
   const { user, loading, isPeriodExpired } = useAuth();
   const [currentTab, setCurrentTab] = useState<string>('dashboard');
   const [activeMakbuz, setActiveMakbuz] = useState<Islem | null>(null);
+  const [editingIslem, setEditingIslem] = useState<Islem | null>(null);
+  const [editReturnTab, setEditReturnTab] = useState<string>('islemler');
   const [preSelectedCariId, setPreSelectedCariId] = useState<string | undefined>(undefined);
   const [openNewCari, setOpenNewCari] = useState<boolean>(false);
+  const [isNotificationsOpen, setIsNotificationsOpen] = useState<boolean>(false);
+  const [notificationRefreshKey, setNotificationRefreshKey] = useState<number>(0);
+  const [receiptRefreshKey, setReceiptRefreshKey] = useState<number>(0);
+
+  // Klavye açıldığında odaklanılan input'u otomatik olarak klavyenin üzerine kaydır
+  useEffect(() => {
+    const isTextInput = (el: Element | null): el is HTMLElement => {
+      if (!el || !(el instanceof HTMLElement)) return false;
+      if (el.classList.contains('sr-only')) return false;
+      const tag = el.tagName;
+      if (tag === 'TEXTAREA' || tag === 'SELECT') return true;
+      if (tag === 'INPUT') {
+        const type = (el as HTMLInputElement).type;
+        return !['hidden', 'checkbox', 'radio', 'button', 'submit', 'reset', 'file'].includes(type);
+      }
+      return el.isContentEditable;
+    };
+
+    const scrollTargetIntoView = (el: HTMLElement) => {
+      try {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' });
+      } catch {
+        el.scrollIntoView(true);
+      }
+    };
+
+    let blurTimer: number | undefined;
+    let scrollTimers: number[] = [];
+
+    const clearScrollTimers = () => {
+      scrollTimers.forEach((t) => window.clearTimeout(t));
+      scrollTimers = [];
+    };
+
+    const scheduleScrollForActive = () => {
+      clearScrollTimers();
+      const active = document.activeElement;
+      if (!isTextInput(active)) return;
+      scrollTimers.push(window.setTimeout(() => scrollTargetIntoView(active), 60));
+      scrollTimers.push(window.setTimeout(() => scrollTargetIntoView(active), 180));
+      scrollTimers.push(window.setTimeout(() => scrollTargetIntoView(active), 380));
+    };
+
+    const handleFocusIn = (e: FocusEvent) => {
+      if (blurTimer) {
+        window.clearTimeout(blurTimer);
+        blurTimer = undefined;
+      }
+      const target = e.target as Element | null;
+      if (isTextInput(target)) {
+        document.body.classList.add('keyboard-open');
+        scheduleScrollForActive();
+      }
+    };
+
+    const handleFocusOut = () => {
+      if (blurTimer) window.clearTimeout(blurTimer);
+      blurTimer = window.setTimeout(() => {
+        if (!isTextInput(document.activeElement)) {
+          document.body.classList.remove('keyboard-open');
+        }
+      }, 160);
+    };
+
+    const handleAndroidKeyboard = (e: Event) => {
+      const detail = (e as CustomEvent<{ open?: boolean; height?: number }>).detail;
+      if (detail?.open) {
+        document.body.classList.add('keyboard-open');
+        scheduleScrollForActive();
+      } else if (detail && detail.open === false) {
+        if (!isTextInput(document.activeElement)) {
+          document.body.classList.remove('keyboard-open');
+        }
+      }
+    };
+
+    const handleViewportResize = () => {
+      if (isTextInput(document.activeElement)) {
+        scheduleScrollForActive();
+      }
+    };
+
+    document.addEventListener('focusin', handleFocusIn);
+    document.addEventListener('focusout', handleFocusOut);
+    window.addEventListener('androidKeyboardChange', handleAndroidKeyboard);
+    window.visualViewport?.addEventListener('resize', handleViewportResize);
+
+    return () => {
+      clearScrollTimers();
+      if (blurTimer) window.clearTimeout(blurTimer);
+      document.removeEventListener('focusin', handleFocusIn);
+      document.removeEventListener('focusout', handleFocusOut);
+      window.removeEventListener('androidKeyboardChange', handleAndroidKeyboard);
+      window.visualViewport?.removeEventListener('resize', handleViewportResize);
+      document.body.classList.remove('keyboard-open');
+    };
+  }, []);
 
   // Oturum kontrolü yüklenirken
   if (loading) {
@@ -41,7 +142,13 @@ export const App: React.FC = () => {
     return <SubscriptionLockScreen />;
   }
 
+  const handleSelectTab = (tab: string) => {
+    setEditingIslem(null);
+    setCurrentTab(tab);
+  };
+
   const handleNavigate = (tab: string, state?: any) => {
+    setEditingIslem(null);
     if (state?.cariId) {
       setPreSelectedCariId(state.cariId);
     } else {
@@ -57,17 +164,33 @@ export const App: React.FC = () => {
     setCurrentTab(tab);
   };
 
+  const handleStartEditIslem = (islemToEdit: Islem) => {
+    setEditReturnTab(currentTab === 'islem_duzenle' ? 'islemler' : currentTab);
+    setActiveMakbuz(null);
+    setEditingIslem(islemToEdit);
+    setCurrentTab('islem_duzenle');
+  };
+
   const handleIslemSuccess = (savedIslem: Islem) => {
+    const wasEditing = !!editingIslem;
+    setEditingIslem(null);
     setActiveMakbuz(savedIslem);
-    setCurrentTab('islemler');
+    setCurrentTab(wasEditing ? editReturnTab || 'islemler' : 'islemler');
   };
 
   return (
-    <AppLayout currentTab={currentTab} onSelectTab={setCurrentTab}>
+    <AppLayout
+      currentTab={currentTab}
+      onSelectTab={handleSelectTab}
+      onOpenNotifications={() => setIsNotificationsOpen(true)}
+      notificationRefreshKey={notificationRefreshKey}
+    >
         {currentTab === 'dashboard' && (
           <DashboardPage
             onNavigate={handleNavigate}
             onOpenMakbuz={(islem) => setActiveMakbuz(islem)}
+            onOpenNotifications={() => setIsNotificationsOpen(true)}
+            refreshKey={receiptRefreshKey}
           />
         )}
 
@@ -76,31 +199,46 @@ export const App: React.FC = () => {
             onNavigate={handleNavigate}
             openNewModalInitially={openNewCari}
             onOpenMakbuz={(islem) => setActiveMakbuz(islem)}
+            refreshKey={receiptRefreshKey}
           />
         )}
 
         {currentTab === 'tahsilat' && (
           <IslemFormPage
+            key="new-tahsilat"
             initialTip="tahsilat"
             preSelectedCariId={preSelectedCariId}
             onSuccess={handleIslemSuccess}
-            onCancel={() => setCurrentTab('dashboard')}
+            onCancel={() => handleSelectTab('dashboard')}
           />
         )}
 
         {currentTab === 'tediye' && (
           <IslemFormPage
+            key="new-tediye"
             initialTip="tediye"
             preSelectedCariId={preSelectedCariId}
             onSuccess={handleIslemSuccess}
-            onCancel={() => setCurrentTab('dashboard')}
+            onCancel={() => handleSelectTab('dashboard')}
+          />
+        )}
+
+        {currentTab === 'islem_duzenle' && editingIslem && (
+          <IslemFormPage
+            key={`edit-${editingIslem.id}`}
+            initialTip={editingIslem.tip}
+            editingIslem={editingIslem}
+            onSuccess={handleIslemSuccess}
+            onCancel={() => handleSelectTab(editReturnTab || 'islemler')}
           />
         )}
 
         {currentTab === 'islemler' && (
           <IslemlerPage
             onOpenMakbuz={(islem) => setActiveMakbuz(islem)}
+            onEditIslem={handleStartEditIslem}
             onNavigate={handleNavigate}
+            refreshKey={receiptRefreshKey}
           />
         )}
 
@@ -108,11 +246,16 @@ export const App: React.FC = () => {
           <PlasiyerPerformansPage
             onOpenMakbuz={(islem) => setActiveMakbuz(islem)}
             onNavigate={handleNavigate}
+            refreshKey={receiptRefreshKey}
           />
         )}
 
         {currentTab === 'paketler' && (
-          <SubscriptionLockScreen />
+          <SubscriptionLockScreen isLockMode={false} />
+        )}
+
+        {currentTab === 'superadmin' && (
+          <SuperAdminPage onBackToDashboard={() => handleSelectTab('dashboard')} />
         )}
 
         {/* MAKBUZ ÖNİZLEME MODALI */}
@@ -120,8 +263,22 @@ export const App: React.FC = () => {
           <MakbuzModal
             islem={activeMakbuz}
             onClose={() => setActiveMakbuz(null)}
+            onEdit={handleStartEditIslem}
+            onDeleted={() => {
+              setActiveMakbuz(null);
+              setReceiptRefreshKey((k) => k + 1);
+            }}
           />
         )}
+
+        {/* BİLDİRİM MERKEZİ MODALI */}
+        <NotificationsModal
+          isOpen={isNotificationsOpen}
+          onClose={() => setIsNotificationsOpen(false)}
+          onOpenMakbuz={(islem) => setActiveMakbuz(islem)}
+          onNavigateTab={handleSelectTab}
+          onBadgeUpdated={() => setNotificationRefreshKey((k) => k + 1)}
+        />
       </AppLayout>
   );
 };

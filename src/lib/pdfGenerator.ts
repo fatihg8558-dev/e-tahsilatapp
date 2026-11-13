@@ -11,6 +11,24 @@ export async function generateMakbuzPdfBase64(element: HTMLElement): Promise<{ b
     useCORS: true,
     logging: false,
     backgroundColor: '#ffffff',
+    windowWidth: 900,
+    onclone: (_clonedDoc, clonedElement) => {
+      clonedElement.style.width = '720px';
+      clonedElement.style.minWidth = '720px';
+      clonedElement.style.maxWidth = '720px';
+      clonedElement.style.padding = '20px';
+      clonedElement.style.boxSizing = 'border-box';
+      clonedElement.style.margin = '0';
+
+      // PDF içinde hiçbir metnin "..." ile kırpılmaması için truncate sınıflarını aç
+      const truncatedNodes = clonedElement.querySelectorAll('.truncate');
+      truncatedNodes.forEach((node) => {
+        const el = node as HTMLElement;
+        el.style.overflow = 'visible';
+        el.style.textOverflow = 'clip';
+        el.style.whiteSpace = 'normal';
+      });
+    },
   });
 
   const imgData = canvas.toDataURL('image/jpeg', 0.95);

@@ -20,21 +20,37 @@ import {
   TrendingUp,
   Home,
   ArrowLeft,
+  Crown,
 } from 'lucide-react';
 import { SettingsModal } from '../settings/SettingsModal';
 
 interface AppLayoutProps {
   currentTab: string;
   onSelectTab: (tab: string) => void;
+  onOpenNotifications: () => void;
+  notificationRefreshKey?: number;
   children: React.ReactNode;
 }
 
-export const AppLayout: React.FC<AppLayoutProps> = ({ currentTab, onSelectTab, children }) => {
-  const { user, profile, firma, signOut } = useAuth();
+export const AppLayout: React.FC<AppLayoutProps> = ({
+  currentTab,
+  onSelectTab,
+  onOpenNotifications,
+  notificationRefreshKey = 0,
+  children,
+}) => {
+  const { user, profile, firma, isSuperAdmin, signOut } = useAuth();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [pendingNotificationCount, setPendingNotificationCount] = useState(0);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [settingsInitialTab, setSettingsInitialTab] = useState<'firma' | 'plasiyer'>('plasiyer');
+
+  const handleConfirmSignOut = () => {
+    if (window.confirm('Güvenli çıkış yapmak istediğinize emin misiniz?')) {
+      setMobileMenuOpen(false);
+      signOut();
+    }
+  };
 
   // Bekleyen bildirim sayısını dinle
   useEffect(() => {
@@ -53,7 +69,7 @@ export const AppLayout: React.FC<AppLayoutProps> = ({ currentTab, onSelectTab, c
     fetchPendingNotifications();
     const interval = setInterval(fetchPendingNotifications, 30000);
     return () => clearInterval(interval);
-  }, [firma?.id]);
+  }, [firma?.id, notificationRefreshKey]);
 
   const roleLabel = {
     ana: 'Ana Hesap',
@@ -67,9 +83,11 @@ export const AppLayout: React.FC<AppLayoutProps> = ({ currentTab, onSelectTab, c
     cariler: 'Cari Hesaplar',
     tahsilat: 'Yeni Tahsilat Makbuzu',
     tediye: 'Yeni Tediye Makbuzu',
+    islem_duzenle: 'Makbuz Güncelle',
     islemler: 'İşlem Listesi',
     performans: 'Plasiyer Performans Raporu',
     paketler: 'Abonelik & Paketler',
+    superadmin: 'Süper Admin Paneli',
   };
 
   const isSubPage = currentTab !== 'dashboard';
@@ -221,7 +239,7 @@ export const AppLayout: React.FC<AppLayoutProps> = ({ currentTab, onSelectTab, c
               </button>
 
               {/* Sadece Ana Hesap ve Süper Admin Görür */}
-              {(profile?.rol === 'ana' || profile?.rol === 'superadmin') && (
+              {(profile?.rol === 'ana' || isSuperAdmin) && (
                 <button
                   onClick={() => {
                     setSettingsInitialTab('plasiyer');
@@ -238,12 +256,39 @@ export const AppLayout: React.FC<AppLayoutProps> = ({ currentTab, onSelectTab, c
                   </span>
                 </button>
               )}
+
+              {/* Sadece Süper Admin (conqueror58@gmail.com) Görür */}
+              {isSuperAdmin && (
+                <button
+                  onClick={() => onSelectTab('superadmin')}
+                  data-testid="nav_superadmin_desktop"
+                  className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-sm font-bold transition-all border ${
+                    currentTab === 'superadmin'
+                      ? 'bg-amber-400 text-slate-950 border-amber-400 shadow-md'
+                      : 'bg-amber-500/10 text-amber-300 border-amber-500/30 hover:bg-amber-500/20'
+                  }`}
+                >
+                  <div className="flex items-center gap-2.5">
+                    <Crown className="w-4 h-4 shrink-0" />
+                    <span>Süper Admin</span>
+                  </div>
+                  <span
+                    className={`text-[10px] px-1.5 py-0.5 rounded font-extrabold ${
+                      currentTab === 'superadmin'
+                        ? 'bg-slate-950/20 text-slate-950'
+                        : 'bg-amber-400/20 text-amber-300'
+                    }`}
+                  >
+                    Yönetim
+                  </span>
+                </button>
+              )}
             </nav>
           </div>
         </div>
 
         {/* ALTTINDA KULLANICI KARTI */}
-        <div className="p-3 border-t border-white/[0.07] bg-black/20">
+        <div className="p-3 border-t border-white/[0.07] bg-black/20 space-y-2">
           <div className="flex items-center gap-2.5 p-2 rounded-xl hover:bg-white/[0.04] transition">
             <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-teal-500 to-emerald-400 text-[#0a0e13] font-bold flex items-center justify-center text-xs shrink-0">
               {profile?.ad_soyad?.charAt(0).toUpperCase() || 'U'}
@@ -255,7 +300,7 @@ export const AppLayout: React.FC<AppLayoutProps> = ({ currentTab, onSelectTab, c
                 {roleLabel}
               </div>
             </div>
-            {(profile?.rol === 'ana' || profile?.rol === 'superadmin') && (
+            {(profile?.rol === 'ana' || isSuperAdmin) && (
               <button
                 onClick={() => {
                   setSettingsInitialTab('plasiyer');
@@ -267,33 +312,46 @@ export const AppLayout: React.FC<AppLayoutProps> = ({ currentTab, onSelectTab, c
                 <Settings className="w-4 h-4" />
               </button>
             )}
-            <button
-              onClick={signOut}
-              title="Güvenli Çıkış"
-              className="p-1.5 text-gray-400 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition"
-            >
-              <LogOut className="w-4 h-4" />
-            </button>
           </div>
+
+          <button
+            type="button"
+            onClick={handleConfirmSignOut}
+            data-testid="sidebar_logout_button"
+            className="w-full flex items-center justify-center gap-2 py-2 px-3 rounded-xl bg-red-500/10 hover:bg-red-500/20 text-red-300 border border-red-500/25 text-xs font-bold transition"
+          >
+            <LogOut className="w-4 h-4" />
+            <span>Güvenli Çıkış Yap</span>
+          </button>
         </div>
       </aside>
 
       {/* MASAÜSTÜ İÇERİK ALANI (SOL MENÜNÜN YANINDA) */}
       <div className="lg:pl-60 flex-1 flex flex-col min-w-0">
-        {/* ÜST ÇUBUK / HEADER (Telefonda üst sistem saat/pil alanından tamamen kurtulmak için ekstra margin/padding ve butonlar eklendi) */}
-        <header className="min-h-16 lg:h-16 pt-5 pb-3 lg:py-0 border-b border-slate-700/60 bg-[#111c2e]/98 backdrop-blur-md sticky top-0 z-20 px-3 sm:px-4 lg:px-8 flex items-center justify-between shadow-md">
-          {/* SOL: Geri Butonu, Ana Sayfa Butonu, Menü & Başlık */}
-          <div className="flex items-center gap-2 sm:gap-3">
-            {/* Alt sayfalarda Geri Butonu */}
-            {isSubPage && (
+        {/* ÜST ÇUBUK / HEADER */}
+        <header className="min-h-14 lg:h-16 py-2 lg:py-0 border-b border-slate-700/60 bg-[#111c2e]/98 backdrop-blur-md sticky top-0 z-20 px-2.5 sm:px-4 lg:px-8 flex items-center justify-between gap-2 shadow-md">
+          {/* SOL: Geri/Ana Sayfa Butonu, Menü & Başlık */}
+          <div className="flex items-center gap-1.5 sm:gap-3 min-w-0 flex-1">
+            {/* Alt sayfalarda Geri Butonu, Ana sayfada Ana Sayfa kısayolu */}
+            {isSubPage ? (
               <button
                 type="button"
                 onClick={() => onSelectTab('dashboard')}
-                className="lg:hidden min-w-[44px] min-h-[44px] p-2 text-teal-300 hover:text-white bg-teal-500/15 active:bg-teal-500/25 rounded-xl flex items-center justify-center border border-teal-500/30 shadow-sm transition"
+                className="lg:hidden w-10 h-10 sm:min-w-[44px] sm:min-h-[44px] text-teal-300 hover:text-white bg-teal-500/15 active:bg-teal-500/25 rounded-xl flex items-center justify-center border border-teal-500/30 shadow-sm transition shrink-0"
                 title="Geri / Ana Sayfa"
                 aria-label="Geri Dön"
               >
                 <ArrowLeft className="w-5 h-5" />
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => onSelectTab('dashboard')}
+                className="lg:hidden w-10 h-10 sm:min-w-[44px] sm:min-h-[44px] rounded-xl flex items-center justify-center border transition bg-teal-400 text-slate-950 font-bold border-teal-400 shadow-sm shrink-0"
+                title="Ana Sayfaya Git"
+                aria-label="Ana Sayfa"
+              >
+                <Home className="w-5 h-5" />
               </button>
             )}
 
@@ -301,42 +359,45 @@ export const AppLayout: React.FC<AppLayoutProps> = ({ currentTab, onSelectTab, c
             <button
               type="button"
               onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
-              className="lg:hidden min-w-[44px] min-h-[44px] p-2.5 text-slate-200 hover:text-white bg-slate-800/80 active:bg-slate-700 rounded-xl flex items-center justify-center border border-slate-700/50 shadow-sm transition"
+              className="lg:hidden w-10 h-10 sm:min-w-[44px] sm:min-h-[44px] text-slate-200 hover:text-white bg-slate-800/80 active:bg-slate-700 rounded-xl flex items-center justify-center border border-slate-700/50 shadow-sm transition shrink-0"
               aria-label="Menüyü Aç"
             >
-              {mobileMenuOpen ? <X className="w-6 h-6 text-teal-400" /> : <Menu className="w-6 h-6" />}
-            </button>
-
-            {/* Ana Sayfa Kısayolu */}
-            <button
-              type="button"
-              onClick={() => onSelectTab('dashboard')}
-              className={`lg:hidden min-w-[44px] min-h-[44px] p-2.5 rounded-xl flex items-center justify-center border transition ${
-                currentTab === 'dashboard'
-                  ? 'bg-teal-400 text-slate-950 font-bold border-teal-400 shadow-sm'
-                  : 'text-slate-300 bg-slate-800/80 hover:text-white border-slate-700/50'
-              }`}
-              title="Ana Sayfaya Git"
-              aria-label="Ana Sayfa"
-            >
-              <Home className="w-5 h-5" />
+              {mobileMenuOpen ? <X className="w-5 h-5 text-teal-400" /> : <Menu className="w-5 h-5" />}
             </button>
 
             {/* Breadcrumb / Başlık */}
-            <div className="flex items-center gap-2 text-xs sm:text-sm text-slate-400 font-medium">
-              <span className="hidden sm:inline hover:text-slate-200 cursor-pointer" onClick={() => onSelectTab('dashboard')}>
+            <div className="flex items-center gap-2 text-xs sm:text-sm text-slate-400 font-medium min-w-0">
+              <span className="hidden sm:inline hover:text-slate-200 cursor-pointer shrink-0" onClick={() => onSelectTab('dashboard')}>
                 Yönetim
               </span>
-              <ChevronRight className="w-3.5 h-3.5 text-slate-500 hidden sm:inline" />
-              <span className="font-bold text-teal-400 bg-teal-500/10 px-2.5 py-1 rounded-lg border border-teal-500/20 text-xs sm:text-sm max-w-[120px] sm:max-w-none truncate">
+              <ChevronRight className="w-3.5 h-3.5 text-slate-500 hidden sm:inline shrink-0" />
+              <span className="font-bold text-teal-400 bg-teal-500/10 px-2 sm:px-2.5 py-1 rounded-lg border border-teal-500/20 text-[11px] sm:text-sm truncate">
                 {breadcrumbs[currentTab] || 'Sayfa'}
               </span>
             </div>
           </div>
 
-          {/* SAĞ: Ayarlar, Bildirim Zili & Hızlı İşlem */}
-          <div className="flex items-center gap-2 sm:gap-2.5">
-            {(profile?.rol === 'ana' || profile?.rol === 'superadmin') && (
+          {/* SAĞ: Süper Admin, Ayarlar, Bildirim Zili, Güvenli Çıkış & Hızlı İşlem */}
+          <div className="flex items-center gap-1.5 sm:gap-2.5 shrink-0">
+            {isSuperAdmin && (
+              <button
+                type="button"
+                onClick={() => onSelectTab('superadmin')}
+                data-testid="header_superadmin_button"
+                title="Süper Admin Paneli"
+                aria-label="Süper Admin Paneli"
+                className={`w-10 h-10 sm:w-auto sm:min-w-[44px] sm:min-h-[44px] sm:px-2.5 rounded-xl flex items-center justify-center gap-1.5 border shadow-sm transition text-xs font-extrabold ${
+                  currentTab === 'superadmin'
+                    ? 'bg-amber-400 text-slate-950 border-amber-400'
+                    : 'bg-amber-500/15 text-amber-300 border-amber-500/40 hover:bg-amber-500/25'
+                }`}
+              >
+                <Crown className="w-4 h-4 shrink-0" />
+                <span className="hidden sm:inline">Admin Paneli</span>
+              </button>
+            )}
+
+            {(profile?.rol === 'ana' || isSuperAdmin) && (
               <button
                 type="button"
                 onClick={() => {
@@ -344,7 +405,7 @@ export const AppLayout: React.FC<AppLayoutProps> = ({ currentTab, onSelectTab, c
                   setIsSettingsOpen(true);
                 }}
                 title="Plasiyer ve Firma Ayarları"
-                className="min-w-[44px] min-h-[44px] p-2.5 text-slate-200 hover:text-teal-400 bg-slate-800/80 active:bg-slate-700 rounded-xl flex items-center justify-center border border-slate-700/50 shadow-sm transition"
+                className="hidden sm:flex min-w-[44px] min-h-[44px] p-2.5 text-slate-200 hover:text-teal-400 bg-slate-800/80 active:bg-slate-700 rounded-xl items-center justify-center border border-slate-700/50 shadow-sm transition"
                 aria-label="Ayarlar"
               >
                 <Settings className="w-5 h-5" />
@@ -353,15 +414,30 @@ export const AppLayout: React.FC<AppLayoutProps> = ({ currentTab, onSelectTab, c
 
             <button
               type="button"
-              onClick={() => onSelectTab('islemler')}
+              onClick={onOpenNotifications}
+              data-testid="header_notifications_button"
               title="Bildirimler"
-              className="relative min-w-[44px] min-h-[44px] p-2.5 text-slate-200 hover:text-white bg-slate-800/80 active:bg-slate-700 rounded-xl flex items-center justify-center border border-slate-700/50 shadow-sm transition"
+              className="relative w-10 h-10 sm:min-w-[44px] sm:min-h-[44px] text-slate-200 hover:text-white bg-slate-800/80 active:bg-slate-700 rounded-xl flex items-center justify-center border border-slate-700/50 shadow-sm transition"
               aria-label="Bildirimler"
             >
               <Bell className="w-5 h-5" />
               {pendingNotificationCount > 0 && (
-                <span className="absolute top-2 right-2 w-2.5 h-2.5 rounded-full bg-teal-400 shadow-[0_0_8px_rgba(45,212,191,0.9)] animate-pulse" />
+                <span className="absolute -top-1 -right-1 min-w-[18px] h-[18px] px-1 rounded-full bg-teal-400 text-slate-950 text-[10px] font-black flex items-center justify-center shadow-[0_0_8px_rgba(45,212,191,0.9)]">
+                  {pendingNotificationCount}
+                </span>
               )}
+            </button>
+
+            <button
+              type="button"
+              onClick={handleConfirmSignOut}
+              data-testid="header_logout_button"
+              title="Güvenli Çıkış Yap"
+              aria-label="Güvenli Çıkış"
+              className="w-10 h-10 md:w-auto sm:min-w-[44px] sm:min-h-[44px] md:px-2.5 text-red-300 hover:text-red-200 bg-red-500/15 hover:bg-red-500/25 active:bg-red-500/30 rounded-xl flex items-center justify-center gap-1.5 border border-red-500/35 shadow-sm transition text-xs font-bold"
+            >
+              <LogOut className="w-4 h-4 shrink-0" />
+              <span className="hidden md:inline">Güvenli Çıkış</span>
             </button>
 
             {profile?.rol !== 'muhasebeci' && (
@@ -390,7 +466,7 @@ export const AppLayout: React.FC<AppLayoutProps> = ({ currentTab, onSelectTab, c
         {/* MOBİL SLIDE-OVER MENÜ */}
         {mobileMenuOpen && (
           <div className="lg:hidden fixed inset-0 z-40 bg-slate-950/80 backdrop-blur-sm flex">
-            <div className="w-72 bg-[#111c2e] border-r border-slate-700 h-full p-4 flex flex-col justify-between shadow-2xl">
+            <div className="w-72 bg-[#111c2e] border-r border-slate-700 h-full p-4 flex flex-col justify-between shadow-2xl overflow-y-auto">
               <div>
                 <div className="flex items-center justify-between pb-4 border-b border-slate-700 mb-4">
                   <div className="flex items-center gap-2.5">
@@ -477,7 +553,7 @@ export const AppLayout: React.FC<AppLayoutProps> = ({ currentTab, onSelectTab, c
                     <span>Paket Satın Al</span>
                   </button>
 
-                  {(profile?.rol === 'ana' || profile?.rol === 'superadmin') && (
+                  {(profile?.rol === 'ana' || isSuperAdmin) && (
                     <button
                       onClick={() => {
                         setSettingsInitialTab('plasiyer');
@@ -490,18 +566,43 @@ export const AppLayout: React.FC<AppLayoutProps> = ({ currentTab, onSelectTab, c
                       <span>Plasiyer & Ayarlar</span>
                     </button>
                   )}
+
+                  {isSuperAdmin && (
+                    <button
+                      onClick={() => {
+                        onSelectTab('superadmin');
+                        setMobileMenuOpen(false);
+                      }}
+                      data-testid="nav_superadmin_mobile"
+                      className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-sm font-bold border mt-2 ${
+                        currentTab === 'superadmin'
+                          ? 'bg-amber-400 text-slate-950 border-amber-400'
+                          : 'bg-amber-500/15 text-amber-300 border-amber-500/30 hover:bg-amber-500/25'
+                      }`}
+                    >
+                      <div className="flex items-center gap-3">
+                        <Crown className="w-4 h-4" />
+                        <span>Süper Admin Paneli</span>
+                      </div>
+                      <span className="text-[10px] uppercase font-extrabold">Yetki</span>
+                    </button>
+                  )}
                 </div>
               </div>
 
-              <div className="pt-4 border-t border-white/10">
-                <div className="text-xs text-gray-400 mb-1">{profile?.ad_soyad}</div>
+              <div className="pt-4 border-t border-white/10 pb-safe">
+                <div className="text-xs text-gray-300 font-semibold mb-0.5 truncate">
+                  {profile?.ad_soyad || user?.email}
+                </div>
                 <div className="text-[10px] text-teal-400 mb-3">{roleLabel}</div>
                 <button
-                  onClick={signOut}
-                  className="w-full flex items-center justify-center gap-2 py-2 rounded-xl bg-red-500/10 text-red-400 border border-red-500/20 text-xs font-semibold"
+                  type="button"
+                  onClick={handleConfirmSignOut}
+                  data-testid="mobile_menu_logout_button"
+                  className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl bg-red-500/15 hover:bg-red-500/25 text-red-300 border border-red-500/30 text-xs font-bold transition"
                 >
                   <LogOut className="w-4 h-4" />
-                  <span>Çıkış Yap</span>
+                  <span>Güvenli Çıkış Yap</span>
                 </button>
               </div>
             </div>
@@ -515,7 +616,7 @@ export const AppLayout: React.FC<AppLayoutProps> = ({ currentTab, onSelectTab, c
         </main>
 
         {/* MOBİL ALT MENÜ (Navigasyon çubuğu üstünde kalması için pb-safe ve z-40 uygulandı) */}
-        <nav className="lg:hidden fixed bottom-0 left-0 right-0 z-40 bg-[#111c2e] border-t border-slate-700/80 px-2 pt-2.5 pb-safe shadow-[0_-8px_25px_rgba(0,0,0,0.6)]">
+        <nav className="mobile-bottom-nav lg:hidden fixed bottom-0 left-0 right-0 z-40 bg-[#111c2e] border-t border-slate-700/80 px-2 pt-2.5 pb-safe shadow-[0_-8px_25px_rgba(0,0,0,0.6)]">
           <div className="flex items-center justify-around">
             <button
               onClick={() => onSelectTab('dashboard')}

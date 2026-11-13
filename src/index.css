@@ -46,6 +46,22 @@
   padding-bottom: calc(max(env(safe-area-inset-bottom, 0px), 28px) + 80px);
 }
 
+/* Klavye açıkken odaklanılan inputun klavyenin üstünde kalmasını ve alt menünün gizlenmesini sağlar */
+input,
+textarea,
+select {
+  scroll-margin-top: 84px;
+  scroll-margin-bottom: 120px;
+}
+
+body.keyboard-open .mobile-bottom-nav {
+  display: none !important;
+}
+
+body.keyboard-open main {
+  padding-bottom: 220px !important;
+}
+
 /* Yazdırma Sırasında UI Temizleme */
 @media print {
   .no-print {

@@ -15,20 +15,32 @@ import {
   ArrowLeft,
   Loader2,
   FileDown,
+  Pencil,
+  Trash2,
 } from 'lucide-react';
-import { openWhatsApp, openExternalLink } from '../../lib/linkHelper';
+import { openWhatsApp, openExternalLink, formatWhatsAppPhone } from '../../lib/linkHelper';
 import { downloadMakbuzPdf, shareMakbuzPdfTarget } from '../../lib/pdfGenerator';
+import {
+  KarmaParsedLine,
+  buildKarmaLinesFromSiblingIslemler,
+  extractKarmaRef,
+  parseKarmaFromAciklama,
+} from '../../lib/karmaReceiptHelper';
+import { DeleteReceiptConfirmModal } from './DeleteReceiptConfirmModal';
 
 interface MakbuzModalProps {
   islem: Islem | null;
   onClose: () => void;
+  onEdit?: (islem: Islem) => void;
+  onDeleted?: () => void;
 }
 
-export const MakbuzModal: React.FC<MakbuzModalProps> = ({ islem, onClose }) => {
-  const { firma } = useAuth();
+export const MakbuzModal: React.FC<MakbuzModalProps> = ({ islem, onClose, onEdit, onDeleted }) => {
+  const { firma, profile } = useAuth();
   const [nusha, setNusha] = useState<'1' | '2'>('2');
   const [pdfLoading, setPdfLoading] = useState(false);
   const [pdfSuccessMsg, setPdfSuccessMsg] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<Islem | null>(null);
   const makbuzContainerRef = useRef<HTMLDivElement>(null);
 
   // Çapraz İşlem Eşleşmesi (Müşteri Tahsilatı <-> Tedarikçi Tediyesi)
@@ -37,7 +49,23 @@ export const MakbuzModal: React.FC<MakbuzModalProps> = ({ islem, onClose }) => {
     !!islem?.belge_no?.startsWith('ÇPZ-') ||
     !!islem?.aciklama?.includes('ÇAPRAZ');
   const [linkedIslem, setLinkedIslem] = useState<Islem | null>(null);
+  const [karmaSiblings, setKarmaSiblings] = useState<Islem[]>([]);
   const [activeTab, setActiveTab] = useState<'current' | 'linked'>('current');
+  const [cariContact, setCariContact] = useState<{
+    unvan?: string;
+    vergi_tc_no?: string | null;
+    telefon?: string | null;
+    email?: string | null;
+  } | null>(null);
+
+  const currentCariId =
+    activeTab === 'linked' && linkedIslem ? linkedIslem.cari_id : islem?.cari_id;
+
+  useEffect(() => {
+    setActiveTab('current');
+    setLinkedIslem(null);
+    setKarmaSiblings([]);
+  }, [islem?.id]);
 
   useEffect(() => {
     if (isCapraz && islem?.belge_no && firma?.id) {
@@ -54,13 +82,90 @@ export const MakbuzModal: React.FC<MakbuzModalProps> = ({ islem, onClose }) => {
     }
   }, [islem?.id, islem?.belge_no, isCapraz, firma?.id]);
 
+  // Karma Makbuz (aynı Ref etiketini paylaşan kardeş satırları getir)
+  const islemKarmaRef = extractKarmaRef(islem?.aciklama);
+  useEffect(() => {
+    if (!islemKarmaRef || !firma?.id || !islem) {
+      setKarmaSiblings([]);
+      return;
+    }
+    let cancelled = false;
+    supabase
+      .from('islemler')
+      .select('*, cariler:cari_id(unvan, vergi_tc_no, telefon, email), profiles:yapan_user_id(ad_soyad)')
+      .eq('firma_id', firma.id)
+      .eq('iptal', islem.iptal)
+      .ilike('aciklama', `%${islemKarmaRef}%`)
+      .order('id', { ascending: true })
+      .then(({ data }) => {
+        if (!cancelled && data && data.length > 0) {
+          setKarmaSiblings(data as Islem[]);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [islem?.id, islem?.iptal, islemKarmaRef, firma?.id]);
+
+  // Carinin güncel telefon, e-posta ve VKN bilgilerini her durumda garantiye al
+  useEffect(() => {
+    if (!currentCariId) {
+      setCariContact(null);
+      return;
+    }
+    let cancelled = false;
+    supabase
+      .from('cariler')
+      .select('unvan, vergi_tc_no, telefon, email')
+      .eq('id', currentCariId)
+      .maybeSingle()
+      .then(({ data }) => {
+        if (!cancelled && data) {
+          setCariContact(data);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [currentCariId]);
+
   if (!islem) return null;
 
   // Hangi işlem gösteriliyor: Ana seçilen mi yoksa eşleşen çapraz işlem mi?
   const displayIslem = activeTab === 'linked' && linkedIslem ? linkedIslem : islem;
+  const resolvedCariUnvan = cariContact?.unvan || displayIslem.cariler?.unvan || 'Müşterimiz';
+  const resolvedCariVkn = cariContact?.vergi_tc_no ?? displayIslem.cariler?.vergi_tc_no ?? '-';
+  const resolvedCariTelefon = cariContact?.telefon ?? displayIslem.cariler?.telefon ?? '';
+  const resolvedCariEmail = cariContact?.email ?? displayIslem.cariler?.email ?? '';
+
+  // Karma Makbuz hesaplamaları (kardeş satırlar veya tek-satır [KARMA-KALEM] dökümü)
+  const parsedKarmaFromSingle = parseKarmaFromAciklama(displayIslem.aciklama);
+  const karmaItems: KarmaParsedLine[] =
+    activeTab === 'current' && karmaSiblings.length > 0
+      ? buildKarmaLinesFromSiblingIslemler(karmaSiblings)
+      : parsedKarmaFromSingle.kalemler;
+  const isKarmaMakbuz = karmaItems.length > 0;
+
+  const effectiveToplamTutar =
+    activeTab === 'current' && karmaSiblings.length > 0
+      ? Math.round(karmaSiblings.reduce((acc, r) => acc + (Number(r.tutar) || 0), 0) * 100) / 100
+      : Number(displayIslem.tutar) || 0;
+
+  const uniqueMakbuzNolar =
+    activeTab === 'current' && karmaSiblings.length > 0
+      ? Array.from(
+          new Set(
+            karmaSiblings.map((r) => r.makbuz_no || `#${r.id.slice(0, 8)}`).filter(Boolean)
+          )
+        )
+      : [displayIslem.makbuz_no || `#${displayIslem.id.slice(0, 8)}`];
+
+  const effectiveMakbuzNoLabel = uniqueMakbuzNolar.join(', ');
+  const activeKarmaTypeLabels = Array.from(new Set(karmaItems.map((k) => k.label.toUpperCase()))).join(' + ');
+
   const isTahsilat = displayIslem.tip === 'tahsilat';
   const baslik = isTahsilat ? 'TAHSİLAT MAKBUZU' : 'TEDİYE MAKBUZU';
-  const tutarYazi = numberToTurkishWords(displayIslem.tutar);
+  const tutarYazi = numberToTurkishWords(effectiveToplamTutar);
   const makbuzDosyaAdi = `${baslik.toLowerCase().replace(/\s+/g, '_')}_${displayIslem.makbuz_no || displayIslem.id.slice(0, 8)}`;
 
   const handlePrint = () => {
@@ -93,15 +198,15 @@ export const MakbuzModal: React.FC<MakbuzModalProps> = ({ islem, onClose }) => {
     if (!makbuzContainerRef.current) return;
     try {
       setPdfLoading(true);
-      const rawPhone = displayIslem.cariler?.telefon;
-      const caption = `Sayın ${displayIslem.cariler?.unvan || 'Müşterimiz'},\n\n${formatDate(displayIslem.tarih)} tarihli, ${displayIslem.makbuz_no || ''} numaralı ve ${formatCurrency(displayIslem.tutar)} tutarındaki ${baslik} PDF belgesi ektedir.\n\nBilgilerinize sunarız.\n${firma?.unvan || ''}`;
+      const formattedPhone = formatWhatsAppPhone(resolvedCariTelefon);
+      const caption = `Sayın ${resolvedCariUnvan},\n\n${formatDate(displayIslem.tarih)} tarihli, ${effectiveMakbuzNoLabel} numaralı ve ${formatCurrency(effectiveToplamTutar)} tutarındaki ${baslik} PDF belgesi ektedir.\n\nBilgilerinize sunarız.\n${firma?.unvan || ''}`;
 
       const res = await shareMakbuzPdfTarget(
         makbuzContainerRef.current,
         makbuzDosyaAdi,
         'whatsapp',
         {
-          phone: rawPhone,
+          phone: formattedPhone,
           caption,
         }
       );
@@ -109,7 +214,10 @@ export const MakbuzModal: React.FC<MakbuzModalProps> = ({ islem, onClose }) => {
       if (res.fallbackNeeded) {
         setPdfSuccessMsg('PDF indirildi! WhatsApp sohbetine ekleyebilirsiniz.');
         setTimeout(() => setPdfSuccessMsg(null), 4000);
-        openWhatsApp(rawPhone, caption);
+        openWhatsApp(resolvedCariTelefon, caption);
+      } else if (!formattedPhone) {
+        setPdfSuccessMsg('Caride telefon numarası kayıtlı olmadığı için WhatsApp kişi seçimi açıldı.');
+        setTimeout(() => setPdfSuccessMsg(null), 4000);
       }
     } catch (err) {
       console.error(err);
@@ -121,15 +229,16 @@ export const MakbuzModal: React.FC<MakbuzModalProps> = ({ islem, onClose }) => {
 
   /**
    * E-posta ile PDF Eki Gönderme:
-   * Android uygulamasında doğrudan Gmail / Outlook uygulamasına PDF dosyasını EK (attachment) olarak iliştirir.
+   * Android uygulamasında doğrudan Gmail / Outlook uygulamasına PDF dosyasını EK (attachment) olarak iliştirir
+   * ve carideki e-posta adresini alıcı ("Kime") alanına otomatik yazar.
    */
   const handleMailPdfShare = async () => {
     if (!makbuzContainerRef.current) return;
     try {
       setPdfLoading(true);
-      const email = displayIslem.cariler?.email || '';
-      const subject = `${baslik} - ${displayIslem.makbuz_no || displayIslem.id.slice(0, 8)}`;
-      const caption = `Sayın ${displayIslem.cariler?.unvan || 'Müşterimiz'},\n\n${formatDate(displayIslem.tarih)} tarihli ve ${formatCurrency(displayIslem.tutar)} tutarındaki ${baslik} PDF formatında ekte bilgilerinize sunulmuştur.\n\nSaygılarımızla,\n${firma?.unvan || ''}`;
+      const email = (resolvedCariEmail || '').trim();
+      const subject = `${baslik} - ${effectiveMakbuzNoLabel}`;
+      const caption = `Sayın ${resolvedCariUnvan},\n\n${formatDate(displayIslem.tarih)} tarihli ve ${formatCurrency(effectiveToplamTutar)} tutarındaki ${baslik} PDF formatında ekte bilgilerinize sunulmuştur.\n\nSaygılarımızla,\n${firma?.unvan || ''}`;
 
       const res = await shareMakbuzPdfTarget(
         makbuzContainerRef.current,
@@ -146,6 +255,9 @@ export const MakbuzModal: React.FC<MakbuzModalProps> = ({ islem, onClose }) => {
         setPdfSuccessMsg('PDF indirildi! E-posta iletinize ekleyebilirsiniz.');
         setTimeout(() => setPdfSuccessMsg(null), 4000);
         openExternalLink(`mailto:${email}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(caption)}`);
+      } else if (!email) {
+        setPdfSuccessMsg('Caride e-posta adresi kayıtlı olmadığı için alıcı alanı boş açıldı.');
+        setTimeout(() => setPdfSuccessMsg(null), 4000);
       }
     } catch (err) {
       console.error(err);
@@ -159,20 +271,45 @@ export const MakbuzModal: React.FC<MakbuzModalProps> = ({ islem, onClose }) => {
    * Standart WhatsApp Metin Mesajı (Dosyasız)
    */
   const handleWhatsAppText = () => {
-    const rawPhone = displayIslem.cariler?.telefon;
-    const msg = `Sayın ${displayIslem.cariler?.unvan || 'Müşterimiz'},\n\n${formatDate(displayIslem.tarih)} tarihli, ${displayIslem.makbuz_no || ''} numaralı ve ${formatCurrency(displayIslem.tutar)} tutarındaki ${baslik} düzenlenmiştir.\n\nİşlem Türü: ${displayIslem.tur?.toUpperCase() || ''}\nDetay: ${displayIslem.aciklama || '-'}\n\nBilgilerinize sunarız.\n${firma?.unvan || ''}`;
-    openWhatsApp(rawPhone, msg);
+    const karmaTextDetay = isKarmaMakbuz
+      ? `\nÖdeme Kalemleri:\n${karmaItems.map((k) => `- ${k.label}: ${formatCurrency(k.tutarTL)} (${k.detay})`).join('\n')}`
+      : '';
+    const msg = `Sayın ${resolvedCariUnvan},\n\n${formatDate(displayIslem.tarih)} tarihli, ${effectiveMakbuzNoLabel} numaralı ve ${formatCurrency(effectiveToplamTutar)} tutarındaki ${baslik} düzenlenmiştir.\n\nİşlem Türü: ${isKarmaMakbuz ? `KARMA (${activeKarmaTypeLabels})` : displayIslem.tur?.toUpperCase() || ''}${karmaTextDetay}\nDetay: ${plainAciklama || '-'}\n\nBilgilerinize sunarız.\n${firma?.unvan || ''}`;
+    openWhatsApp(resolvedCariTelefon, msg);
+  };
+
+  // Çek/Senet satırı tespiti (tekrar göstermemek için büyük/küçük harf duyarsız)
+  const isCheckDetailLine = (line: string): boolean => {
+    const lower = line.toLowerCase().trim();
+    return (
+      lower.startsWith('[çek satırı]') ||
+      lower.startsWith('[cek satiri]') ||
+      (lower.includes('nl.') && lower.includes('vd.'))
+    );
   };
 
   // Çoklu çek satırlarını tespit et
   const parseCekSatirlari = (aciklamaStr?: string | null) => {
     if (!aciklamaStr) return [];
-    const lines = aciklamaStr.split('\n').map(l => l.trim()).filter(Boolean);
-    // [ÇEK SATIRI] veya "nl." içeren satırları çek satırı olarak kabul et
-    return lines.filter(l => l.includes('nl.') && l.includes('vd.'));
+    const lines = aciklamaStr.split('\n').map((l) => l.trim()).filter(Boolean);
+    return lines.filter(isCheckDetailLine);
   };
 
-  const cekSatirlari = parseCekSatirlari(displayIslem.aciklama);
+  const cekSatirlari = isKarmaMakbuz ? [] : parseCekSatirlari(displayIslem.aciklama);
+  const plainAciklama = isKarmaMakbuz
+    ? parsedKarmaFromSingle.cleanNote
+        .split('\n')
+        .map((l) => l.trim())
+        .filter((l) => l && !l.startsWith('[DÖVİZ:') && !l.startsWith('[CİRO]') && !isCheckDetailLine(l))
+        .join('\n')
+        .trim()
+    : displayIslem.aciklama
+    ? displayIslem.aciklama
+        .split('\n')
+        .map((l) => l.trim())
+        .filter((l) => l && !isCheckDetailLine(l))
+        .join('\n')
+    : '';
 
   const renderSingleMakbuz = (nushaTipi: string) => (
     <div className="relative border border-gray-300 p-5 sm:p-6 bg-white text-gray-900 rounded-lg shadow-sm text-[11px] leading-relaxed space-y-3 font-sans">
@@ -208,16 +345,21 @@ export const MakbuzModal: React.FC<MakbuzModalProps> = ({ islem, onClose }) => {
           <div className="text-[10px] text-gray-600 leading-tight">
             VKN/TCKN: {firma?.vergi_no || '-'} {firma?.vergi_dairesi ? `(${firma.vergi_dairesi} V.D.)` : ''}
           </div>
-          {firma?.adres && <div className="text-[10px] text-gray-600 truncate">{firma.adres}</div>}
+          {firma?.adres && <div className="text-[10px] text-gray-600 break-words">{firma.adres}</div>}
           {firma?.telefon && <div className="text-[10px] text-gray-600">Tel: {firma.telefon}</div>}
         </div>
 
-        {/* SAĞ: Çapraz İşlem / Nüsha Etiketi & Başlık & Makbuz No */}
+        {/* SAĞ: Çapraz / Karma / Nüsha Etiketi & Başlık & Makbuz No */}
         <div className="text-right">
           <div className="flex items-center justify-end gap-1 mb-1">
             {isCapraz && (
               <span className="inline-block px-2 py-0.5 border border-purple-400 bg-purple-50 font-bold text-[8.5px] uppercase tracking-wider text-purple-700 rounded">
                 Çapraz İşlem
+              </span>
+            )}
+            {isKarmaMakbuz && (
+              <span className="inline-block px-2 py-0.5 border border-teal-500 bg-teal-50 font-bold text-[8.5px] uppercase tracking-wider text-teal-800 rounded">
+                Karma Makbuz
               </span>
             )}
             <span className="inline-block px-2 py-0.5 border border-gray-400 font-bold text-[8.5px] uppercase tracking-wider text-gray-600 rounded">
@@ -228,7 +370,7 @@ export const MakbuzModal: React.FC<MakbuzModalProps> = ({ islem, onClose }) => {
             {baslik}
           </div>
           <div className="text-[10px] font-mono text-gray-500 mt-1">
-            Makbuz No: <span className="text-gray-900 font-bold">{displayIslem.makbuz_no || `#${displayIslem.id.slice(0, 8)}`}</span>
+            Makbuz No: <span className="text-gray-900 font-bold">{effectiveMakbuzNoLabel}</span>
           </div>
           <div className="text-[10px] text-gray-500">
             Düzenleme Tarihi: <span className="text-gray-900 font-bold">{formatDate(displayIslem.tarih)}</span>
@@ -236,7 +378,7 @@ export const MakbuzModal: React.FC<MakbuzModalProps> = ({ islem, onClose }) => {
         </div>
       </div>
 
-      {/* 2. MUHATTAP (CARİ BİLGİLERİ) & İŞLEM DETAYLARI KARTI (Resimdeki tam 2 kolonlu tasarım) */}
+      {/* 2. MUHATTAP (CARİ BİLGİLERİ) & İŞLEM DETAYLARI KARTI */}
       <div className="grid grid-cols-2 gap-3 bg-gray-50/90 p-3 rounded-lg border border-gray-200">
         {/* SOL: ÖDEMEYİ YAPAN (MÜŞTERİ / ALICI) */}
         <div>
@@ -244,13 +386,13 @@ export const MakbuzModal: React.FC<MakbuzModalProps> = ({ islem, onClose }) => {
             {isTahsilat ? 'ÖDEMEYİ YAPAN (MÜŞTERİ / ALICI)' : 'ÖDEMEYİ ALAN (TEDARİKÇİ)'}
           </span>
           <div className="font-bold text-gray-900 text-xs sm:text-sm mt-0.5 break-words">
-            {displayIslem.cariler?.unvan || 'Cari Belirtilmemiş'}
+            {displayIslem.cariler?.unvan || cariContact?.unvan || 'Cari Belirtilmemiş'}
           </div>
           <div className="text-[10px] text-gray-600 mt-0.5">
-            VKN / TCKN: {displayIslem.cariler?.vergi_tc_no || '-'}
+            VKN / TCKN: {resolvedCariVkn}
           </div>
-          {displayIslem.cariler?.telefon && (
-            <div className="text-[10px] text-gray-600">Tel: {displayIslem.cariler.telefon}</div>
+          {resolvedCariTelefon && (
+            <div className="text-[10px] text-gray-600">Tel: {resolvedCariTelefon}</div>
           )}
         </div>
 
@@ -260,36 +402,74 @@ export const MakbuzModal: React.FC<MakbuzModalProps> = ({ islem, onClose }) => {
             İŞLEM DETAYLARI
           </span>
           <div className="text-[10px] text-gray-700">
-            Ödeme Türü: <strong className="uppercase text-gray-900">{displayIslem.tur.replace('_', ' ')}</strong>
+            Ödeme Türü:{' '}
+            <strong className="uppercase text-gray-900">
+              {isKarmaMakbuz ? `KARMA (${activeKarmaTypeLabels})` : displayIslem.tur.replace('_', ' ')}
+            </strong>
           </div>
-          {displayIslem.belge_no && (
+          {!isKarmaMakbuz && displayIslem.belge_no && (
             <div className="text-[10px] text-gray-700">
               Belge/Evrak No: <strong className="font-mono text-gray-900">{displayIslem.belge_no}</strong>
             </div>
           )}
-          {displayIslem.banka_adi && (
+          {!isKarmaMakbuz && displayIslem.banka_adi && (
             <div className="text-[10px] text-gray-700">
               Banka: <strong className="text-gray-900">{displayIslem.banka_adi}</strong>
             </div>
           )}
-          {displayIslem.vade && (
+          {!isKarmaMakbuz && displayIslem.vade && (
             <div className="text-[10px] text-gray-700">
               Vade Tarihi: <strong className="text-gray-900">{formatDate(displayIslem.vade)}</strong>
+            </div>
+          )}
+          {isKarmaMakbuz && (islemKarmaRef || karmaItems.length > 0) && (
+            <div className="text-[10px] text-gray-700">
+              Kalem Sayısı: <strong className="text-gray-900">{karmaItems.length} Adet Ödeme</strong>
+              {islemKarmaRef ? <span className="ml-1 font-mono text-gray-500">({islemKarmaRef})</span> : null}
             </div>
           )}
         </div>
       </div>
 
-      {/* 3. BİRDEN FAZLA ÇEK TABLOSU (Varsa özel formatlı çek dökümü) */}
+      {/* 3A. KARMA MAKBUZ KALEMLERİ DÖKÜMÜ */}
+      {isKarmaMakbuz && (
+        <div className="border border-teal-200 bg-teal-50/40 rounded-lg p-2.5">
+          <span className="text-teal-900 font-bold block text-[9px] uppercase tracking-wider mb-1">
+            Karma Ödeme Kalemleri Dökümü ({karmaItems.length} Kalem):
+          </span>
+          <div className="divide-y divide-teal-100 text-[9.5px] text-gray-800">
+            {karmaItems.map((item, idx) => (
+              <div key={idx} className="flex items-center justify-between gap-2 py-1">
+                <div className="min-w-0 flex-1">
+                  <span className="font-bold text-gray-900 uppercase mr-1.5">[{item.label}]</span>
+                  <span className="text-gray-700 break-words">{item.detay}</span>
+                  {item.orijinalText && (
+                    <span className="ml-1.5 text-[9px] text-teal-800 font-mono">
+                      ({item.orijinalText})
+                    </span>
+                  )}
+                </div>
+                <div className="font-mono font-bold text-gray-900 shrink-0">
+                  {formatCurrency(item.tutarTL)}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* 3B. BİRDEN FAZLA ÇEK TABLOSU (Varsa özel formatlı çek dökümü) */}
       {cekSatirlari.length > 0 && (
         <div className="border border-teal-200 bg-teal-50/50 rounded-lg p-2.5">
           <span className="text-teal-900 font-bold block text-[9px] uppercase tracking-wider mb-1">
             Tahsil Edilen Çek / Senet Detayları ({cekSatirlari.length} Adet):
           </span>
-          <div className="space-y-1 font-mono text-[9.5px] text-gray-800">
+          <div className="space-y-1 font-mono text-[10px] text-gray-800">
             {cekSatirlari.map((satir, idx) => (
-              <div key={idx} className="flex items-center justify-between py-0.5 border-b border-teal-100 last:border-b-0">
-                <span className="truncate pr-2">{satir.replace('[ÇEK SATIRI] ', '')}</span>
+              <div key={idx} className="py-0.5 border-b border-teal-100 last:border-b-0">
+                <span className="whitespace-normal break-words block">
+                  {satir.replace(/^\[ÇEK SATIRI\]\s*/i, '')}
+                </span>
               </div>
             ))}
           </div>
@@ -297,18 +477,18 @@ export const MakbuzModal: React.FC<MakbuzModalProps> = ({ islem, onClose }) => {
       )}
 
       {/* 4. AÇIKLAMA / NOT (Sarı tonlu resimdeki kutu) */}
-      {displayIslem.aciklama && (
+      {plainAciklama && (
         <div className="bg-amber-50/60 p-2.5 rounded-lg border border-amber-200/70">
           <span className="text-amber-800 font-bold block text-[9.5px] uppercase tracking-wider">
             AÇIKLAMA / NOT:
           </span>
           <div className="text-gray-800 text-[10.5px] mt-0.5 whitespace-pre-line leading-relaxed">
-            {displayIslem.aciklama}
+            {plainAciklama}
           </div>
         </div>
       )}
 
-      {/* 5. TUTAR ALANI (Yalnızca + Toplam Tutar, Resimdeki gibi) */}
+      {/* 5. TUTAR ALANI (Yalnızca + Toplam Tutar) */}
       <div className="border-t-2 border-b-2 border-gray-900 py-2.5 flex items-center justify-between">
         <div>
           <span className="text-gray-500 text-[9px] uppercase font-bold block tracking-wider">
@@ -323,7 +503,7 @@ export const MakbuzModal: React.FC<MakbuzModalProps> = ({ islem, onClose }) => {
             TOPLAM TUTAR:
           </span>
           <span className="text-lg sm:text-xl font-black text-gray-900 font-mono tracking-tight">
-            {formatCurrency(displayIslem.tutar)}
+            {formatCurrency(effectiveToplamTutar)}
           </span>
         </div>
       </div>
@@ -371,7 +551,7 @@ export const MakbuzModal: React.FC<MakbuzModalProps> = ({ islem, onClose }) => {
             <div>
               <h3 className="font-bold text-white text-sm sm:text-base tracking-tight">{baslik} Önizleme</h3>
               <span className="text-xs text-slate-400 font-mono">
-                {displayIslem.makbuz_no || `#${displayIslem.id.slice(0, 8)}`}
+                {effectiveMakbuzNoLabel}
               </span>
             </div>
           </div>
@@ -477,6 +657,33 @@ export const MakbuzModal: React.FC<MakbuzModalProps> = ({ islem, onClose }) => {
               <span>Metin</span>
             </button>
 
+            {/* Makbuzu Güncelle */}
+            {onEdit && !displayIslem.iptal && profile?.rol !== 'muhasebeci' && (
+              <button
+                type="button"
+                onClick={() => onEdit(displayIslem)}
+                title="Makbuzu Güncelle / Düzenle"
+                className="px-3 py-1.5 rounded-xl bg-amber-500/20 hover:bg-amber-500/35 text-amber-200 text-xs font-bold flex items-center gap-1.5 border border-amber-500/40 shadow-sm transition"
+              >
+                <Pencil className="w-3.5 h-3.5 text-amber-400" />
+                <span>Güncelle</span>
+              </button>
+            )}
+
+            {/* Makbuzu Sil */}
+            {profile?.rol !== 'muhasebeci' && (
+              <button
+                type="button"
+                onClick={() => setDeleteTarget(displayIslem)}
+                data-testid="makbuz_modal_delete_button"
+                title="Makbuzu Kalıcı Olarak Sil"
+                className="px-3 py-1.5 rounded-xl bg-red-500/20 hover:bg-red-500/35 text-red-200 text-xs font-bold flex items-center gap-1.5 border border-red-500/40 shadow-sm transition"
+              >
+                <Trash2 className="w-3.5 h-3.5 text-red-400" />
+                <span>Sil</span>
+              </button>
+            )}
+
             {/* Yazdır */}
             <button
               type="button"
@@ -508,9 +715,9 @@ export const MakbuzModal: React.FC<MakbuzModalProps> = ({ islem, onClose }) => {
           </div>
         )}
 
-        {/* KAĞIT ÖNİZLEME ALANI (BEYAZ A4 ORANLI - PDF Buradan Render Edilir) */}
-        <div className="flex-1 overflow-y-auto p-4 sm:p-8 bg-slate-950/80 flex justify-center print:p-0 print:bg-white print:overflow-visible">
-          <div ref={makbuzContainerRef} className="w-full max-w-2xl space-y-6 print:space-y-4 print:max-w-none bg-white p-4 rounded-xl">
+        {/* KAĞIT ÖNİZLEME ALANI (BEYAZ A4 ORANLI - Telefon ekranına sıkıştırılmaz, yatay kaydırmalı ve tam yazdırılabilir) */}
+        <div className="flex-1 overflow-auto p-3 sm:p-8 bg-slate-950/80 flex justify-start md:justify-center print:p-0 print:bg-white print:overflow-visible">
+          <div ref={makbuzContainerRef} className="w-[680px] min-w-[680px] space-y-6 print:space-y-4 print:w-full print:min-w-0 bg-white p-5 rounded-xl">
             {/* ÜST NÜSHA: MÜŞTERİ NÜSHASI */}
             {renderSingleMakbuz(nusha === '2' ? 'MÜŞTERİ NÜSHASI' : 'ASIL')}
 
@@ -529,6 +736,17 @@ export const MakbuzModal: React.FC<MakbuzModalProps> = ({ islem, onClose }) => {
           </div>
         </div>
       </div>
+
+      {/* MAKBUZ SİLME ONAY MODALI */}
+      <DeleteReceiptConfirmModal
+        islem={deleteTarget}
+        onClose={() => setDeleteTarget(null)}
+        onDeleted={() => {
+          setDeleteTarget(null);
+          if (onDeleted) onDeleted();
+          else onClose();
+        }}
+      />
     </div>
   );
 };

@@ -31,6 +31,7 @@ import {
 interface PlasiyerPerformansPageProps {
   onOpenMakbuz: (islem: Islem) => void;
   onNavigate: (tab: string, state?: unknown) => void;
+  refreshKey?: number;
 }
 
 type DateRangeFilter = 'today' | 'week' | 'month' | 'year' | 'all' | 'custom';
@@ -38,6 +39,7 @@ type DateRangeFilter = 'today' | 'week' | 'month' | 'year' | 'all' | 'custom';
 export const PlasiyerPerformansPage: React.FC<PlasiyerPerformansPageProps> = ({
   onOpenMakbuz,
   onNavigate,
+  refreshKey = 0,
 }) => {
   const { profile, firma } = useAuth();
 
@@ -95,7 +97,7 @@ export const PlasiyerPerformansPage: React.FC<PlasiyerPerformansPageProps> = ({
 
         let query = supabase
           .from('islemler')
-          .select('*, cariler:cari_id(unvan, vergi_tc_no, telefon), profiles:yapan_user_id(ad_soyad, email, rol)')
+          .select('*, cariler:cari_id(unvan, vergi_tc_no, telefon, email), profiles:yapan_user_id(ad_soyad, email, rol)')
           .eq('firma_id', firma.id)
           .order('tarih', { ascending: false });
 
@@ -118,7 +120,7 @@ export const PlasiyerPerformansPage: React.FC<PlasiyerPerformansPageProps> = ({
     };
 
     fetchPerformansIslemleri();
-  }, [firma?.id, isPlasiyer, profile?.id, selectedPlasiyerId]);
+  }, [firma?.id, isPlasiyer, profile?.id, selectedPlasiyerId, refreshKey]);
 
   // 3. Tarih Aralığı ve Ek Filtreleri Uygula
   const filteredIslemler = useMemo(() => {

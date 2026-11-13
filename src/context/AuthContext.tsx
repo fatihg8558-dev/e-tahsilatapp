@@ -12,6 +12,8 @@ interface PeriodInfo {
   bitisTarihi: string | null;
 }
 
+export const SUPER_ADMIN_EMAIL = 'conqueror58@gmail.com';
+
 interface AuthContextType {
   user: User | null;
   session: Session | null;
@@ -19,6 +21,7 @@ interface AuthContextType {
   firma: Firma | null;
   loading: boolean;
   error: string | null;
+  isSuperAdmin: boolean;
   isPeriodExpired: boolean;
   periodInfo: PeriodInfo;
   signIn: (email: string, pass: string) => Promise<{ error?: string }>;
@@ -74,18 +77,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [loading, setLoading] = useState<boolean>(!cachedProfile && !cachedUser);
   const [error, setError] = useState<string | null>(null);
 
-  // Süre ve abonelik hesaplayıcı
+  // Süre ve abonelik hesaplayıcı (Yalnızca veritabanındaki gerçek firma değerlerine göre hesaplanır)
   const calculatePeriodInfo = (
     f: Firma | null,
-    p: Profile | null,
+    _p: Profile | null,
     u: User | null
   ): PeriodInfo => {
-    // Süper Admin ve Sınırsız kontrolleri
-    const isSuperAdmin =
-      p?.rol === 'superadmin' ||
-      f?.sinirsiz === true;
-
-    if (isSuperAdmin) {
+    const userEmail = (u?.email || _p?.email || '').trim().toLowerCase();
+    // Sadece gerçek firma.sinirsiz === true veya ana Süper Admin hesabı (kilitlenmemesi için)
+    if (f?.sinirsiz === true || userEmail === SUPER_ADMIN_EMAIL) {
       return { isExpired: false, status: 'unlimited', kalanGun: 9999, bitisTarihi: null };
     }
 
@@ -229,7 +229,21 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           }
         }
 
-        // Yönetici yetkisi yalnızca veritabanındaki rol alanından gelir (sunucu tarafında korunur).
+        // Süper Admin kontrolü: yalnızca conqueror58@gmail.com otomatik süper admin olur (veya DB'de rol='superadmin' atanmış hesaplar)
+        const authEmail = (authUserData?.user?.email || '').trim().toLowerCase();
+        const profileEmail = (profileData.email || '').trim().toLowerCase();
+        const isDesignatedSuperAdmin =
+          authEmail === SUPER_ADMIN_EMAIL || profileEmail === SUPER_ADMIN_EMAIL;
+        const isSuperAdminAccount = isDesignatedSuperAdmin || profileData.rol === 'superadmin';
+
+        if (isDesignatedSuperAdmin && profileData.rol !== 'superadmin') {
+          profileData.rol = 'superadmin';
+          supabase
+            .from('profiles')
+            .update({ rol: 'superadmin' })
+            .eq('id', profileData.id)
+            .then(() => {}, () => {});
+        }
 
         setProfile(profileData);
         setCachedData('tahsilatim_profile', profileData);
@@ -266,7 +280,22 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             throw firmaErr;
           }
 
-          const f = (firmaData as Firma) || null;
+          let f = (firmaData as Firma) || null;
+          if (f && isDesignatedSuperAdmin) {
+            if (!f.sinirsiz || !f.paket_bitis) {
+              // Veritabanında güncellemeyi dene; yalnızca DB gerçekten onaylarsa state'e yansıt
+              const { data: updatedFirma } = await supabase
+                .from('firmalar')
+                .update({ sinirsiz: true, paket_bitis: f.paket_bitis || '2099-12-31' })
+                .eq('id', f.id)
+                .select('*')
+                .maybeSingle();
+
+              if (updatedFirma) {
+                f = updatedFirma as Firma;
+              }
+            }
+          }
           setFirma(f);
           setCachedData('tahsilatim_firma', f);
         }
@@ -500,13 +529,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  const isSuper =
-    profile?.rol === 'superadmin' ||
-    firma?.sinirsiz === true;
+  const currentEmail = (user?.email || profile?.email || '').trim().toLowerCase();
+  const isSuperAdmin =
+    currentEmail === SUPER_ADMIN_EMAIL || profile?.rol === 'superadmin';
 
-  const periodInfo = isSuper
-    ? { isExpired: false, status: 'unlimited' as const, kalanGun: 9999, bitisTarihi: null }
-    : calculatePeriodInfo(firma, profile, user);
+  const periodInfo = calculatePeriodInfo(firma, profile, user);
+  const effectiveIsPeriodExpired = isSuperAdmin ? false : periodInfo.isExpired;
 
   return (
     <AuthContext.Provider
@@ -517,7 +545,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         firma,
         loading,
         error,
-        isPeriodExpired: periodInfo.isExpired,
+        isSuperAdmin,
+        isPeriodExpired: effectiveIsPeriodExpired,
         periodInfo,
         signIn,
         signInWithGoogle,

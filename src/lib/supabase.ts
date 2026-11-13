@@ -18,7 +18,11 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
   },
 });
 
-export function handleSupabaseError(error: unknown, userMessage?: string): string {
+export function handleSupabaseError(
+  error: unknown,
+  userMessage?: string,
+  options?: { isFirmaUnlimited?: boolean }
+): string {
   console.error('[Supabase Error]:', error);
   if (typeof error === 'object' && error !== null && 'message' in error) {
     const raw = (error as { message: string }).message;
@@ -37,7 +41,10 @@ export function handleSupabaseError(error: unknown, userMessage?: string): strin
       return 'Şifreniz en az 6 karakter olmalıdır.';
     }
     if (lower.includes('violates row-level security policy') || lower.includes('row-level security')) {
-      return 'İşlem kaydetme yetkiniz bulunmamaktadır. Firma deneme veya paket süreniz veritabanında dolmuştur. Kesintisiz devam etmek için lütfen paket satın alınız veya yeni bir e-posta ile yeni 7 günlük ücretsiz deneme hesabı açınız.';
+      if (options?.isFirmaUnlimited) {
+        return `Veritabanı güvenlik kuralı (RLS) kayıt işlemine izin vermedi (${raw}). Firma sınırsız yetkili olsa bile Supabase tarafındaki "islemler" tablosu RLS kuralı süper admin rolünü veya sinirsiz alanını kontrol etmiyor olabilir. Süper Admin Paneli > "Veritabanı RLS SQL" bölümündeki SQL kuralını Supabase SQL Editor'de çalıştırıp tekrar deneyiniz.`;
+      }
+      return 'İşlem kaydetme yetkiniz bulunmamaktadır. Firma deneme veya paket süreniz veritabanında dolmuştur. Kesintisiz devam etmek için lütfen paket satın alınız veya Süper Admin üzerinden yetki tanımlatınız.';
     }
     return raw;
   }

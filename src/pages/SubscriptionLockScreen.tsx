@@ -1,20 +1,16 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { supabase, handleSupabaseError } from '../lib/supabase';
-import { ShieldAlert, CheckCircle2, Copy, CreditCard, Sparkles, AlertCircle } from 'lucide-react';
+import { ShieldAlert, CheckCircle2, Copy, CreditCard, Sparkles, Crown } from 'lucide-react';
 import { formatCurrency, formatDate } from '../lib/formatters';
+import { Paket } from '../types/database';
 
-interface Paket {
-  id: string;
-  ad: string;
-  sure_gun: number;
-  fiyat: number;
-  ek_plasiyer_ucreti: number;
-  aktif: boolean;
+interface SubscriptionLockScreenProps {
+  isLockMode?: boolean;
 }
 
-export const SubscriptionLockScreen: React.FC = () => {
-  const { firma, refreshProfileAndFirma, signOut, isPeriodExpired, periodInfo } = useAuth();
+export const SubscriptionLockScreen: React.FC<SubscriptionLockScreenProps> = ({ isLockMode = true }) => {
+  const { firma, periodInfo, refreshProfileAndFirma, signOut } = useAuth();
   const [paketler, setPaketler] = useState<Paket[]>([]);
   const [iban, setIban] = useState<string>('');
   const [hesapSahibi, setHesapSahibi] = useState<string>('');
@@ -67,54 +63,57 @@ export const SubscriptionLockScreen: React.FC = () => {
   };
 
   return (
-    <div className="min-h-screen bg-[#0a0e13] text-gray-100 flex flex-col justify-between p-4 sm:p-8 fintech-glow">
-      <div className="max-w-4xl mx-auto w-full pt-6">
+    <div className={isLockMode ? 'min-h-screen bg-[#0a0e13] text-gray-100 flex flex-col justify-between p-4 sm:p-8 fintech-glow' : 'text-gray-100 pb-8'}>
+      <div className={isLockMode ? 'max-w-4xl mx-auto w-full pt-6' : 'max-w-4xl mx-auto w-full'}>
         {/* ÜST BİLGİLENDİRME BANNERI */}
-        {isPeriodExpired ? (
-        <div className="bg-red-500/10 border border-red-500/20 rounded-2xl p-6 mb-8 flex flex-col sm:flex-row items-center gap-4 text-center sm:text-left">
-          <div className="w-12 h-12 rounded-2xl bg-red-500/20 text-red-400 flex items-center justify-center shrink-0">
-            <ShieldAlert className="w-6 h-6" />
-          </div>
-          <div className="flex-1">
-            <h2 className="text-base font-bold text-red-400">Kullanım Süreniz Sona Erdi</h2>
-            <p className="text-xs text-gray-300 mt-1 leading-relaxed">
-              Firma hesabınızın ({firma?.unvan}) deneme veya paket süresi{' '}
-              <span className="text-white font-medium">
-                {formatDate(firma?.paket_bitis || firma?.deneme_bitis)}
-              </span>{' '}
-              tarihinde dolmuştur. Kesintisiz tahsilat ve tediye işlemlerine devam edebilmek için lütfen bir paket seçiniz.
-            </p>
-          </div>
-          <button
-            onClick={signOut}
-            className="px-4 py-2 rounded-xl text-xs font-semibold bg-white/5 hover:bg-white/10 text-gray-300 transition"
-          >
-            Çıkış Yap
-          </button>
-        </div>
-        ) : (
-          <div className="bg-teal-400/10 border border-teal-400/20 rounded-2xl p-6 mb-8 flex flex-col sm:flex-row items-center gap-4 text-center sm:text-left">
-            <div className="w-12 h-12 rounded-2xl bg-teal-400/20 text-teal-400 flex items-center justify-center shrink-0">
-              <Sparkles className="w-6 h-6" />
+        {isLockMode ? (
+          <div className="bg-red-500/10 border border-red-500/20 rounded-2xl p-6 mb-8 flex flex-col sm:flex-row items-center gap-4 text-center sm:text-left">
+            <div className="w-12 h-12 rounded-2xl bg-red-500/20 text-red-400 flex items-center justify-center shrink-0">
+              <ShieldAlert className="w-6 h-6" />
             </div>
             <div className="flex-1">
-              <h2 className="text-base font-bold text-teal-400">
-                {periodInfo.status === 'unlimited' ? 'Sınırsız Kullanım' : 'Aboneliğiniz Aktif'}
-              </h2>
+              <h2 className="text-base font-bold text-red-400">Kullanım Süreniz Sona Erdi</h2>
               <p className="text-xs text-gray-300 mt-1 leading-relaxed">
-                {periodInfo.status === 'unlimited' ? (
-                  'Hesabınızda süre sınırı yoktur.'
-                ) : (
-                  <>
-                    Firma hesabınızın ({firma?.unvan}) süresi{' '}
-                    <span className="text-white font-medium">
-                      {formatDate(firma?.paket_bitis || firma?.deneme_bitis)}
-                    </span>{' '}
-                    tarihinde dolacak ({periodInfo.kalanGun} gün kaldı). Süre bitmeden yeni paket alabilirsiniz.
-                  </>
-                )}
+                Firma hesabınızın ({firma?.unvan}) deneme veya paket süresi{' '}
+                <span className="text-white font-medium">
+                  {formatDate(firma?.paket_bitis || firma?.deneme_bitis)}
+                </span>{' '}
+                tarihinde dolmuştur. Kesintisiz tahsilat ve tediye işlemlerine devam edebilmek için lütfen bir paket seçiniz.
               </p>
             </div>
+            <button
+              onClick={signOut}
+              className="px-4 py-2 rounded-xl text-xs font-semibold bg-white/5 hover:bg-white/10 text-gray-300 transition"
+            >
+              Çıkış Yap
+            </button>
+          </div>
+        ) : (
+          <div className="bg-teal-500/10 border border-teal-500/25 rounded-2xl p-5 mb-6 flex flex-col sm:flex-row items-center justify-between gap-4 text-center sm:text-left">
+            <div className="flex items-center gap-3.5">
+              <div className="w-11 h-11 rounded-2xl bg-teal-400/15 text-teal-300 border border-teal-400/30 flex items-center justify-center shrink-0">
+                <Crown className="w-5 h-5" />
+              </div>
+              <div>
+                <h2 className="text-sm font-bold text-white">
+                  {periodInfo.status === 'unlimited'
+                    ? 'Sınırsız Tam Erişim Aktif'
+                    : periodInfo.status === 'active_package'
+                    ? `Aktif Abonelik (${periodInfo.kalanGun} Gün Kaldı)`
+                    : `Ücretsiz Deneme Süresi (${periodInfo.kalanGun} Gün Kaldı)`}
+                </h2>
+                <p className="text-xs text-gray-300 mt-0.5">
+                  {firma?.unvan}
+                  {periodInfo.bitisTarihi ? ` • Bitiş Tarihi: ${formatDate(periodInfo.bitisTarihi)}` : ''}
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={() => refreshProfileAndFirma()}
+              className="px-4 py-2 rounded-xl text-xs font-bold bg-teal-400/15 hover:bg-teal-400/25 text-teal-300 border border-teal-400/30 transition"
+            >
+              Durumu Yenile
+            </button>
           </div>
         )}
 

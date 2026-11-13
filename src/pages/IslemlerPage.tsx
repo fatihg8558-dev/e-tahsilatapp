@@ -17,15 +17,26 @@ import {
   ChevronRight,
   FileSpreadsheet,
   Printer,
+  Pencil,
+  Trash2,
 } from 'lucide-react';
 import { exportToExcel, printPdfReport } from '../lib/exportService';
+import { extractKarmaRef, isKarmaAciklama } from '../lib/karmaReceiptHelper';
+import { DeleteReceiptConfirmModal } from '../components/makbuz/DeleteReceiptConfirmModal';
 
 interface IslemlerPageProps {
   onOpenMakbuz: (islem: Islem) => void;
+  onEditIslem?: (islem: Islem) => void;
   onNavigate: (tab: string) => void;
+  refreshKey?: number;
 }
 
-export const IslemlerPage: React.FC<IslemlerPageProps> = ({ onOpenMakbuz, onNavigate }) => {
+export const IslemlerPage: React.FC<IslemlerPageProps> = ({
+  onOpenMakbuz,
+  onEditIslem,
+  onNavigate,
+  refreshKey = 0,
+}) => {
   const { profile, firma } = useAuth();
   const [islemler, setIslemler] = useState<Islem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -38,6 +49,7 @@ export const IslemlerPage: React.FC<IslemlerPageProps> = ({ onOpenMakbuz, onNavi
   const [endDate, setEndDate] = useState('');
   const [hideCancelled, setHideCancelled] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const [islemToDelete, setIslemToDelete] = useState<Islem | null>(null);
 
   const fetchIslemler = async () => {
     if (!firma?.id) return;
@@ -48,7 +60,7 @@ export const IslemlerPage: React.FC<IslemlerPageProps> = ({ onOpenMakbuz, onNavi
 
       let query = supabase
         .from('islemler')
-        .select('*, cariler:cari_id(unvan, vergi_tc_no), profiles:yapan_user_id(ad_soyad)')
+        .select('*, cariler:cari_id(unvan, vergi_tc_no, telefon, email), profiles:yapan_user_id(ad_soyad)')
         .eq('firma_id', firma.id)
         .order('tarih', { ascending: false })
         .order('id', { ascending: false });
@@ -87,7 +99,7 @@ export const IslemlerPage: React.FC<IslemlerPageProps> = ({ onOpenMakbuz, onNavi
 
   useEffect(() => {
     fetchIslemler();
-  }, [firma?.id, tipFilter, durumFilter, startDate, endDate, profile?.id]);
+  }, [firma?.id, tipFilter, durumFilter, startDate, endDate, profile?.id, refreshKey]);
 
   // Arama ve İptal Gizleme
   const filteredIslemler = islemler.filter((islem) => {
@@ -366,6 +378,7 @@ export const IslemlerPage: React.FC<IslemlerPageProps> = ({ onOpenMakbuz, onNavi
                     <th className="py-3 px-4">İşlemi Yapan</th>
                     <th className="py-3 px-4">Durum</th>
                     <th className="py-3 px-5 text-right">Tutar (₺)</th>
+                    <th className="py-3 px-4 text-right">İşlem</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-white/[0.04]">
@@ -396,7 +409,14 @@ export const IslemlerPage: React.FC<IslemlerPageProps> = ({ onOpenMakbuz, onNavi
                         </span>
                       </td>
                       <td className="py-3.5 px-4 text-gray-300 capitalize">
-                        {islem.tur.replace('_', ' ')}
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span>{islem.tur.replace('_', ' ')}</span>
+                          {isKarmaAciklama(islem.aciklama) && (
+                            <span className="px-1.5 py-0.5 rounded bg-cyan-500/15 border border-cyan-500/30 text-cyan-300 text-[9px] font-bold uppercase">
+                              {extractKarmaRef(islem.aciklama) ? `Karma • ${extractKarmaRef(islem.aciklama)}` : 'Karma'}
+                            </span>
+                          )}
+                        </div>
                       </td>
                       <td className="py-3.5 px-4 text-gray-400">
                         {islem.profiles?.ad_soyad || 'Merkez'}
@@ -430,6 +450,41 @@ export const IslemlerPage: React.FC<IslemlerPageProps> = ({ onOpenMakbuz, onNavi
                         }`}
                       >
                         {formatCurrency(islem.tutar)}
+                      </td>
+                      <td className="py-3.5 px-4 text-right whitespace-nowrap">
+                        {profile?.rol !== 'muhasebeci' ? (
+                          <div className="inline-flex items-center justify-end gap-1.5">
+                            {onEditIslem && !islem.iptal && (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  onEditIslem(islem);
+                                }}
+                                className="px-2.5 py-1.5 rounded-lg bg-amber-500/15 hover:bg-amber-500/30 text-amber-300 border border-amber-500/30 text-[11px] font-bold inline-flex items-center gap-1 transition"
+                                title="Makbuzu Güncelle"
+                              >
+                                <Pencil className="w-3 h-3" />
+                                <span>Güncelle</span>
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setIslemToDelete(islem);
+                              }}
+                              data-testid={`delete_receipt_${islem.id}`}
+                              className="px-2.5 py-1.5 rounded-lg bg-red-500/15 hover:bg-red-500/30 text-red-300 border border-red-500/30 text-[11px] font-bold inline-flex items-center gap-1 transition"
+                              title="Makbuzu Sil"
+                            >
+                              <Trash2 className="w-3 h-3" />
+                              <span>Sil</span>
+                            </button>
+                          </div>
+                        ) : (
+                          <span className="text-gray-600 text-[11px]">-</span>
+                        )}
                       </td>
                     </tr>
                   ))}
@@ -478,12 +533,46 @@ export const IslemlerPage: React.FC<IslemlerPageProps> = ({ onOpenMakbuz, onNavi
                         {islem.tip}
                       </span>
                       <span className="capitalize">{islem.tur.replace('_', ' ')}</span>
+                      {isKarmaAciklama(islem.aciklama) && (
+                        <span className="px-1.5 py-0.5 rounded bg-cyan-500/15 border border-cyan-500/30 text-cyan-300 text-[9px] font-bold uppercase">
+                          Karma
+                        </span>
+                      )}
                     </div>
 
                     <div className="flex items-center gap-2">
                       <span>{formatDate(islem.tarih)}</span>
                       {islem.iptal && (
                         <span className="text-[10px] font-bold text-red-400">(İPTAL)</span>
+                      )}
+                      {profile?.rol !== 'muhasebeci' && (
+                        <>
+                          {onEditIslem && !islem.iptal && (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                onEditIslem(islem);
+                              }}
+                              className="ml-1 px-2 py-1 rounded-lg bg-amber-500/15 hover:bg-amber-500/30 text-amber-300 border border-amber-500/30 text-[10px] font-bold inline-flex items-center gap-1 transition"
+                            >
+                              <Pencil className="w-3 h-3" />
+                              <span>Güncelle</span>
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setIslemToDelete(islem);
+                            }}
+                            className="px-2 py-1 rounded-lg bg-red-500/15 hover:bg-red-500/30 text-red-300 border border-red-500/30 text-[10px] font-bold inline-flex items-center gap-1 transition"
+                            title="Makbuzu Sil"
+                          >
+                            <Trash2 className="w-3 h-3" />
+                            <span>Sil</span>
+                          </button>
+                        </>
                       )}
                     </div>
                   </div>
@@ -493,6 +582,13 @@ export const IslemlerPage: React.FC<IslemlerPageProps> = ({ onOpenMakbuz, onNavi
           </div>
         )}
       </div>
+
+      {/* MAKBUZ SİLME ONAY MODALI */}
+      <DeleteReceiptConfirmModal
+        islem={islemToDelete}
+        onClose={() => setIslemToDelete(null)}
+        onDeleted={fetchIslemler}
+      />
     </div>
   );
 };
