@@ -449,51 +449,8 @@ export const UblImportModal: React.FC<UblImportModalProps> = ({
     }
   };
 
-  const faturaSqlSnippet = `-- Supabase SQL Editor'de çalıştırarak faturalar tablosunun otomatik bakiye ve güvenlik kurallarını tanımlayın:
--- 1) Fatura eklendiğinde/silindiğinde cariler.bakiye otomatik güncellensin:
-CREATE OR REPLACE FUNCTION handle_fatura_bakiye()
-RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER AS $$
-BEGIN
-  IF (TG_OP = 'INSERT') THEN
-    UPDATE cariler
-    SET bakiye = COALESCE(bakiye, 0) + (CASE WHEN NEW.yon = 'satis' THEN NEW.tutar ELSE -NEW.tutar END)
-    WHERE id = NEW.cari_id;
-    RETURN NEW;
-  ELSIF (TG_OP = 'DELETE') THEN
-    UPDATE cariler
-    SET bakiye = COALESCE(bakiye, 0) - (CASE WHEN OLD.yon = 'satis' THEN OLD.tutar ELSE -OLD.tutar END)
-    WHERE id = OLD.cari_id;
-    RETURN OLD;
-  END IF;
-  RETURN NULL;
-END;
-$$;
-
-DROP TRIGGER IF EXISTS trg_faturalar_bakiye ON faturalar;
-CREATE TRIGGER trg_faturalar_bakiye
-  AFTER INSERT OR DELETE ON faturalar
-  FOR EACH ROW EXECUTE FUNCTION handle_fatura_bakiye();
-
--- 2) RLS (Satır Bazlı Güvenlik) Politikaları:
-ALTER TABLE faturalar ENABLE ROW LEVEL SECURITY;
-DROP POLICY IF EXISTS "Firma uyeleri faturalari gorebilir" ON faturalar;
-CREATE POLICY "Firma uyeleri faturalari gorebilir" ON faturalar
-  FOR SELECT USING (
-    EXISTS (SELECT 1 FROM profiles p WHERE p.id = auth.uid() AND p.firma_id = faturalar.firma_id AND p.aktif = true)
-  );
-
-DROP POLICY IF EXISTS "Aktif firma fatura ekleyebilir" ON faturalar;
-CREATE POLICY "Aktif firma fatura ekleyebilir" ON faturalar
-  FOR INSERT WITH CHECK (
-    EXISTS (
-      SELECT 1 FROM profiles p
-      JOIN firmalar f ON f.id = p.firma_id
-      WHERE p.id = auth.uid()
-        AND p.firma_id = faturalar.firma_id
-        AND p.aktif = true
-        AND (f.sinirsiz = true OR f.paket_bitis >= CURRENT_DATE OR f.deneme_bitis >= CURRENT_DATE)
-    )
-  );`;
+  const faturaSqlSnippet = `-- UYARI: Fatura bakiye tetikleyicisi veritabanında zaten kurulu.
+-- Bu SQL'i çalıştırmayın; ikinci bir tetikleyici bakiyeyi iki kez artırır.`;
 
   const handleCopySql = () => {
     navigator.clipboard.writeText(faturaSqlSnippet);
