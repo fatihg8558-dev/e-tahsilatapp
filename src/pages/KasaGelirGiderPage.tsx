@@ -1,793 +1,346 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
-import {
-  Wallet,
-  TrendingUp,
-  TrendingDown,
-  ArrowLeftRight,
-  Plus,
-  Search,
-  Download,
-  Printer,
-  Edit2,
-  Trash2,
-  Database,
-  RefreshCw,
-  Building2,
-  CreditCard,
-  Banknote,
-  AlertTriangle,
-} from 'lucide-react';
-import { useAuth } from '../context/AuthContext';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { ArrowDownLeft, ArrowUpRight, Plus, Minus, Pencil, Trash2, Loader2, ShieldAlert } from 'lucide-react';
 import { supabase, handleSupabaseError } from '../lib/supabase';
-import { formatCurrency, formatDate } from '../lib/formatters';
+import { useAuth } from '../context/AuthContext';
 import { exportToExcel, printPdfReport } from '../lib/exportService';
-import { GelirGider, GelirGiderTip, Kasa } from '../types/database';
-import { isMissingKasaTableError, KASA_TUR_LABELS } from '../lib/kasaSql';
-import {
-  GelirGiderFormModal,
-  KasaAccountModal,
-  KasaSqlSetupModal,
-  syncKasaBalanceAfterDelete,
-} from '../components/kasa/KasaModals';
+import { formatCurrency, formatDate } from '../lib/formatters';
+import type { Kasa, GelirGider, GelirGiderTip, KasaTur } from '../types/database';
 
-interface KasaGelirGiderPageProps {
-  initialAction?: GelirGiderTip | null;
-  onConsumeInitialAction?: () => void;
+interface Props {
+  onNavigate: (tab: string, state?: unknown) => void;
+  initialModal?: 'gelir' | 'gider';
 }
 
-type KasaSubTab = 'defter' | 'kasalar';
+const inp = 'w-full rounded-xl bg-white/5 border border-white/10 px-3 py-2.5 text-sm text-white focus:outline-none focus:border-teal-400';
+const card = 'rounded-2xl border border-white/10 bg-white/[0.03] p-4';
+const GELIR_KAT = ['Peşin Satış', 'Hizmet Geliri', 'Faiz/Nemalandırma', 'Kira Geliri', 'Kur Farkı Geliri', 'Ortak Sermaye Girişi', 'Diğer Gelir'];
+const GIDER_KAT = ['Kira', 'Maaş & Personel', 'Elektrik/Su/Doğalgaz', 'İnternet & Telefon', 'Yakıt & Ulaşım', 'Yemek & İkram', 'Vergi & SGK', 'Kargo & Nakliye', 'Bakım & Onarım', 'Reklam & Pazarlama', 'Kırtasiye & Ofis', 'Banka Masrafı', 'Diğer Gider'];
+const TIP_AD: Record<GelirGiderTip, string> = { gelir: 'Gelir', gider: 'Gider', virman: 'Virman' };
+const TUR_AD: Record<KasaTur, string> = { nakit: 'Nakit', banka: 'Banka', pos: 'POS' };
 
-export const KasaGelirGiderPage: React.FC<KasaGelirGiderPageProps> = ({
-  initialAction = null,
-  onConsumeInitialAction,
-}) => {
+const pad = (n: number) => String(n).padStart(2, '0');
+const today = () => { const d = new Date(); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; };
+const monthStart = () => { const d = new Date(); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-01`; };
+const isMissing = (e: any) => e?.code === '42P01' || e?.code === 'PGRST205' || /schema cache|does not exist/i.test(e?.message ?? '');
+
+type ModalState = { tip: GelirGiderTip; edit?: GelirGider } | null;
+
+export const KasaGelirGiderPage: React.FC<Props> = ({ onNavigate, initialModal }) => {
   const { firma, profile } = useAuth();
-  const [subTab, setSubTab] = useState<KasaSubTab>('defter');
-  const [loading, setLoading] = useState(true);
-  const [missingTables, setMissingTables] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
+  const firmaId = firma?.id;
   const [kasalar, setKasalar] = useState<Kasa[]>([]);
   const [hareketler, setHareketler] = useState<GelirGider[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [setup, setSetup] = useState(false);
+  const [err, setErr] = useState('');
+  const [tab, setTab] = useState<'defter' | 'kasalar' | 'ozet'>('defter');
+  const [from, setFrom] = useState(monthStart());
+  const [to, setTo] = useState(today());
+  const [fTip, setFTip] = useState('');
+  const [fKasa, setFKasa] = useState('');
+  const [q, setQ] = useState('');
+  const [modal, setModal] = useState<ModalState>(initialModal ? { tip: initialModal } : null);
+  const [kasaModal, setKasaModal] = useState<{ edit?: Kasa } | null>(null);
+  const [ozet, setOzet] = useState<Record<string, number> | null>(null);
 
-  // Filtreler
-  const now = new Date();
-  const defaultStart = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
-  const defaultEnd = now.toISOString().split('T')[0];
-
-  const [startDate, setStartDate] = useState(defaultStart);
-  const [endDate, setEndDate] = useState(defaultEnd);
-  const [tipFilter, setTipFilter] = useState<'all' | GelirGiderTip>('all');
-  const [kasaFilter, setKasaFilter] = useState<string>('all');
-  const [searchQuery, setSearchQuery] = useState('');
-
-  // Modallar
-  const [formModalOpen, setFormModalOpen] = useState(false);
-  const [formModalTip, setFormModalTip] = useState<GelirGiderTip>('gelir');
-  const [editingHareket, setEditingHareket] = useState<GelirGider | null>(null);
-
-  const [kasaModalOpen, setKasaModalOpen] = useState(false);
-  const [editingKasa, setEditingKasa] = useState<Kasa | null>(null);
-
-  const [sqlModalOpen, setSqlModalOpen] = useState(false);
-
-  const loadData = useCallback(async () => {
-    if (!firma?.id) return;
-    try {
-      setLoading(true);
-      setError(null);
-
-      // Kasalar
-      const { data: kasaData, error: kasaErr } = await supabase
-        .from('kasalar')
-        .select('*')
-        .eq('firma_id', firma.id)
-        .order('created_at', { ascending: true });
-
-      if (kasaErr) {
-        if (isMissingKasaTableError(kasaErr)) {
-          setMissingTables(true);
-          setKasalar([]);
-          setHareketler([]);
-          return;
-        }
-        throw kasaErr;
-      }
-
-      setMissingTables(false);
-      setKasalar((kasaData || []) as Kasa[]);
-
-      // Gelir / Gider / Virman
-      let ggQuery = supabase
-        .from('gelir_giderler')
-        .select('*, kasalar:kasa_id(ad, tur), hedef_kasalar:hedef_kasa_id(ad, tur), profiles:yapan_user_id(ad_soyad)')
-        .eq('firma_id', firma.id)
-        .gte('tarih', startDate)
-        .lte('tarih', endDate)
-        .order('tarih', { ascending: false })
-        .order('created_at', { ascending: false });
-
-      if (tipFilter !== 'all') {
-        ggQuery = ggQuery.eq('tip', tipFilter);
-      }
-      if (kasaFilter !== 'all') {
-        ggQuery = ggQuery.or(`kasa_id.eq.${kasaFilter},hedef_kasa_id.eq.${kasaFilter}`);
-      }
-
-      const { data: ggData, error: ggErr } = await ggQuery.limit(300);
-      if (ggErr) {
-        if (isMissingKasaTableError(ggErr)) {
-          setMissingTables(true);
-          setHareketler([]);
-          return;
-        }
-        throw ggErr;
-      }
-
-      setHareketler((ggData || []) as GelirGider[]);
-    } catch (err) {
-      setError(handleSupabaseError(err, 'Kasa ve gelir-gider verileri yüklenemedi.'));
-    } finally {
+  const load = useCallback(async () => {
+    if (!firmaId) return;
+    setLoading(true);
+    setErr('');
+    const k = await supabase.from('kasalar').select('*').eq('firma_id', firmaId).order('created_at');
+    if (k.error) {
       setLoading(false);
+      if (isMissing(k.error)) setSetup(true); else setErr(handleSupabaseError(k.error));
+      return;
     }
-  }, [firma?.id, startDate, endDate, tipFilter, kasaFilter]);
+    const g = await supabase.from('gelir_giderler').select('*').eq('firma_id', firmaId)
+      .gte('tarih', from).lte('tarih', to).order('tarih', { ascending: false }).order('created_at', { ascending: false }).limit(1000);
+    if (g.error) setErr(handleSupabaseError(g.error));
+    setKasalar((k.data ?? []) as Kasa[]);
+    setHareketler((g.data ?? []) as GelirGider[]);
+    setLoading(false);
+  }, [firmaId, from, to]);
+  useEffect(() => { load(); }, [load]);
 
   useEffect(() => {
-    loadData();
-  }, [loadData]);
+    if (tab !== 'ozet' || !firmaId) return;
+    (async () => {
+      const { data } = await supabase.from('islemler').select('tip,tur,tutar')
+        .eq('firma_id', firmaId).eq('iptal', false).in('durum', ['aktif', 'aktarildi']).in('tur', ['nakit', 'kredi_karti'])
+        .gte('tarih', from).lte('tarih', to).limit(5000);
+      const o: Record<string, number> = {};
+      (data ?? []).forEach((r: any) => { const key = `${r.tip}_${r.tur}`; o[key] = (o[key] ?? 0) + Number(r.tutar); });
+      setOzet(o);
+    })();
+  }, [tab, firmaId, from, to]);
 
-  useEffect(() => {
-    if (initialAction && !missingTables && !loading) {
-      setEditingHareket(null);
-      setFormModalTip(initialAction);
-      setFormModalOpen(true);
-      onConsumeInitialAction?.();
-    }
-  }, [initialAction, missingTables, loading, onConsumeInitialAction]);
+  const kasaAd = useMemo(() => Object.fromEntries(kasalar.map((k) => [k.id, k.ad])), [kasalar]);
+  const aktifKasalar = kasalar.filter((k) => k.aktif);
+  const liste = hareketler.filter((h) =>
+    (!fTip || h.tip === fTip) && (!fKasa || h.kasa_id === fKasa || h.hedef_kasa_id === fKasa) &&
+    (!q || `${h.kategori ?? ''} ${h.aciklama ?? ''} ${h.belge_no ?? ''}`.toLowerCase().includes(q.toLowerCase())));
+  const sum = (tip: GelirGiderTip) => hareketler.filter((h) => h.tip === tip).reduce((a, h) => a + Number(h.tutar), 0);
+  const nakitTop = kasalar.filter((k) => k.aktif && k.tur === 'nakit').reduce((a, k) => a + Number(k.guncel_bakiye), 0);
+  const bankaTop = kasalar.filter((k) => k.aktif && k.tur !== 'nakit').reduce((a, k) => a + Number(k.guncel_bakiye), 0);
+  const gelir = sum('gelir');
+  const gider = sum('gider');
 
-  const openNewHareket = (tip: GelirGiderTip) => {
-    if (missingTables) {
-      setSqlModalOpen(true);
-      return;
-    }
-    setEditingHareket(null);
-    setFormModalTip(tip);
-    setFormModalOpen(true);
+  const openModal = (tip: GelirGiderTip, edit?: GelirGider) => {
+    if (aktifKasalar.length === 0) { setErr('Önce bir kasa veya banka hesabı ekleyin.'); setKasaModal({}); return; }
+    if (tip === 'virman' && aktifKasalar.length < 2) { setErr('Virman için en az iki aktif kasa gerekir.'); return; }
+    setModal({ tip, edit });
+  };
+  const sil = async (h: GelirGider) => {
+    if (!window.confirm('Bu kayıt silinsin mi? Kasa bakiyesi otomatik düzeltilir.')) return;
+    const { error } = await supabase.from('gelir_giderler').delete().eq('id', h.id);
+    if (error) setErr(handleSupabaseError(error)); else load();
+  };
+  const silKasa = async (k: Kasa) => {
+    if (!window.confirm(`"${k.ad}" silinsin mi?`)) return;
+    const { error } = await supabase.from('kasalar').delete().eq('id', k.id);
+    if (error) setErr(error.code === '23503' ? 'Bu kasada hareket kayıtları var. Silmek yerine pasif yapın.' : handleSupabaseError(error)); else load();
   };
 
-  const handleDeleteHareket = async (item: GelirGider) => {
-    if (!window.confirm(`${item.kategori} (${formatCurrency(item.tutar)}) kaydını silmek istediğinize emin misiniz? Kasa bakiyesi otomatik güncellenecektir.`)) {
-      return;
-    }
-    try {
-      await syncKasaBalanceAfterDelete(item);
-      await loadData();
-    } catch (err) {
-      setError(handleSupabaseError(err, 'Kayıt silinemedi.'));
-    }
-  };
+  const rowsFor = () => liste.map((h) => [formatDate(h.tarih), TIP_AD[h.tip], h.tip === 'virman' ? `${kasaAd[h.kasa_id] ?? ''} → ${kasaAd[h.hedef_kasa_id ?? ''] ?? ''}` : kasaAd[h.kasa_id] ?? '', h.kategori ?? '', h.aciklama ?? '', h.belge_no ?? '', Number(h.tutar)] as (string | number)[]);
+  const HEAD = ['Tarih', 'Tip', 'Kasa', 'Kategori', 'Açıklama', 'Belge No', 'Tutar'];
 
-  const handleDeleteKasa = async (kasa: Kasa) => {
-    if (!window.confirm(`"${kasa.ad}" hesabını silmek istediğinize emin misiniz? (İçinde hareket varsa silinemez)`)) {
-      return;
-    }
-    try {
-      const { error: delErr } = await supabase.from('kasalar').delete().eq('id', kasa.id);
-      if (delErr) throw delErr;
-      await loadData();
-    } catch (err) {
-      setError(handleSupabaseError(err, 'Kasa silinemedi. Önce bağlı gelir/gider kayıtlarını silmelisiniz.'));
-    }
-  };
-
-  const filteredHareketler = useMemo(() => {
-    const q = searchQuery.trim().toLowerCase();
-    if (!q) return hareketler;
-    return hareketler.filter((h) =>
-      `${h.kategori} ${h.aciklama || ''} ${h.belge_no || ''} ${h.kasalar?.ad || ''} ${h.hedef_kasalar?.ad || ''}`
-        .toLowerCase()
-        .includes(q)
+  if (profile?.rol === 'plasiyer') {
+    return <div className="max-w-xl mx-auto p-6 text-center text-gray-300"><ShieldAlert className="w-8 h-8 text-amber-400 mx-auto mb-3" />Bu bölüm ana hesap ve muhasebeci içindir.</div>;
+  }
+  if (setup) {
+    return (
+      <div className={card + ' max-w-xl mx-auto text-sm text-gray-300'}>
+        <p className="font-bold text-white mb-2">Kasa modülü için veritabanı kurulumu gerekli</p>
+        Süper admin, Supabase SQL Editor'da <b>kasa_kurulum.sql</b> dosyasını bir kez çalıştırmalıdır. Sonra bu sayfayı yenileyin.
+      </div>
     );
-  }, [hareketler, searchQuery]);
+  }
 
-  const totals = useMemo(() => {
-    const nakitKasa = kasalar
-      .filter((k) => k.aktif && k.tur === 'nakit')
-      .reduce((acc, k) => acc + Number(k.guncel_bakiye || 0), 0);
-    const bankaPos = kasalar
-      .filter((k) => k.aktif && (k.tur === 'banka' || k.tur === 'pos'))
-      .reduce((acc, k) => acc + Number(k.guncel_bakiye || 0), 0);
-    const donemGelir = filteredHareketler
-      .filter((h) => h.tip === 'gelir')
-      .reduce((acc, h) => acc + Number(h.tutar || 0), 0);
-    const donemGider = filteredHareketler
-      .filter((h) => h.tip === 'gider')
-      .reduce((acc, h) => acc + Number(h.tutar || 0), 0);
-
-    return {
-      nakitKasa,
-      bankaPos,
-      donemGelir,
-      donemGider,
-      netFark: donemGelir - donemGider,
-    };
-  }, [kasalar, filteredHareketler]);
-
-  const handleExportExcel = () => {
-    const headers = ['Tarih', 'Tip', 'Kategori', 'Kasa / Hesap', 'Hedef Kasa', 'Belge No', 'Açıklama', 'Tutar (₺)'];
-    const rows = filteredHareketler.map((h) => [
-      formatDate(h.tarih),
-      h.tip.toUpperCase(),
-      h.kategori,
-      h.kasalar?.ad || '-',
-      h.hedef_kasalar?.ad || '-',
-      h.belge_no || '-',
-      h.aciklama || '-',
-      Number(h.tutar).toFixed(2),
-    ]);
-    exportToExcel(`kasa_gelir_gider_${startDate}_${endDate}`, headers, rows);
-  };
-
-  const handleExportPdf = () => {
-    const headers = ['Tarih', 'Tip', 'Kategori', 'Kasa', 'Açıklama', 'Tutar'];
-    const rows = filteredHareketler.map((h) => [
-      formatDate(h.tarih),
-      h.tip.toUpperCase(),
-      h.kategori,
-      h.tip === 'virman' ? `${h.kasalar?.ad || ''} → ${h.hedef_kasalar?.ad || ''}` : h.kasalar?.ad || '-',
-      h.aciklama || h.belge_no || '-',
-      formatCurrency(h.tutar),
-    ]);
-    printPdfReport(
-      'Kasa & Gelir-Gider Raporu',
-      `${firma?.unvan || 'Firma'} (${formatDate(startDate)} - ${formatDate(endDate)})`,
-      headers,
-      rows,
-      [
-        { label: 'Dönem Gelirleri', value: formatCurrency(totals.donemGelir) },
-        { label: 'Dönem Giderleri', value: formatCurrency(totals.donemGider) },
-        { label: 'Net Fark', value: formatCurrency(totals.netFark) },
-        { label: 'Toplam Kasa + Banka', value: formatCurrency(totals.nakitKasa + totals.bankaPos) },
-      ],
-      firma?.logo_data
-    );
-  };
+  const tabBtn = (k: typeof tab, l: string) => (
+    <button key={k} onClick={() => setTab(k)} className={'px-4 py-2 rounded-xl text-sm font-semibold ' + (tab === k ? 'bg-teal-400 text-[#0a0e13]' : 'bg-white/5 text-gray-300')}>{l}</button>
+  );
+  const kpi = (l: string, v: string, sub?: string, c = 'text-white') => (
+    <div className={card}><p className="text-[11px] text-gray-400 uppercase font-semibold">{l}</p><p className={'text-xl font-black mt-1 ' + c}>{v}</p>{sub && <p className="text-xs text-gray-400 mt-1">{sub}</p>}</div>
+  );
 
   return (
-    <div className="space-y-6">
-      {/* ÜST BAŞLIK & KASA AKSİYONLARI */}
-      <div className="bg-[#111820] border border-white/[0.08] rounded-2xl p-4 sm:p-5 space-y-4 shadow-xl">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-          <div>
-            <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-[11px] font-bold uppercase tracking-wider mb-1.5">
-              <Wallet className="w-3 h-3" />
-              <span>Gelir / Gider &amp; Kasa Modülü</span>
-            </div>
-            <h1 className="text-xl sm:text-2xl font-extrabold text-white tracking-tight">
-              Kasa, Gelir &amp; Gider Yönetimi
-            </h1>
-            <p className="text-xs text-gray-400 mt-0.5">
-              Şirket içi gelir, gider ve nakit/banka/POS hesap bakiyelerinizi tek ekrandan takip edin.
-            </p>
-          </div>
-
-          <button
-            type="button"
-            onClick={() => setSqlModalOpen(true)}
-            className="self-start sm:self-auto px-3 py-2 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-gray-300 text-xs font-semibold flex items-center gap-1.5 transition"
-          >
-            <Database className="w-3.5 h-3.5 text-amber-400" />
-            <span>Veritabanı SQL</span>
-          </button>
-        </div>
-
-        <div className="flex flex-wrap gap-2 pt-2 border-t border-white/[0.06]">
-          <button
-            type="button"
-            onClick={() => openNewHareket('gelir')}
-            data-testid="kasa_add_gelir_btn"
-            className="min-h-[44px] px-4 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-extrabold text-xs flex items-center gap-1.5 transition shadow-md"
-          >
-            <TrendingUp className="w-4 h-4" />
-            <span>+ Gelir Ekle</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => openNewHareket('gider')}
-            data-testid="kasa_add_gider_btn"
-            className="min-h-[44px] px-4 py-2 rounded-xl bg-rose-500 hover:bg-rose-400 text-white font-extrabold text-xs flex items-center gap-1.5 transition shadow-md"
-          >
-            <TrendingDown className="w-4 h-4" />
-            <span>- Gider / Masraf Ekle</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => openNewHareket('virman')}
-            data-testid="kasa_add_virman_btn"
-            className="min-h-[44px] px-3.5 py-2 rounded-xl bg-sky-500/20 hover:bg-sky-500/30 text-sky-300 border border-sky-500/40 font-bold text-xs flex items-center gap-1.5 transition"
-          >
-            <ArrowLeftRight className="w-4 h-4" />
-            <span>Kasa Virman</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              if (missingTables) setSqlModalOpen(true);
-              else {
-                setEditingKasa(null);
-                setKasaModalOpen(true);
-              }
-            }}
-            data-testid="kasa_add_account_btn"
-            className="min-h-[44px] px-3.5 py-2 rounded-xl bg-white/5 hover:bg-white/10 text-gray-200 border border-white/15 font-bold text-xs flex items-center gap-1.5 transition"
-          >
-            <Plus className="w-4 h-4 text-teal-400" />
-            <span>Yeni Kasa / Banka</span>
-          </button>
-        </div>
-      </div>
-
-      {/* TABLOLAR HENÜZ KURULMADIYSA YÖNLENDİRME */}
-      {missingTables && (
-        <div className="bg-amber-500/10 border border-amber-500/40 rounded-2xl p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-          <div className="flex items-start gap-3">
-            <AlertTriangle className="w-6 h-6 text-amber-400 shrink-0 mt-0.5" />
-            <div>
-              <h3 className="font-extrabold text-sm text-amber-300">
-                Supabase Kurulumu Gerekli (`kasalar` ve `gelir_giderler` tabloları henüz yok)
-              </h3>
-              <p className="text-xs text-gray-300 mt-1">
-                Kasa bakiyeleri ve gelir/gider kayıtlarını bulutta saklamak için aşağıdaki SQL kurulumunu Supabase SQL Editor’de bir kez çalıştırın.
-              </p>
-            </div>
-          </div>
-          <div className="flex items-center gap-2 shrink-0">
-            <button
-              type="button"
-              onClick={() => setSqlModalOpen(true)}
-              className="px-4 py-2.5 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 font-extrabold text-xs flex items-center gap-1.5"
-            >
-              <Database className="w-4 h-4" />
-              <span>Kurulum SQL’ini Aç</span>
-            </button>
-            <button
-              type="button"
-              onClick={loadData}
-              className="px-3 py-2.5 rounded-xl bg-white/10 hover:bg-white/15 text-white font-bold text-xs flex items-center gap-1.5"
-            >
-              <RefreshCw className="w-4 h-4" />
-              <span>Yenile</span>
-            </button>
+    <div className="max-w-6xl mx-auto w-full space-y-5">
+      <div className="grid md:grid-cols-2 gap-3">
+        <div className={card}>
+          <p className="text-xs font-bold text-white mb-3">Şirket İçi Kasa & Masraf Girişi <span className="text-gray-400 font-normal">(cari bakiyesini etkilemez)</span></p>
+          <div className="flex flex-wrap gap-2">
+            <button onClick={() => openModal('gelir')} className="px-3 py-2 rounded-xl text-xs font-bold bg-teal-400 text-[#0a0e13] inline-flex items-center gap-1"><Plus className="w-3.5 h-3.5" />Gelir Ekle</button>
+            <button onClick={() => openModal('gider')} className="px-3 py-2 rounded-xl text-xs font-bold bg-orange-500/20 text-orange-300 border border-orange-500/30 inline-flex items-center gap-1"><Minus className="w-3.5 h-3.5" />Gider / Masraf Ekle</button>
+            <button onClick={() => openModal('virman')} className="px-3 py-2 rounded-xl text-xs font-bold bg-white/10 text-white">Kasa Virman</button>
+            <button onClick={() => setKasaModal({})} className="px-3 py-2 rounded-xl text-xs font-bold bg-white/10 text-white">Yeni Kasa / Banka</button>
           </div>
         </div>
-      )}
-
-      {error && (
-        <div className="p-4 rounded-xl bg-red-500/10 border border-red-500/30 text-red-300 text-xs">
-          {error}
-        </div>
-      )}
-
-      {/* 4 ÖZET KPI KARTI */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <div className="bg-[#111820] border border-white/[0.07] rounded-2xl p-4">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-[11px] font-bold text-gray-400 uppercase">Nakit Kasalar</span>
-            <Banknote className="w-4 h-4 text-teal-400" />
-          </div>
-          <div className="text-xl font-black text-white">{formatCurrency(totals.nakitKasa)}</div>
-          <div className="text-[11px] text-gray-400 mt-1">
-            {kasalar.filter((k) => k.tur === 'nakit').length} nakit kasa toplamı
-          </div>
-        </div>
-
-        <div className="bg-[#111820] border border-white/[0.07] rounded-2xl p-4">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-[11px] font-bold text-gray-400 uppercase">Banka & POS</span>
-            <Building2 className="w-4 h-4 text-sky-400" />
-          </div>
-          <div className="text-xl font-black text-white">{formatCurrency(totals.bankaPos)}</div>
-          <div className="text-[11px] text-gray-400 mt-1">
-            {kasalar.filter((k) => k.tur !== 'nakit').length} banka/POS hesabı
-          </div>
-        </div>
-
-        <div className="bg-[#111820] border border-emerald-500/20 rounded-2xl p-4">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-[11px] font-bold text-emerald-300 uppercase">Dönem Gelirler</span>
-            <TrendingUp className="w-4 h-4 text-emerald-400" />
-          </div>
-          <div className="text-xl font-black text-emerald-400">{formatCurrency(totals.donemGelir)}</div>
-          <div className="text-[11px] text-gray-400 mt-1">Seçili tarih aralığı kasa girişi</div>
-        </div>
-
-        <div className="bg-[#111820] border border-rose-500/20 rounded-2xl p-4">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-[11px] font-bold text-rose-300 uppercase">Dönem Giderler</span>
-            <TrendingDown className="w-4 h-4 text-rose-400" />
-          </div>
-          <div className="text-xl font-black text-rose-400">{formatCurrency(totals.donemGider)}</div>
-          <div className="text-[11px] text-gray-400 mt-1">
-            Net Fark:{' '}
-            <span className={totals.netFark >= 0 ? 'text-emerald-400 font-bold' : 'text-rose-400 font-bold'}>
-              {formatCurrency(totals.netFark)}
-            </span>
+        <div className={card}>
+          <p className="text-xs font-bold text-white mb-3">Cari Makbuz Girişi <span className="text-gray-400 font-normal">(müşteri/tedarikçi hesabı)</span></p>
+          <div className="flex flex-wrap gap-2">
+            <button onClick={() => onNavigate('tahsilat')} className="px-3 py-2 rounded-xl text-xs font-bold bg-teal-400/15 text-teal-300 border border-teal-400/30 inline-flex items-center gap-1"><ArrowDownLeft className="w-3.5 h-3.5" />Tahsilat Makbuzu</button>
+            <button onClick={() => onNavigate('tediye')} className="px-3 py-2 rounded-xl text-xs font-bold bg-orange-500/15 text-orange-300 border border-orange-500/30 inline-flex items-center gap-1"><ArrowUpRight className="w-3.5 h-3.5" />Tediye Makbuzu</button>
           </div>
         </div>
       </div>
 
-      {/* ALT SEKMELER */}
-      <div className="flex flex-wrap items-center gap-2 border-b border-white/[0.08] pb-3">
-        <button
-          type="button"
-          onClick={() => setSubTab('defter')}
-          data-testid="kasa_tab_defter"
-          className={`px-4 py-2.5 rounded-xl text-xs font-bold transition ${
-            subTab === 'defter'
-              ? 'bg-teal-400 text-slate-950 shadow'
-              : 'bg-[#111820] text-gray-300 border border-white/10 hover:text-white'
-          }`}
-        >
-          Gelir & Gider Defteri ({filteredHareketler.length})
-        </button>
-        <button
-          type="button"
-          onClick={() => setSubTab('kasalar')}
-          data-testid="kasa_tab_kasalar"
-          className={`px-4 py-2.5 rounded-xl text-xs font-bold transition ${
-            subTab === 'kasalar'
-              ? 'bg-teal-400 text-slate-950 shadow'
-              : 'bg-[#111820] text-gray-300 border border-white/10 hover:text-white'
-          }`}
-        >
-          Kasalar & Hesaplar ({kasalar.length})
-        </button>
+      {err && <div className="rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-300">{err}</div>}
+
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        {kpi('Nakit Kasalar Toplamı', formatCurrency(nakitTop))}
+        {kpi('Banka & POS Toplamı', formatCurrency(bankaTop))}
+        {kpi('Dönem Gelirler', formatCurrency(gelir), undefined, 'text-teal-300')}
+        {kpi('Dönem Giderler', formatCurrency(gider), 'Net: ' + formatCurrency(gelir - gider), 'text-orange-300')}
       </div>
 
-      {/* SEKME 1: GELİR & GİDER DEFTERİ */}
-      {subTab === 'defter' && (
-        <div className="bg-[#111820] border border-white/[0.07] rounded-2xl overflow-hidden shadow-xl">
-          <div className="p-4 border-b border-white/[0.07] flex flex-col lg:flex-row lg:items-center justify-between gap-3">
-            <div className="flex flex-wrap items-center gap-2">
-              <input
-                type="date"
-                value={startDate}
-                onChange={(e) => setStartDate(e.target.value)}
-                className="bg-[#0b1017] border border-slate-700 rounded-xl px-3 py-2 text-xs text-white"
-              />
-              <span className="text-gray-500 text-xs">—</span>
-              <input
-                type="date"
-                value={endDate}
-                onChange={(e) => setEndDate(e.target.value)}
-                className="bg-[#0b1017] border border-slate-700 rounded-xl px-3 py-2 text-xs text-white"
-              />
+      <div className="flex flex-wrap gap-2">
+        {tabBtn('defter', 'Gelir & Gider Defteri')}{tabBtn('kasalar', 'Kasalar & Hesaplar')}{tabBtn('ozet', 'Tahsilat / Tediye Kasa Özeti')}
+      </div>
 
-              <select
-                value={tipFilter}
-                onChange={(e) => setTipFilter(e.target.value as 'all' | GelirGiderTip)}
-                className="bg-[#0b1017] border border-slate-700 rounded-xl px-3 py-2 text-xs text-white"
-              >
-                <option value="all">Tüm Tipler</option>
-                <option value="gelir">Sadece Gelir</option>
-                <option value="gider">Sadece Gider</option>
-                <option value="virman">Sadece Virman</option>
-              </select>
-
-              <select
-                value={kasaFilter}
-                onChange={(e) => setKasaFilter(e.target.value)}
-                className="bg-[#0b1017] border border-slate-700 rounded-xl px-3 py-2 text-xs text-white"
-              >
-                <option value="all">Tüm Kasalar</option>
-                {kasalar.map((k) => (
-                  <option key={k.id} value={k.id}>
-                    {k.ad}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div className="flex flex-wrap items-center gap-2">
-              <div className="relative flex-1 sm:w-52">
-                <Search className="w-3.5 h-3.5 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2" />
-                <input
-                  type="text"
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Kategori, açıklama ara..."
-                  className="w-full bg-[#0b1017] border border-slate-700 rounded-xl pl-8 pr-3 py-2 text-xs text-white"
-                />
-              </div>
-              <button
-                type="button"
-                onClick={handleExportExcel}
-                disabled={filteredHareketler.length === 0}
-                className="px-3 py-2 rounded-xl bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/30 text-xs font-bold flex items-center gap-1.5 disabled:opacity-40"
-              >
-                <Download className="w-3.5 h-3.5" />
-                <span>Excel</span>
-              </button>
-              <button
-                type="button"
-                onClick={handleExportPdf}
-                disabled={filteredHareketler.length === 0}
-                className="px-3 py-2 rounded-xl bg-white/5 hover:bg-white/10 text-gray-200 border border-white/15 text-xs font-bold flex items-center gap-1.5 disabled:opacity-40"
-              >
-                <Printer className="w-3.5 h-3.5" />
-                <span>PDF</span>
-              </button>
-            </div>
-          </div>
-
-          {loading ? (
-            <div className="p-10 text-center text-xs text-gray-400">Kayıtlar yükleniyor...</div>
-          ) : filteredHareketler.length === 0 ? (
-            <div className="p-10 text-center space-y-3">
-              <Wallet className="w-10 h-10 text-gray-600 mx-auto" />
-              <p className="text-xs text-gray-400">
-                Seçili tarih aralığında şirket içi gelir, gider veya virman kaydı bulunmuyor.
-              </p>
-              <div className="flex items-center justify-center gap-2 flex-wrap">
-                <button
-                  type="button"
-                  onClick={() => openNewHareket('gelir')}
-                  className="px-4 py-2 rounded-xl bg-emerald-500 text-slate-950 font-bold text-xs"
-                >
-                  + Gelir Ekle
-                </button>
-                <button
-                  type="button"
-                  onClick={() => openNewHareket('gider')}
-                  className="px-4 py-2 rounded-xl bg-rose-500 text-white font-bold text-xs"
-                >
-                  - Gider Ekle
-                </button>
-              </div>
-            </div>
-          ) : (
-            <div className="divide-y divide-white/[0.05]">
-              {filteredHareketler.map((item) => (
-                <div
-                  key={item.id}
-                  className="p-4 hover:bg-white/[0.02] flex flex-col sm:flex-row sm:items-center justify-between gap-3"
-                >
-                  <div className="flex items-start gap-3 min-w-0">
-                    <div
-                      className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 border ${
-                        item.tip === 'gelir'
-                          ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30'
-                          : item.tip === 'gider'
-                          ? 'bg-rose-500/15 text-rose-400 border-rose-500/30'
-                          : 'bg-sky-500/15 text-sky-400 border-sky-500/30'
-                      }`}
-                    >
-                      {item.tip === 'gelir' ? (
-                        <TrendingUp className="w-5 h-5" />
-                      ) : item.tip === 'gider' ? (
-                        <TrendingDown className="w-5 h-5" />
-                      ) : (
-                        <ArrowLeftRight className="w-5 h-5" />
-                      )}
-                    </div>
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <span className="text-sm font-bold text-white">{item.kategori}</span>
-                        <span
-                          className={`text-[10px] font-extrabold uppercase px-2 py-0.5 rounded-full ${
-                            item.tip === 'gelir'
-                              ? 'bg-emerald-500/15 text-emerald-300'
-                              : item.tip === 'gider'
-                              ? 'bg-rose-500/15 text-rose-300'
-                              : 'bg-sky-500/15 text-sky-300'
-                          }`}
-                        >
-                          {item.tip}
-                        </span>
-                        {item.belge_no && (
-                          <span className="text-[10px] font-mono text-gray-400 bg-white/5 px-2 py-0.5 rounded">
-                            {item.belge_no}
-                          </span>
-                        )}
-                      </div>
-                      <div className="text-xs text-gray-400 mt-1 flex flex-wrap items-center gap-2">
-                        <span>{formatDate(item.tarih)}</span>
-                        <span>•</span>
-                        <span className="text-teal-300 font-medium">
-                          {item.tip === 'virman'
-                            ? `${item.kasalar?.ad || '-'} → ${item.hedef_kasalar?.ad || '-'}`
-                            : item.kasalar?.ad || '-'}
-                        </span>
-                        {item.aciklama && (
-                          <>
-                            <span>•</span>
-                            <span className="text-gray-300 truncate max-w-xs">{item.aciklama}</span>
-                          </>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="flex items-center justify-between sm:justify-end gap-3">
-                    <span
-                      className={`text-base font-black font-mono ${
-                        item.tip === 'gelir'
-                          ? 'text-emerald-400'
-                          : item.tip === 'gider'
-                          ? 'text-rose-400'
-                          : 'text-sky-400'
-                      }`}
-                    >
-                      {item.tip === 'gelir' ? '+' : item.tip === 'gider' ? '-' : ''}
-                      {formatCurrency(item.tutar)}
-                    </span>
-                    <div className="flex items-center gap-1">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setEditingHareket(item);
-                          setFormModalTip(item.tip);
-                          setFormModalOpen(true);
-                        }}
-                        title="Düzenle"
-                        className="p-2 rounded-lg text-gray-400 hover:text-teal-400 hover:bg-white/5"
-                      >
-                        <Edit2 className="w-4 h-4" />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleDeleteHareket(item)}
-                        title="Sil"
-                        className="p-2 rounded-lg text-gray-400 hover:text-rose-400 hover:bg-rose-500/10"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
+      {tab !== 'kasalar' && (
+        <div className={card + ' grid grid-cols-2 md:grid-cols-6 gap-2'}>
+          <label className="text-[11px] text-gray-400">Başlangıç<input type="date" className={inp + ' mt-1'} value={from} onChange={(e) => setFrom(e.target.value)} /></label>
+          <label className="text-[11px] text-gray-400">Bitiş<input type="date" className={inp + ' mt-1'} value={to} onChange={(e) => setTo(e.target.value)} /></label>
+          {tab === 'defter' && (
+            <>
+              <label className="text-[11px] text-gray-400">Tip<select className={inp + ' mt-1'} value={fTip} onChange={(e) => setFTip(e.target.value)}><option value="">Tümü</option><option value="gelir">Gelir</option><option value="gider">Gider</option><option value="virman">Virman</option></select></label>
+              <label className="text-[11px] text-gray-400">Kasa<select className={inp + ' mt-1'} value={fKasa} onChange={(e) => setFKasa(e.target.value)}><option value="">Tümü</option>{kasalar.map((k) => <option key={k.id} value={k.id}>{k.ad}</option>)}</select></label>
+              <label className="text-[11px] text-gray-400 col-span-2">Ara<input className={inp + ' mt-1'} placeholder="Kategori, açıklama, belge no" value={q} onChange={(e) => setQ(e.target.value)} /></label>
+            </>
           )}
         </div>
       )}
 
-      {/* SEKME 2: KASALAR & HESAPLAR */}
-      {subTab === 'kasalar' && (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {kasalar.map((kasa) => (
-            <div
-              key={kasa.id}
-              className="bg-[#111820] border border-white/[0.08] rounded-2xl p-5 flex flex-col justify-between gap-4"
-            >
-              <div>
-                <div className="flex items-start justify-between gap-2">
-                  <div className="flex items-center gap-2.5">
-                    <div className="w-10 h-10 rounded-xl bg-teal-500/15 border border-teal-500/30 text-teal-400 flex items-center justify-center">
-                      {kasa.tur === 'nakit' ? (
-                        <Banknote className="w-5 h-5" />
-                      ) : kasa.tur === 'banka' ? (
-                        <Building2 className="w-5 h-5" />
-                      ) : (
-                        <CreditCard className="w-5 h-5" />
-                      )}
-                    </div>
-                    <div>
-                      <h4 className="font-bold text-sm text-white">{kasa.ad}</h4>
-                      <span className="text-[11px] text-gray-400">{KASA_TUR_LABELS[kasa.tur]}</span>
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-1">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setEditingKasa(kasa);
-                        setKasaModalOpen(true);
-                      }}
-                      className="p-1.5 rounded-lg text-gray-400 hover:text-teal-400 hover:bg-white/5"
-                    >
-                      <Edit2 className="w-4 h-4" />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleDeleteKasa(kasa)}
-                      className="p-1.5 rounded-lg text-gray-400 hover:text-rose-400 hover:bg-rose-500/10"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
-                  </div>
-                </div>
+      {loading && <Loader2 className="w-5 h-5 text-teal-400 animate-spin" />}
 
-                {kasa.banka_adi && (
-                  <div className="text-xs text-gray-400 mt-3">Banka: {kasa.banka_adi}</div>
-                )}
-                {kasa.iban && (
-                  <div className="text-[11px] font-mono text-gray-500 mt-0.5 truncate">{kasa.iban}</div>
-                )}
+      {tab === 'defter' && !loading && (
+        <div className="space-y-2">
+          <div className="flex gap-2 justify-end">
+            <button onClick={() => exportToExcel(`gelir-gider-${from}-${to}`, HEAD, rowsFor())} className="px-3 py-2 rounded-xl text-xs font-bold bg-white/10 text-white">Excel (CSV)</button>
+            <button onClick={() => printPdfReport('Gelir & Gider Defteri', `${formatDate(from)} - ${formatDate(to)}`, HEAD, rowsFor(), [{ label: 'Gelir', value: formatCurrency(gelir) }, { label: 'Gider', value: formatCurrency(gider) }, { label: 'Net', value: formatCurrency(gelir - gider) }])} className="px-3 py-2 rounded-xl text-xs font-bold bg-white/10 text-white">PDF</button>
+          </div>
+          {liste.length === 0 && <p className="text-sm text-gray-400">Bu dönemde kayıt yok.</p>}
+          {liste.map((h) => (
+            <div key={h.id} className={card + ' flex flex-wrap items-center justify-between gap-3'}>
+              <div className="min-w-0">
+                <p className="text-sm font-bold text-white">
+                  <span className={h.tip === 'gelir' ? 'text-teal-300' : h.tip === 'gider' ? 'text-orange-300' : 'text-sky-300'}>{TIP_AD[h.tip]}</span>
+                  {h.kategori ? ` · ${h.kategori}` : ''}
+                </p>
+                <p className="text-xs text-gray-400 mt-0.5">
+                  {formatDate(h.tarih)} · {h.tip === 'virman' ? `${kasaAd[h.kasa_id] ?? ''} → ${kasaAd[h.hedef_kasa_id ?? ''] ?? ''}` : kasaAd[h.kasa_id]}
+                  {h.belge_no ? ` · Belge: ${h.belge_no}` : ''}{h.aciklama ? ` · ${h.aciklama}` : ''}
+                </p>
               </div>
-
-              <div className="pt-3 border-t border-white/[0.06] flex items-end justify-between">
-                <div>
-                  <div className="text-[10px] uppercase font-bold text-gray-400">Güncel Bakiye</div>
-                  <div
-                    className={`text-xl font-black font-mono ${
-                      Number(kasa.guncel_bakiye) >= 0 ? 'text-teal-400' : 'text-rose-400'
-                    }`}
-                  >
-                    {formatCurrency(kasa.guncel_bakiye)}
-                  </div>
-                </div>
-                <div className="flex gap-1.5">
-                  <button
-                    type="button"
-                    onClick={() => openNewHareket('gelir')}
-                    className="px-2.5 py-1.5 rounded-lg bg-emerald-500/15 text-emerald-300 text-[11px] font-bold"
-                  >
-                    + Gelir
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => openNewHareket('gider')}
-                    className="px-2.5 py-1.5 rounded-lg bg-rose-500/15 text-rose-300 text-[11px] font-bold"
-                  >
-                    - Gider
-                  </button>
-                </div>
+              <div className="flex items-center gap-2">
+                <span className="font-black text-white">{formatCurrency(Number(h.tutar))}</span>
+                <button aria-label="Düzenle" onClick={() => openModal(h.tip, h)} className="p-2 rounded-lg bg-white/10 text-gray-200"><Pencil className="w-4 h-4" /></button>
+                <button aria-label="Sil" onClick={() => sil(h)} className="p-2 rounded-lg bg-red-500/15 text-red-300"><Trash2 className="w-4 h-4" /></button>
               </div>
             </div>
           ))}
-
-          <button
-            type="button"
-            onClick={() => {
-              if (missingTables) setSqlModalOpen(true);
-              else {
-                setEditingKasa(null);
-                setKasaModalOpen(true);
-              }
-            }}
-            className="min-h-[170px] rounded-2xl border-2 border-dashed border-slate-700 hover:border-teal-400/60 bg-black/20 hover:bg-teal-500/5 flex flex-col items-center justify-center gap-2 text-gray-400 hover:text-teal-300 transition p-5"
-          >
-            <Plus className="w-8 h-8" />
-            <span className="text-xs font-bold">Yeni Kasa / Banka / POS Ekle</span>
-          </button>
         </div>
       )}
 
-      {/* MODALLAR */}
-      {firma?.id && (
-        <>
-          <GelirGiderFormModal
-            isOpen={formModalOpen}
-            initialTip={formModalTip}
-            editingItem={editingHareket}
-            kasalar={kasalar}
-            firmaId={firma.id}
-            userId={profile?.id}
-            onClose={() => {
-              setFormModalOpen(false);
-              setEditingHareket(null);
-            }}
-            onSaved={loadData}
-            onOpenNewKasa={() => {
-              setEditingKasa(null);
-              setKasaModalOpen(true);
-            }}
-          />
-
-          <KasaAccountModal
-            isOpen={kasaModalOpen}
-            editingKasa={editingKasa}
-            firmaId={firma.id}
-            onClose={() => {
-              setKasaModalOpen(false);
-              setEditingKasa(null);
-            }}
-            onSaved={loadData}
-          />
-        </>
+      {tab === 'kasalar' && !loading && (
+        <div className="grid md:grid-cols-2 gap-3">
+          {kasalar.length === 0 && <p className="text-sm text-gray-400">Henüz kasa yok. "Yeni Kasa / Banka" ile ekleyin.</p>}
+          {kasalar.map((k) => (
+            <div key={k.id} className={card + (k.aktif ? '' : ' opacity-60')}>
+              <div className="flex justify-between items-start">
+                <div><p className="font-bold text-white">{k.ad}</p><p className="text-xs text-gray-400">{TUR_AD[k.tur]}{k.banka_adi ? ` · ${k.banka_adi}` : ''}{k.aktif ? '' : ' · Pasif'}</p></div>
+                <p className="text-lg font-black text-white">{formatCurrency(Number(k.guncel_bakiye))}</p>
+              </div>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <button onClick={() => setModal({ tip: 'gelir', edit: undefined })} className="px-3 py-1.5 rounded-lg text-xs font-bold bg-teal-400/15 text-teal-300">+ Gelir</button>
+                <button onClick={() => setModal({ tip: 'gider', edit: undefined })} className="px-3 py-1.5 rounded-lg text-xs font-bold bg-orange-500/15 text-orange-300">− Gider</button>
+                <button onClick={() => setKasaModal({ edit: k })} className="px-3 py-1.5 rounded-lg text-xs font-bold bg-white/10 text-white">Düzenle</button>
+                <button onClick={() => silKasa(k)} className="px-3 py-1.5 rounded-lg text-xs font-bold bg-red-500/15 text-red-300">Sil</button>
+              </div>
+            </div>
+          ))}
+        </div>
       )}
 
-      <KasaSqlSetupModal isOpen={sqlModalOpen} onClose={() => setSqlModalOpen(false)} />
+      {tab === 'ozet' && (
+        <div className="space-y-3">
+          <p className="text-xs text-gray-400">Salt okunur özet. Yalnızca iptal edilmemiş ve plasiyerden aktarılmış (veya doğrudan alınmış) nakit ve kredi kartı makbuzları sayılır; masraf kayıtlarıyla karışmaz.</p>
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+            {kpi('Tahsilat · Nakit', formatCurrency(ozet?.tahsilat_nakit ?? 0), undefined, 'text-teal-300')}
+            {kpi('Tahsilat · Kredi Kartı', formatCurrency(ozet?.tahsilat_kredi_karti ?? 0), undefined, 'text-teal-300')}
+            {kpi('Tediye · Nakit', formatCurrency(ozet?.tediye_nakit ?? 0), undefined, 'text-orange-300')}
+            {kpi('Tediye · Kredi Kartı', formatCurrency(ozet?.tediye_kredi_karti ?? 0), undefined, 'text-orange-300')}
+          </div>
+          <button onClick={() => onNavigate('islemler')} className="px-4 py-2.5 rounded-xl bg-white/10 text-white text-sm font-bold">Tüm Makbuzlara Git</button>
+        </div>
+      )}
+
+      {modal && <HareketModal tip={modal.tip} edit={modal.edit} kasalar={aktifKasalar} firmaId={firmaId!} onClose={() => setModal(null)} onSaved={() => { setModal(null); load(); }} />}
+      {kasaModal && <KasaModal edit={kasaModal.edit} firmaId={firmaId!} onClose={() => setKasaModal(null)} onSaved={() => { setKasaModal(null); load(); }} />}
     </div>
+  );
+};
+
+const Shell: React.FC<{ title: string; onClose: () => void; children: React.ReactNode }> = ({ title, onClose, children }) => (
+  <div className="fixed inset-0 z-[80] bg-black/70 flex items-end sm:items-center justify-center p-3 overflow-y-auto" onClick={onClose}>
+    <div className="w-full max-w-lg rounded-2xl bg-[#0d131a] border border-white/10 p-5 pb-8 my-4" onClick={(e) => e.stopPropagation()}>
+      <h3 className="text-base font-black text-white mb-4">{title}</h3>
+      {children}
+    </div>
+  </div>
+);
+
+const HareketModal: React.FC<{ tip: GelirGiderTip; edit?: GelirGider; kasalar: Kasa[]; firmaId: string; onClose: () => void; onSaved: () => void }> = ({ tip, edit, kasalar, firmaId, onClose, onSaved }) => {
+  const [kasa, setKasa] = useState(edit?.kasa_id ?? kasalar[0]?.id ?? '');
+  const [hedef, setHedef] = useState(edit?.hedef_kasa_id ?? kasalar.find((k) => k.id !== (edit?.kasa_id ?? kasalar[0]?.id))?.id ?? '');
+  const [kat, setKat] = useState(edit?.kategori ?? '');
+  const [tutar, setTutar] = useState(edit ? String(edit.tutar) : '');
+  const [tarih, setTarih] = useState(edit?.tarih ?? today());
+  const [acik, setAcik] = useState(edit?.aciklama ?? '');
+  const [belge, setBelge] = useState(edit?.belge_no ?? '');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const kats = tip === 'gelir' ? GELIR_KAT : tip === 'gider' ? GIDER_KAT : [];
+
+  const save = async () => {
+    const t = Number(tutar.replace(',', '.'));
+    if (!(t > 0)) return setErr('Geçerli bir tutar girin.');
+    if (!kasa) return setErr('Kasa seçin.');
+    if (tip === 'virman' && (!hedef || hedef === kasa)) return setErr('Farklı bir hedef kasa seçin.');
+    setBusy(true);
+    const payload = { firma_id: firmaId, kasa_id: kasa, hedef_kasa_id: tip === 'virman' ? hedef : null, tip, kategori: kat.trim() || null, tutar: t, tarih, aciklama: acik.trim() || null, belge_no: belge.trim() || null };
+    const r = edit ? await supabase.from('gelir_giderler').update(payload).eq('id', edit.id) : await supabase.from('gelir_giderler').insert(payload);
+    setBusy(false);
+    if (r.error) return setErr(handleSupabaseError(r.error));
+    onSaved();
+  };
+  return (
+    <Shell title={(edit ? 'Düzenle · ' : '') + (tip === 'gelir' ? 'Gelir Ekle' : tip === 'gider' ? 'Gider / Masraf Ekle' : 'Kasa Virman')} onClose={onClose}>
+      <div className="space-y-3">
+        <label className="block text-xs text-gray-400">{tip === 'virman' ? 'Çıkış kasası' : 'Kasa'}
+          <select className={inp + ' mt-1'} value={kasa} onChange={(e) => setKasa(e.target.value)}>{kasalar.map((k) => <option key={k.id} value={k.id}>{k.ad} ({formatCurrency(Number(k.guncel_bakiye))})</option>)}</select></label>
+        {tip === 'virman' && (
+          <label className="block text-xs text-gray-400">Hedef kasa
+            <select className={inp + ' mt-1'} value={hedef} onChange={(e) => setHedef(e.target.value)}>{kasalar.filter((k) => k.id !== kasa).map((k) => <option key={k.id} value={k.id}>{k.ad}</option>)}</select></label>
+        )}
+        {kats.length > 0 && (
+          <div>
+            <p className="text-xs text-gray-400 mb-1">Kategori</p>
+            <div className="flex flex-wrap gap-1.5">{kats.map((c) => <button key={c} type="button" onClick={() => setKat(c)} className={'px-2.5 py-1 rounded-lg text-xs ' + (kat === c ? 'bg-teal-400 text-[#0a0e13] font-bold' : 'bg-white/5 text-gray-300')}>{c}</button>)}</div>
+            <input className={inp + ' mt-2'} placeholder="veya kendi kategoriniz" value={kat} onChange={(e) => setKat(e.target.value)} />
+          </div>
+        )}
+        <div className="grid grid-cols-2 gap-3">
+          <label className="text-xs text-gray-400">Tutar (₺)<input className={inp + ' mt-1'} inputMode="decimal" value={tutar} onChange={(e) => setTutar(e.target.value)} onFocus={(e) => e.currentTarget.scrollIntoView({ behavior: 'smooth', block: 'center' })} /></label>
+          <label className="text-xs text-gray-400">Tarih<input type="date" className={inp + ' mt-1'} value={tarih} onChange={(e) => setTarih(e.target.value)} /></label>
+        </div>
+        <input className={inp} placeholder="Belge no (isteğe bağlı)" value={belge} onChange={(e) => setBelge(e.target.value)} />
+        <input className={inp} placeholder="Açıklama (isteğe bağlı)" value={acik} onChange={(e) => setAcik(e.target.value)} onFocus={(e) => e.currentTarget.scrollIntoView({ behavior: 'smooth', block: 'center' })} />
+        {err && <p className="text-xs text-red-400">{err}</p>}
+        <div className="flex gap-2 pt-1">
+          <button onClick={save} disabled={busy} className="px-4 py-2.5 rounded-xl bg-teal-400 text-[#0a0e13] text-sm font-bold disabled:opacity-60">{busy ? 'Kaydediliyor…' : 'Kaydet'}</button>
+          <button onClick={onClose} className="px-4 py-2.5 rounded-xl bg-white/5 text-gray-300 text-sm font-semibold">Vazgeç</button>
+        </div>
+      </div>
+    </Shell>
+  );
+};
+
+const KasaModal: React.FC<{ edit?: Kasa; firmaId: string; onClose: () => void; onSaved: () => void }> = ({ edit, firmaId, onClose, onSaved }) => {
+  const [ad, setAd] = useState(edit?.ad ?? '');
+  const [tur, setTur] = useState<KasaTur>(edit?.tur ?? 'nakit');
+  const [banka, setBanka] = useState(edit?.banka_adi ?? '');
+  const [iban, setIban] = useState(edit?.iban ?? '');
+  const [acilis, setAcilis] = useState(edit ? String(edit.acilis_bakiyesi) : '0');
+  const [aktif, setAktif] = useState(edit?.aktif ?? true);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const save = async () => {
+    const a = Number(acilis.replace(',', '.'));
+    if (!ad.trim()) return setErr('Kasa adı girin.');
+    if (Number.isNaN(a)) return setErr('Açılış bakiyesi sayı olmalı.');
+    setBusy(true);
+    const payload = { firma_id: firmaId, ad: ad.trim(), tur, banka_adi: tur === 'nakit' ? null : banka.trim() || null, iban: tur === 'banka' ? iban.trim() || null : null, acilis_bakiyesi: a, aktif };
+    const r = edit ? await supabase.from('kasalar').update(payload).eq('id', edit.id) : await supabase.from('kasalar').insert(payload);
+    setBusy(false);
+    if (r.error) return setErr(handleSupabaseError(r.error));
+    onSaved();
+  };
+  return (
+    <Shell title={edit ? 'Kasa / Hesap Düzenle' : 'Yeni Kasa / Banka'} onClose={onClose}>
+      <div className="space-y-3">
+        <input className={inp} placeholder="Ad (örn. Merkez Kasa, Ziraat Bankası)" value={ad} onChange={(e) => setAd(e.target.value)} />
+        <select className={inp} value={tur} onChange={(e) => setTur(e.target.value as KasaTur)}><option value="nakit">Nakit kasa</option><option value="banka">Banka hesabı</option><option value="pos">POS</option></select>
+        {tur !== 'nakit' && <input className={inp} placeholder="Banka adı" value={banka} onChange={(e) => setBanka(e.target.value)} />}
+        {tur === 'banka' && <input className={inp} placeholder="IBAN (isteğe bağlı)" value={iban} onChange={(e) => setIban(e.target.value)} />}
+        <label className="block text-xs text-gray-400">Açılış bakiyesi (₺)<input className={inp + ' mt-1'} inputMode="decimal" value={acilis} onChange={(e) => setAcilis(e.target.value)} /></label>
+        <label className="flex items-center gap-2 text-sm text-gray-200 min-h-[44px]"><input type="checkbox" className="w-5 h-5 accent-teal-400" checked={aktif} onChange={(e) => setAktif(e.target.checked)} />Aktif</label>
+        {err && <p className="text-xs text-red-400">{err}</p>}
+        <div className="flex gap-2">
+          <button onClick={save} disabled={busy} className="px-4 py-2.5 rounded-xl bg-teal-400 text-[#0a0e13] text-sm font-bold disabled:opacity-60">{busy ? 'Kaydediliyor…' : 'Kaydet'}</button>
+          <button onClick={onClose} className="px-4 py-2.5 rounded-xl bg-white/5 text-gray-300 text-sm font-semibold">Vazgeç</button>
+        </div>
+      </div>
+    </Shell>
   );
 };
