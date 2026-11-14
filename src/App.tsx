@@ -9,18 +9,24 @@ import { IslemFormPage } from './pages/IslemFormPage';
 import { IslemlerPage } from './pages/IslemlerPage';
 import { PlasiyerPerformansPage } from './pages/PlasiyerPerformansPage';
 import { SuperAdminPage } from './pages/SuperAdminPage';
+import { KasaGelirGiderPage } from './pages/KasaGelirGiderPage';
+import { ModeSelectPage } from './pages/ModeSelectPage';
 import { MakbuzModal } from './components/makbuz/MakbuzModal';
 import { NotificationsModal } from './components/notifications/NotificationsModal';
-import { Islem } from './types/database';
+import { GelirGiderTip, Islem } from './types/database';
+
+type WorkspaceMode = 'choose' | 'tahsilat' | 'kasa';
 
 export const App: React.FC = () => {
   const { user, loading, isPeriodExpired } = useAuth();
+  const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>('choose');
   const [currentTab, setCurrentTab] = useState<string>('dashboard');
   const [activeMakbuz, setActiveMakbuz] = useState<Islem | null>(null);
   const [editingIslem, setEditingIslem] = useState<Islem | null>(null);
   const [editReturnTab, setEditReturnTab] = useState<string>('islemler');
   const [preSelectedCariId, setPreSelectedCariId] = useState<string | undefined>(undefined);
   const [openNewCari, setOpenNewCari] = useState<boolean>(false);
+  const [kasaInitialAction, setKasaInitialAction] = useState<GelirGiderTip | null>(null);
   const [isNotificationsOpen, setIsNotificationsOpen] = useState<boolean>(false);
   const [notificationRefreshKey, setNotificationRefreshKey] = useState<number>(0);
   const [receiptRefreshKey, setReceiptRefreshKey] = useState<number>(0);
@@ -119,6 +125,13 @@ export const App: React.FC = () => {
     };
   }, []);
 
+  // Kullanıcı değiştiğinde (çıkış/giriş) başlangıçta 2 seçenek ekranını göster
+  useEffect(() => {
+    if (!user?.id) {
+      setWorkspaceMode('choose');
+    }
+  }, [user?.id]);
+
   // Oturum kontrolü yüklenirken
   if (loading) {
     return (
@@ -142,8 +155,45 @@ export const App: React.FC = () => {
     return <SubscriptionLockScreen />;
   }
 
+  const handleSelectWorkspaceMode = (mode: 'tahsilat' | 'kasa') => {
+    setEditingIslem(null);
+    setKasaInitialAction(null);
+    setWorkspaceMode(mode);
+    setCurrentTab(mode === 'kasa' ? 'kasa' : 'dashboard');
+  };
+
+  if (workspaceMode === 'choose') {
+    return (
+      <>
+        <ModeSelectPage
+          onSelectMode={handleSelectWorkspaceMode}
+          onOpenNotifications={() => setIsNotificationsOpen(true)}
+          onOpenSuperAdmin={() => {
+            setWorkspaceMode('tahsilat');
+            setCurrentTab('superadmin');
+          }}
+        />
+        <NotificationsModal
+          isOpen={isNotificationsOpen}
+          onClose={() => setIsNotificationsOpen(false)}
+          onOpenMakbuz={(islem) => {
+            setWorkspaceMode('tahsilat');
+            setCurrentTab('islemler');
+            setActiveMakbuz(islem);
+          }}
+          onNavigateTab={(tab) => {
+            setWorkspaceMode(tab === 'kasa' ? 'kasa' : 'tahsilat');
+            setCurrentTab(tab);
+          }}
+          onBadgeUpdated={() => setNotificationRefreshKey((k) => k + 1)}
+        />
+      </>
+    );
+  }
+
   const handleSelectTab = (tab: string) => {
     setEditingIslem(null);
+    setKasaInitialAction(null);
     setCurrentTab(tab);
   };
 
@@ -159,6 +209,12 @@ export const App: React.FC = () => {
       setOpenNewCari(true);
     } else {
       setOpenNewCari(false);
+    }
+
+    if (tab === 'kasa' && state?.action) {
+      setKasaInitialAction(state.action as GelirGiderTip);
+    } else {
+      setKasaInitialAction(null);
     }
 
     setCurrentTab(tab);
@@ -180,6 +236,8 @@ export const App: React.FC = () => {
 
   return (
     <AppLayout
+      workspaceMode={workspaceMode}
+      onChangeWorkspaceMode={() => setWorkspaceMode('choose')}
       currentTab={currentTab}
       onSelectTab={handleSelectTab}
       onOpenNotifications={() => setIsNotificationsOpen(true)}
@@ -247,6 +305,13 @@ export const App: React.FC = () => {
             onOpenMakbuz={(islem) => setActiveMakbuz(islem)}
             onNavigate={handleNavigate}
             refreshKey={receiptRefreshKey}
+          />
+        )}
+
+        {currentTab === 'kasa' && (
+          <KasaGelirGiderPage
+            initialAction={kasaInitialAction}
+            onConsumeInitialAction={() => setKasaInitialAction(null)}
           />
         )}
 

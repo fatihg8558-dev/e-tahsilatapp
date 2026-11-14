@@ -311,45 +311,58 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   useEffect(() => {
     let mounted = true;
 
-    // Mevcut oturumu al
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      if (!mounted) return;
-      setSession(session);
-      const currentUser = session?.user ?? null;
+    const safetyTimer = window.setTimeout(() => {
+      if (mounted) setLoading(false);
+    }, 4500);
 
-      if (currentUser) {
-        setUser(currentUser);
-        setCachedData('tahsilatim_user', currentUser);
-        if (currentUser.email) {
-          try {
-            localStorage.setItem('tahsilatim_remembered_email', currentUser.email);
-          } catch {}
-        }
-        const hasCachedData = !!localStorage.getItem('tahsilatim_profile');
-        if (hasCachedData) {
-          // Önbellek zaten varsa ekranı bekletme, anında göster ve arka planda güncelle
-          setLoading(false);
-          fetchProfileAndFirma(currentUser.id);
+    // Mevcut oturumu al
+    supabase.auth
+      .getSession()
+      .then(({ data: { session } }) => {
+        if (!mounted) return;
+        window.clearTimeout(safetyTimer);
+        setSession(session);
+        const currentUser = session?.user ?? null;
+
+        if (currentUser) {
+          setUser(currentUser);
+          setCachedData('tahsilatim_user', currentUser);
+          if (currentUser.email) {
+            try {
+              localStorage.setItem('tahsilatim_remembered_email', currentUser.email);
+            } catch {}
+          }
+          const hasCachedData = !!localStorage.getItem('tahsilatim_profile');
+          if (hasCachedData) {
+            // Önbellek zaten varsa ekranı bekletme, anında göster ve arka planda güncelle
+            setLoading(false);
+            fetchProfileAndFirma(currentUser.id);
+          } else {
+            fetchProfileAndFirma(currentUser.id).finally(() => {
+              if (mounted) setLoading(false);
+            });
+          }
         } else {
-          fetchProfileAndFirma(currentUser.id).finally(() => {
-            if (mounted) setLoading(false);
-          });
+          // Eğer yerel depolamada önceden oturum açmış kullanıcı varsa ve henüz açıkça çıkış yapılmamışsa,
+          // geçici bir bağlantı kopmasında oturumu hemen silme; sadece session yoksa ve cache yoksa temizle
+          const storedUser = getCachedData<User>('tahsilatim_user');
+          if (!storedUser) {
+            setCachedData('tahsilatim_user', null);
+            setCachedData('tahsilatim_profile', null);
+            setCachedData('tahsilatim_firma', null);
+            setProfile(null);
+            setFirma(null);
+            setUser(null);
+          }
+          setLoading(false);
         }
-      } else {
-        // Eğer yerel depolamada önceden oturum açmış kullanıcı varsa ve henüz açıkça çıkış yapılmamışsa,
-        // geçici bir bağlantı kopmasında oturumu hemen silme; sadece session yoksa ve cache yoksa temizle
-        const storedUser = getCachedData<User>('tahsilatim_user');
-        if (!storedUser) {
-          setCachedData('tahsilatim_user', null);
-          setCachedData('tahsilatim_profile', null);
-          setCachedData('tahsilatim_firma', null);
-          setProfile(null);
-          setFirma(null);
-          setUser(null);
+      })
+      .catch(() => {
+        if (mounted) {
+          window.clearTimeout(safetyTimer);
+          setLoading(false);
         }
-        setLoading(false);
-      }
-    });
+      });
 
     // Oturum değişikliklerini dinle
     const {

@@ -21,10 +21,14 @@ import {
   Home,
   ArrowLeft,
   Crown,
+  Wallet,
+  ArrowLeftRight,
 } from 'lucide-react';
 import { SettingsModal } from '../settings/SettingsModal';
 
 interface AppLayoutProps {
+  workspaceMode: 'tahsilat' | 'kasa';
+  onChangeWorkspaceMode: () => void;
   currentTab: string;
   onSelectTab: (tab: string) => void;
   onOpenNotifications: () => void;
@@ -33,6 +37,8 @@ interface AppLayoutProps {
 }
 
 export const AppLayout: React.FC<AppLayoutProps> = ({
+  workspaceMode,
+  onChangeWorkspaceMode,
   currentTab,
   onSelectTab,
   onOpenNotifications,
@@ -85,12 +91,14 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
     tediye: 'Yeni Tediye Makbuzu',
     islem_duzenle: 'Makbuz Güncelle',
     islemler: 'İşlem Listesi',
+    kasa: 'Kasa & Gelir-Gider',
     performans: 'Plasiyer Performans Raporu',
     paketler: 'Abonelik & Paketler',
     superadmin: 'Süper Admin Paneli',
   };
 
-  const isSubPage = currentTab !== 'dashboard';
+  const homeTab = workspaceMode === 'kasa' ? 'kasa' : 'dashboard';
+  const isSubPage = currentTab !== homeTab;
 
   return (
     <div className="min-h-screen bg-[#0b1322] text-slate-100 flex flex-col lg:flex-row relative overflow-x-hidden fintech-glow">
@@ -98,7 +106,7 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
       <aside className="hidden lg:flex flex-col w-60 bg-[#111c2e] border-r border-slate-700/60 min-h-screen fixed left-0 top-0 bottom-0 z-30 select-none shadow-xl">
         {/* LOGO */}
         <div className="p-5 flex items-center justify-between border-b border-slate-700/60">
-          <div className="flex items-center gap-2.5 cursor-pointer" onClick={() => onSelectTab('dashboard')}>
+          <div className="flex items-center gap-2.5 cursor-pointer" onClick={() => onSelectTab(homeTab)}>
             <div className="w-9 h-9 rounded-xl bg-teal-400 text-slate-950 font-black flex items-center justify-center text-lg shadow-[0_0_20px_rgba(45,212,191,0.4)]">
               e
             </div>
@@ -122,90 +130,122 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
           </div>
         </div>
 
+        {/* MOD DEĞİŞTİR BUTONU */}
+        <div className="px-3 pt-3">
+          <button
+            type="button"
+            onClick={onChangeWorkspaceMode}
+            data-testid="sidebar_switch_mode_btn"
+            className="w-full flex items-center justify-between px-3 py-2 rounded-xl bg-slate-800/70 hover:bg-slate-700/80 border border-slate-600/50 text-xs font-bold text-slate-200 transition"
+          >
+            <span className="flex items-center gap-2">
+              <ArrowLeftRight className="w-3.5 h-3.5 text-teal-400" />
+              <span>{workspaceMode === 'kasa' ? 'Mod: Gelir / Gider' : 'Mod: Tahsilat'}</span>
+            </span>
+            <span className="text-[10px] text-teal-400 font-extrabold">Değiştir</span>
+          </button>
+        </div>
+
         {/* MENÜ LİSTESİ */}
         <div className="flex-1 py-4 px-3 space-y-6 overflow-y-auto">
           {/* YÖNETİM */}
           <div>
             <div className="px-3 text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-2">
-              YÖNETİM
+              {workspaceMode === 'kasa' ? 'GELİR / GİDER & KASA' : 'TAHSİLAT & CARİ'}
             </div>
             <nav className="space-y-1">
-              <button
-                onClick={() => onSelectTab('dashboard')}
-                className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold transition-all ${
-                  currentTab === 'dashboard'
-                    ? 'bg-teal-400 text-slate-950 shadow-md font-bold'
-                    : 'text-slate-300 hover:text-white hover:bg-slate-800/70'
-                }`}
-              >
-                <LayoutDashboard className="w-4 h-4" />
-                <span>Genel Bakış</span>
-              </button>
-
-              <button
-                onClick={() => onSelectTab('cariler')}
-                className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold transition-all ${
-                  currentTab === 'cariler'
-                    ? 'bg-teal-400 text-slate-950 shadow-md font-bold'
-                    : 'text-slate-300 hover:text-white hover:bg-slate-800/70'
-                }`}
-              >
-                <Users className="w-4 h-4" />
-                <span>Cariler</span>
-              </button>
-
-              {/* Plasiyer ve Muhasebeci form kısıtları */}
-              {profile?.rol !== 'muhasebeci' && (
+              {workspaceMode === 'tahsilat' ? (
                 <>
                   <button
-                    onClick={() => onSelectTab('tahsilat')}
-                    className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl text-sm font-medium transition-all ${
-                      currentTab === 'tahsilat'
-                        ? 'bg-teal-400 text-[#0a0e13] font-semibold shadow-sm'
-                        : 'text-teal-400/90 hover:text-teal-300 hover:bg-teal-500/10'
+                    onClick={() => onSelectTab('dashboard')}
+                    className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold transition-all ${
+                      currentTab === 'dashboard'
+                        ? 'bg-teal-400 text-slate-950 shadow-md font-bold'
+                        : 'text-slate-300 hover:text-white hover:bg-slate-800/70'
                     }`}
                   >
-                    <ArrowDownLeft className="w-4 h-4 text-teal-400" />
-                    <span>Tahsilat Yap</span>
+                    <LayoutDashboard className="w-4 h-4" />
+                    <span>Genel Bakış</span>
                   </button>
 
                   <button
-                    onClick={() => onSelectTab('tediye')}
-                    className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl text-sm font-medium transition-all ${
-                      currentTab === 'tediye'
-                        ? 'bg-teal-400 text-[#0a0e13] font-semibold shadow-sm'
-                        : 'text-orange-400/90 hover:text-orange-300 hover:bg-orange-500/10'
+                    onClick={() => onSelectTab('cariler')}
+                    className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold transition-all ${
+                      currentTab === 'cariler'
+                        ? 'bg-teal-400 text-slate-950 shadow-md font-bold'
+                        : 'text-slate-300 hover:text-white hover:bg-slate-800/70'
                     }`}
                   >
-                    <ArrowUpRight className="w-4 h-4 text-orange-400" />
-                    <span>Tediye Yap</span>
+                    <Users className="w-4 h-4" />
+                    <span>Cariler</span>
+                  </button>
+
+                  {profile?.rol !== 'muhasebeci' && (
+                    <>
+                      <button
+                        onClick={() => onSelectTab('tahsilat')}
+                        className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl text-sm font-medium transition-all ${
+                          currentTab === 'tahsilat'
+                            ? 'bg-teal-400 text-[#0a0e13] font-semibold shadow-sm'
+                            : 'text-teal-400/90 hover:text-teal-300 hover:bg-teal-500/10'
+                        }`}
+                      >
+                        <ArrowDownLeft className="w-4 h-4 text-teal-400" />
+                        <span>Tahsilat Yap</span>
+                      </button>
+
+                      <button
+                        onClick={() => onSelectTab('tediye')}
+                        className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl text-sm font-medium transition-all ${
+                          currentTab === 'tediye'
+                            ? 'bg-teal-400 text-[#0a0e13] font-semibold shadow-sm'
+                            : 'text-orange-400/90 hover:text-orange-300 hover:bg-orange-500/10'
+                        }`}
+                      >
+                        <ArrowUpRight className="w-4 h-4 text-orange-400" />
+                        <span>Tediye Yap</span>
+                      </button>
+                    </>
+                  )}
+
+                  <button
+                    onClick={() => onSelectTab('islemler')}
+                    className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl text-sm font-medium transition-all ${
+                      currentTab === 'islemler'
+                        ? 'bg-teal-400 text-[#0a0e13] font-semibold shadow-sm'
+                        : 'text-gray-300 hover:text-white hover:bg-white/[0.05]'
+                    }`}
+                  >
+                    <ReceiptText className="w-4 h-4" />
+                    <span>İşlemler</span>
+                  </button>
+
+                  <button
+                    onClick={() => onSelectTab('performans')}
+                    className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl text-sm font-medium transition-all ${
+                      currentTab === 'performans'
+                        ? 'bg-teal-400 text-[#0a0e13] font-semibold shadow-sm'
+                        : 'text-gray-300 hover:text-white hover:bg-white/[0.05]'
+                    }`}
+                  >
+                    <TrendingUp className="w-4 h-4 text-emerald-400" />
+                    <span>{profile?.rol === 'plasiyer' ? 'Performans Raporum' : 'Plasiyer Raporları'}</span>
                   </button>
                 </>
+              ) : (
+                <button
+                  onClick={() => onSelectTab('kasa')}
+                  data-testid="nav_kasa_desktop"
+                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold transition-all ${
+                    currentTab === 'kasa'
+                      ? 'bg-emerald-400 text-slate-950 shadow-md font-bold'
+                      : 'text-emerald-300/90 hover:text-emerald-200 hover:bg-emerald-500/10'
+                  }`}
+                >
+                  <Wallet className="w-4 h-4" />
+                  <span>Kasa &amp; Gelir-Gider</span>
+                </button>
               )}
-
-              <button
-                onClick={() => onSelectTab('islemler')}
-                className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl text-sm font-medium transition-all ${
-                  currentTab === 'islemler'
-                    ? 'bg-teal-400 text-[#0a0e13] font-semibold shadow-sm'
-                    : 'text-gray-300 hover:text-white hover:bg-white/[0.05]'
-                }`}
-              >
-                <ReceiptText className="w-4 h-4" />
-                <span>İşlemler</span>
-              </button>
-
-              <button
-                onClick={() => onSelectTab('performans')}
-                className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl text-sm font-medium transition-all ${
-                  currentTab === 'performans'
-                    ? 'bg-teal-400 text-[#0a0e13] font-semibold shadow-sm'
-                    : 'text-gray-300 hover:text-white hover:bg-white/[0.05]'
-                }`}
-              >
-                <TrendingUp className="w-4 h-4 text-emerald-400" />
-                <span>{profile?.rol === 'plasiyer' ? 'Performans Raporum' : 'Plasiyer Raporları'}</span>
-              </button>
             </nav>
           </div>
 
@@ -332,11 +372,10 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
         <header className="min-h-14 lg:h-16 py-2 lg:py-0 border-b border-slate-700/60 bg-[#111c2e]/98 backdrop-blur-md sticky top-0 z-20 px-2.5 sm:px-4 lg:px-8 flex items-center justify-between gap-2 shadow-md">
           {/* SOL: Geri/Ana Sayfa Butonu, Menü & Başlık */}
           <div className="flex items-center gap-1.5 sm:gap-3 min-w-0 flex-1">
-            {/* Alt sayfalarda Geri Butonu, Ana sayfada Ana Sayfa kısayolu */}
             {isSubPage ? (
               <button
                 type="button"
-                onClick={() => onSelectTab('dashboard')}
+                onClick={() => onSelectTab(homeTab)}
                 className="lg:hidden w-10 h-10 sm:min-w-[44px] sm:min-h-[44px] text-teal-300 hover:text-white bg-teal-500/15 active:bg-teal-500/25 rounded-xl flex items-center justify-center border border-teal-500/30 shadow-sm transition shrink-0"
                 title="Geri / Ana Sayfa"
                 aria-label="Geri Dön"
@@ -346,7 +385,7 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
             ) : (
               <button
                 type="button"
-                onClick={() => onSelectTab('dashboard')}
+                onClick={() => onSelectTab(homeTab)}
                 className="lg:hidden w-10 h-10 sm:min-w-[44px] sm:min-h-[44px] rounded-xl flex items-center justify-center border transition bg-teal-400 text-slate-950 font-bold border-teal-400 shadow-sm shrink-0"
                 title="Ana Sayfaya Git"
                 aria-label="Ana Sayfa"
@@ -355,7 +394,6 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
               </button>
             )}
 
-            {/* Menü Butonu */}
             <button
               type="button"
               onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
@@ -365,10 +403,9 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
               {mobileMenuOpen ? <X className="w-5 h-5 text-teal-400" /> : <Menu className="w-5 h-5" />}
             </button>
 
-            {/* Breadcrumb / Başlık */}
             <div className="flex items-center gap-2 text-xs sm:text-sm text-slate-400 font-medium min-w-0">
-              <span className="hidden sm:inline hover:text-slate-200 cursor-pointer shrink-0" onClick={() => onSelectTab('dashboard')}>
-                Yönetim
+              <span className="hidden sm:inline hover:text-slate-200 cursor-pointer shrink-0" onClick={() => onSelectTab(homeTab)}>
+                {workspaceMode === 'kasa' ? 'Gelir / Gider' : 'Tahsilat'}
               </span>
               <ChevronRight className="w-3.5 h-3.5 text-slate-500 hidden sm:inline shrink-0" />
               <span className="font-bold text-teal-400 bg-teal-500/10 px-2 sm:px-2.5 py-1 rounded-lg border border-teal-500/20 text-[11px] sm:text-sm truncate">
@@ -377,8 +414,18 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
             </div>
           </div>
 
-          {/* SAĞ: Süper Admin, Ayarlar, Bildirim Zili, Güvenli Çıkış & Hızlı İşlem */}
           <div className="flex items-center gap-1.5 sm:gap-2.5 shrink-0">
+            <button
+              type="button"
+              onClick={onChangeWorkspaceMode}
+              data-testid="header_switch_mode_btn"
+              title="Mod Değiştir (Tahsilat / Gelir-Gider)"
+              className="h-10 sm:min-h-[44px] px-2.5 sm:px-3 rounded-xl bg-slate-800/90 hover:bg-slate-700 text-slate-200 border border-slate-600/60 text-xs font-bold flex items-center gap-1.5 transition"
+            >
+              <ArrowLeftRight className="w-4 h-4 text-teal-400 shrink-0" />
+              <span className="hidden sm:inline">Mod Değiştir</span>
+            </button>
+
             {isSuperAdmin && (
               <button
                 type="button"
@@ -440,7 +487,7 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
               <span className="hidden md:inline">Güvenli Çıkış</span>
             </button>
 
-            {profile?.rol !== 'muhasebeci' && (
+            {workspaceMode === 'tahsilat' && profile?.rol !== 'muhasebeci' && (
               <div className="hidden sm:flex items-center gap-2">
                 <button
                   type="button"
@@ -483,65 +530,96 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
                 <div className="space-y-1">
                   <button
                     onClick={() => {
-                      onSelectTab('dashboard');
                       setMobileMenuOpen(false);
+                      onChangeWorkspaceMode();
                     }}
-                    className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-gray-200 hover:bg-white/5"
+                    data-testid="mobile_switch_mode_btn"
+                    className="w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-sm font-bold bg-slate-800/80 text-teal-300 border border-slate-600/60 mb-2"
                   >
-                    <LayoutDashboard className="w-4 h-4 text-teal-400" />
-                    <span>Genel Bakış</span>
-                  </button>
-                  <button
-                    onClick={() => {
-                      onSelectTab('cariler');
-                      setMobileMenuOpen(false);
-                    }}
-                    className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-gray-200 hover:bg-white/5"
-                  >
-                    <Users className="w-4 h-4 text-teal-400" />
-                    <span>Cariler</span>
-                  </button>
-                  <button
-                    onClick={() => {
-                      onSelectTab('tahsilat');
-                      setMobileMenuOpen(false);
-                    }}
-                    className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-teal-400 hover:bg-teal-500/10"
-                  >
-                    <ArrowDownLeft className="w-4 h-4" />
-                    <span>Tahsilat Yap</span>
-                  </button>
-                  <button
-                    onClick={() => {
-                      onSelectTab('tediye');
-                      setMobileMenuOpen(false);
-                    }}
-                    className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-orange-400 hover:bg-orange-500/10"
-                  >
-                    <ArrowUpRight className="w-4 h-4" />
-                    <span>Tediye Yap</span>
-                  </button>
-                  <button
-                    onClick={() => {
-                      onSelectTab('islemler');
-                      setMobileMenuOpen(false);
-                    }}
-                    className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-gray-200 hover:bg-white/5"
-                  >
-                    <ReceiptText className="w-4 h-4 text-teal-400" />
-                    <span>İşlemler</span>
+                    <span className="flex items-center gap-2.5">
+                      <ArrowLeftRight className="w-4 h-4" />
+                      <span>Mod Seçimi (Tahsilat / Gelir-Gider)</span>
+                    </span>
                   </button>
 
-                  <button
-                    onClick={() => {
-                      onSelectTab('performans');
-                      setMobileMenuOpen(false);
-                    }}
-                    className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-gray-200 hover:bg-white/5"
-                  >
-                    <TrendingUp className="w-4 h-4 text-emerald-400" />
-                    <span>{profile?.rol === 'plasiyer' ? 'Performans Raporum' : 'Plasiyer Raporları'}</span>
-                  </button>
+                  {workspaceMode === 'tahsilat' ? (
+                    <>
+                      <button
+                        onClick={() => {
+                          onSelectTab('dashboard');
+                          setMobileMenuOpen(false);
+                        }}
+                        className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-gray-200 hover:bg-white/5"
+                      >
+                        <LayoutDashboard className="w-4 h-4 text-teal-400" />
+                        <span>Genel Bakış</span>
+                      </button>
+                      <button
+                        onClick={() => {
+                          onSelectTab('cariler');
+                          setMobileMenuOpen(false);
+                        }}
+                        className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-gray-200 hover:bg-white/5"
+                      >
+                        <Users className="w-4 h-4 text-teal-400" />
+                        <span>Cariler</span>
+                      </button>
+                      <button
+                        onClick={() => {
+                          onSelectTab('tahsilat');
+                          setMobileMenuOpen(false);
+                        }}
+                        className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-teal-400 hover:bg-teal-500/10"
+                      >
+                        <ArrowDownLeft className="w-4 h-4" />
+                        <span>Tahsilat Yap</span>
+                      </button>
+                      <button
+                        onClick={() => {
+                          onSelectTab('tediye');
+                          setMobileMenuOpen(false);
+                        }}
+                        className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-orange-400 hover:bg-orange-500/10"
+                      >
+                        <ArrowUpRight className="w-4 h-4" />
+                        <span>Tediye Yap</span>
+                      </button>
+                      <button
+                        onClick={() => {
+                          onSelectTab('islemler');
+                          setMobileMenuOpen(false);
+                        }}
+                        className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-gray-200 hover:bg-white/5"
+                      >
+                        <ReceiptText className="w-4 h-4 text-teal-400" />
+                        <span>İşlemler</span>
+                      </button>
+
+                      <button
+                        onClick={() => {
+                          onSelectTab('performans');
+                          setMobileMenuOpen(false);
+                        }}
+                        className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-gray-200 hover:bg-white/5"
+                      >
+                        <TrendingUp className="w-4 h-4 text-emerald-400" />
+                        <span>{profile?.rol === 'plasiyer' ? 'Performans Raporum' : 'Plasiyer Raporları'}</span>
+                      </button>
+                    </>
+                  ) : (
+                    <button
+                      onClick={() => {
+                        onSelectTab('kasa');
+                        setMobileMenuOpen(false);
+                      }}
+                      data-testid="nav_kasa_mobile"
+                      className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-emerald-300 hover:bg-emerald-500/10"
+                    >
+                      <Wallet className="w-4 h-4 text-emerald-400" />
+                      <span>Kasa &amp; Gelir-Gider</span>
+                    </button>
+                  )}
+
                   <button
                     onClick={() => {
                       onSelectTab('paketler');
@@ -610,68 +688,90 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
           </div>
         )}
 
-        {/* ANA İÇERİK ALANI (Altta menü için ferah boşluk bırakıldı) */}
+        {/* ANA İÇERİK ALANI */}
         <main className="flex-1 p-4 lg:p-8 max-w-7xl w-full mx-auto pb-nav-safe lg:pb-8">
           {children}
         </main>
 
-        {/* MOBİL ALT MENÜ (Navigasyon çubuğu üstünde kalması için pb-safe ve z-40 uygulandı) */}
+        {/* MOBİL ALT MENÜ */}
         <nav className="mobile-bottom-nav lg:hidden fixed bottom-0 left-0 right-0 z-40 bg-[#111c2e] border-t border-slate-700/80 px-2 pt-2.5 pb-safe shadow-[0_-8px_25px_rgba(0,0,0,0.6)]">
-          <div className="flex items-center justify-around">
-            <button
-              onClick={() => onSelectTab('dashboard')}
-              className={`flex flex-col items-center gap-1 py-1.5 px-3 rounded-xl text-[10px] font-semibold transition ${
-                currentTab === 'dashboard' ? 'text-teal-400 font-bold bg-teal-400/15' : 'text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              <LayoutDashboard className="w-5 h-5" />
-              <span>Ana Sayfa</span>
-            </button>
+          {workspaceMode === 'tahsilat' ? (
+            <div className="flex items-center justify-around">
+              <button
+                onClick={() => onSelectTab('dashboard')}
+                className={`flex flex-col items-center gap-1 py-1.5 px-3 rounded-xl text-[10px] font-semibold transition ${
+                  currentTab === 'dashboard' ? 'text-teal-400 font-bold bg-teal-400/15' : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <LayoutDashboard className="w-5 h-5" />
+                <span>Ana Sayfa</span>
+              </button>
 
-            <button
-              onClick={() => onSelectTab('cariler')}
-              className={`flex flex-col items-center gap-1 py-1.5 px-3 rounded-xl text-[10px] font-semibold transition ${
-                currentTab === 'cariler' ? 'text-teal-400 font-bold bg-teal-400/15' : 'text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              <Users className="w-5 h-5" />
-              <span>Cariler</span>
-            </button>
+              <button
+                onClick={() => onSelectTab('cariler')}
+                className={`flex flex-col items-center gap-1 py-1.5 px-3 rounded-xl text-[10px] font-semibold transition ${
+                  currentTab === 'cariler' ? 'text-teal-400 font-bold bg-teal-400/15' : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <Users className="w-5 h-5" />
+                <span>Cariler</span>
+              </button>
 
-            <button
-              onClick={() => onSelectTab('tahsilat')}
-              className={`flex flex-col items-center gap-1 py-1.5 px-3 rounded-xl text-[10px] font-semibold transition ${
-                currentTab === 'tahsilat' ? 'text-teal-400 font-bold bg-teal-400/20' : 'text-teal-400/80 hover:text-teal-300'
-              }`}
-            >
-              <div className="w-7 h-7 rounded-full bg-teal-400/20 border border-teal-400/30 flex items-center justify-center">
-                <ArrowDownLeft className="w-4 h-4 text-teal-400" />
-              </div>
-              <span>Tahsilat</span>
-            </button>
+              <button
+                onClick={() => onSelectTab('tahsilat')}
+                className={`flex flex-col items-center gap-1 py-1.5 px-3 rounded-xl text-[10px] font-semibold transition ${
+                  currentTab === 'tahsilat' ? 'text-teal-400 font-bold bg-teal-400/20' : 'text-teal-400/80 hover:text-teal-300'
+                }`}
+              >
+                <div className="w-7 h-7 rounded-full bg-teal-400/20 border border-teal-400/30 flex items-center justify-center">
+                  <ArrowDownLeft className="w-4 h-4 text-teal-400" />
+                </div>
+                <span>Tahsilat</span>
+              </button>
 
-            <button
-              onClick={() => onSelectTab('tediye')}
-              className={`flex flex-col items-center gap-1 py-1.5 px-3 rounded-xl text-[10px] font-semibold transition ${
-                currentTab === 'tediye' ? 'text-orange-400 font-bold bg-orange-400/20' : 'text-orange-400/80 hover:text-orange-300'
-              }`}
-            >
-              <div className="w-7 h-7 rounded-full bg-orange-400/20 border border-orange-400/30 flex items-center justify-center">
-                <ArrowUpRight className="w-4 h-4 text-orange-400" />
-              </div>
-              <span>Tediye</span>
-            </button>
+              <button
+                onClick={() => onSelectTab('tediye')}
+                className={`flex flex-col items-center gap-1 py-1.5 px-3 rounded-xl text-[10px] font-semibold transition ${
+                  currentTab === 'tediye' ? 'text-orange-400 font-bold bg-orange-400/20' : 'text-orange-400/80 hover:text-orange-300'
+                }`}
+              >
+                <div className="w-7 h-7 rounded-full bg-orange-400/20 border border-orange-400/30 flex items-center justify-center">
+                  <ArrowUpRight className="w-4 h-4 text-orange-400" />
+                </div>
+                <span>Tediye</span>
+              </button>
 
-            <button
-              onClick={() => onSelectTab('islemler')}
-              className={`flex flex-col items-center gap-1 py-1.5 px-3 rounded-xl text-[10px] font-semibold transition ${
-                currentTab === 'islemler' ? 'text-teal-400 font-bold bg-teal-400/15' : 'text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              <ReceiptText className="w-5 h-5" />
-              <span>İşlemler</span>
-            </button>
-          </div>
+              <button
+                onClick={() => onSelectTab('islemler')}
+                className={`flex flex-col items-center gap-1 py-1.5 px-3 rounded-xl text-[10px] font-semibold transition ${
+                  currentTab === 'islemler' ? 'text-teal-400 font-bold bg-teal-400/15' : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <ReceiptText className="w-5 h-5" />
+                <span>İşlemler</span>
+              </button>
+            </div>
+          ) : (
+            <div className="flex items-center justify-around">
+              <button
+                onClick={() => onSelectTab('kasa')}
+                className={`flex flex-col items-center gap-1 py-1.5 px-6 rounded-xl text-[10px] font-semibold transition ${
+                  currentTab === 'kasa' ? 'text-emerald-400 font-bold bg-emerald-400/15' : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <Wallet className="w-5 h-5" />
+                <span>Kasa &amp; Gelir-Gider</span>
+              </button>
+
+              <button
+                onClick={onChangeWorkspaceMode}
+                className="flex flex-col items-center gap-1 py-1.5 px-6 rounded-xl text-[10px] font-semibold text-teal-300 hover:bg-white/5 transition"
+              >
+                <ArrowLeftRight className="w-5 h-5" />
+                <span>Mod Seçimi</span>
+              </button>
+            </div>
+          )}
         </nav>
       </div>
 

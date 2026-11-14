@@ -1,6 +1,7 @@
 package com.example
 
 import android.annotation.SuppressLint
+import android.app.Activity
 import android.content.ClipData
 import android.content.Intent
 import android.graphics.Color
@@ -12,24 +13,74 @@ import android.util.Log
 import android.view.ViewGroup
 import android.webkit.ConsoleMessage
 import android.webkit.JavascriptInterface
+import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.FrameLayout
 import androidx.activity.ComponentActivity
+import androidx.activity.OnBackPressedCallback
+import androidx.activity.result.ActivityResultLauncher
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.FileProvider
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import java.io.ByteArrayInputStream
 import java.io.File
 import java.io.FileOutputStream
 
 class MainActivity : ComponentActivity() {
   private var webView: WebView? = null
+  private var filePathCallback: ValueCallback<Array<Uri>>? = null
+
+  private val fileChooserLauncher: ActivityResultLauncher<Intent> =
+    registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+      val callback = filePathCallback
+      filePathCallback = null
+      if (callback == null) return@registerForActivityResult
+
+      var results: Array<Uri>? = null
+      if (result.resultCode == Activity.RESULT_OK && result.data != null) {
+        val data = result.data!!
+        val clipData = data.clipData
+        if (clipData != null && clipData.itemCount > 0) {
+          results = Array(clipData.itemCount) { i -> clipData.getItemAt(i).uri }
+        } else if (data.data != null) {
+          results = arrayOf(data.data!!)
+        }
+      }
+      callback.onReceiveValue(results)
+    }
+
+  companion object {
+    private const val APP_ASSETS_ORIGIN = "https://appassets.androidplatform.net"
+    private const val APP_ASSETS_ENTRY = "$APP_ASSETS_ORIGIN/assets/index.html"
+  }
+
+  private fun guessMimeType(path: String): String {
+    val lower = path.lowercase()
+    return when {
+      lower.endsWith(".html") || lower.endsWith(".htm") -> "text/html"
+      lower.endsWith(".js") || lower.endsWith(".mjs") -> "application/javascript"
+      lower.endsWith(".css") -> "text/css"
+      lower.endsWith(".json") -> "application/json"
+      lower.endsWith(".png") -> "image/png"
+      lower.endsWith(".jpg") || lower.endsWith(".jpeg") -> "image/jpeg"
+      lower.endsWith(".svg") -> "image/svg+xml"
+      lower.endsWith(".webp") -> "image/webp"
+      lower.endsWith(".woff2") -> "font/woff2"
+      lower.endsWith(".woff") -> "font/woff"
+      lower.endsWith(".ttf") -> "font/ttf"
+      lower.endsWith(".ico") -> "image/x-icon"
+      else -> "application/octet-stream"
+    }
+  }
 
   @SuppressLint("SetJavaScriptEnabled")
   override fun onCreate(savedInstanceState: Bundle?) {
@@ -79,15 +130,75 @@ class MainActivity : ComponentActivity() {
             Log.d("WebApp", "${consoleMessage?.message()} -- line ${consoleMessage?.lineNumber()} of ${consoleMessage?.sourceId()}")
             return super.onConsoleMessage(consoleMessage)
           }
+
+          override fun onShowFileChooser(
+            webView: WebView?,
+            filePathCallback: ValueCallback<Array<Uri>>?,
+            fileChooserParams: FileChooserParams?
+          ): Boolean {
+            this@MainActivity.filePathCallback?.onReceiveValue(null)
+            this@MainActivity.filePathCallback = filePathCallback
+            return try {
+              val intent = fileChooserParams?.createIntent() ?: Intent(Intent.ACTION_GET_CONTENT).apply {
+                addCategory(Intent.CATEGORY_OPENABLE)
+                type = "*/*"
+              }
+              if (fileChooserParams?.mode == FileChooserParams.MODE_OPEN_MULTIPLE) {
+                intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+              }
+              fileChooserLauncher.launch(intent)
+              true
+            } catch (e: Exception) {
+              Log.e("MainActivity", "File chooser error", e)
+              this@MainActivity.filePathCallback = null
+              false
+            }
+          }
         }
 
         webViewClient = object : WebViewClient() {
+          override fun shouldInterceptRequest(
+            view: WebView?,
+            request: WebResourceRequest?
+          ): WebResourceResponse? {
+            val reqUri = request?.url ?: return null
+            if (reqUri.scheme == "https" && reqUri.host == "appassets.androidplatform.net") {
+              val rawPath = reqUri.path ?: "/assets/index.html"
+              val assetPath = rawPath.removePrefix("/assets/").removePrefix("/").ifEmpty { "index.html" }
+              return try {
+                val inputStream = assets.open(assetPath)
+                WebResourceResponse(
+                  guessMimeType(assetPath),
+                  "UTF-8",
+                  200,
+                  "OK",
+                  mapOf(
+                    "Access-Control-Allow-Origin" to "*",
+                    "Cache-Control" to "no-store"
+                  ),
+                  inputStream
+                )
+              } catch (e: Exception) {
+                Log.w("WebAppAsset", "Asset not found: $assetPath", e)
+                WebResourceResponse(
+                  "text/plain",
+                  "UTF-8",
+                  404,
+                  "Not Found",
+                  emptyMap(),
+                  ByteArrayInputStream(ByteArray(0))
+                )
+              }
+            }
+            return super.shouldInterceptRequest(view, request)
+          }
+
           override fun shouldOverrideUrlLoading(
             view: WebView?,
             request: WebResourceRequest?
           ): Boolean {
             val url = request?.url?.toString() ?: return false
-            if (url.startsWith("file:///android_asset/")) {
+            if (url.startsWith(APP_ASSETS_ORIGIN) || url.startsWith("file:///android_asset/")) {
               return false
             }
             return handleExternalUrl(url)
@@ -96,7 +207,7 @@ class MainActivity : ComponentActivity() {
           @Deprecated("Deprecated in Java")
           override fun shouldOverrideUrlLoading(view: WebView?, url: String?): Boolean {
             if (url == null) return false
-            if (url.startsWith("file:///android_asset/")) {
+            if (url.startsWith(APP_ASSETS_ORIGIN) || url.startsWith("file:///android_asset/")) {
               return false
             }
             return handleExternalUrl(url)
@@ -107,12 +218,13 @@ class MainActivity : ComponentActivity() {
             request: WebResourceRequest?,
             error: WebResourceError?
           ) {
-            Log.e("WebAppError", "WebView Error: ${error?.description}")
+            Log.e("WebAppError", "WebView Error (${request?.url}): ${error?.description}")
             super.onReceivedError(view, request, error)
           }
         }
 
-        loadUrl("file:///android_asset/index.html")
+        // HTTPS sanal kök üzerinden yükleyerek tüm Android emülatörlerinde ES module CORS hatasını önler
+        loadUrl(APP_ASSETS_ENTRY)
       }
 
       rootContainer.addView(wv)
@@ -149,6 +261,19 @@ class MainActivity : ComponentActivity() {
 
       this.webView = wv
       setContentView(rootContainer)
+
+      onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+        override fun handleOnBackPressed() {
+          val activeWebView = webView
+          if (activeWebView != null && activeWebView.canGoBack()) {
+            activeWebView.goBack()
+          } else {
+            isEnabled = false
+            onBackPressedDispatcher.onBackPressed()
+            isEnabled = true
+          }
+        }
+      })
     } catch (e: Exception) {
       Log.e("MainActivity", "Failed to initialize WebView", e)
     }
@@ -419,14 +544,5 @@ class MainActivity : ComponentActivity() {
     windowInsetsController.systemBarsBehavior =
       WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
     windowInsetsController.hide(WindowInsetsCompat.Type.navigationBars())
-  }
-
-  override fun onBackPressed() {
-    val wv = webView
-    if (wv != null && wv.canGoBack()) {
-      wv.goBack()
-    } else {
-      super.onBackPressed()
-    }
   }
 }

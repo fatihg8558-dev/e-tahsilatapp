@@ -271,6 +271,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
             </button>
             <button
               onClick={() => onNavigate('tahsilat')}
+              data-testid="dash_tahsilat_btn"
               className="bg-teal-400 hover:bg-teal-300 text-[#0a0e13] font-bold text-xs px-4 py-2.5 rounded-xl transition shadow-[0_0_20px_rgba(45,212,191,0.25)] flex items-center gap-2"
             >
               <ArrowDownLeft className="w-4 h-4" />
@@ -278,6 +279,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
             </button>
             <button
               onClick={() => onNavigate('tediye')}
+              data-testid="dash_tediye_btn"
               className="bg-orange-500/20 hover:bg-orange-500/30 text-orange-400 border border-orange-500/30 font-bold text-xs px-4 py-2.5 rounded-xl transition flex items-center gap-2"
             >
               <ArrowUpRight className="w-4 h-4" />

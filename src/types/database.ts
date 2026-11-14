@@ -111,3 +111,39 @@ export interface Ayar {
   deger: string;
 }
 
+export type KasaTur = 'nakit' | 'banka' | 'pos';
+export type GelirGiderTip = 'gelir' | 'gider' | 'virman';
+
+export interface Kasa {
+  id: string;
+  firma_id: string;
+  ad: string;
+  tur: KasaTur;
+  banka_adi?: string | null;
+  iban?: string | null;
+  acilis_bakiyesi: number;
+  guncel_bakiye: number;
+  aktif: boolean;
+  created_at?: string;
+}
+
+export interface GelirGider {
+  id: string;
+  firma_id: string;
+  kasa_id: string;
+  hedef_kasa_id?: string | null;
+  tip: GelirGiderTip;
+  kategori: string;
+  tutar: number;
+  tarih: string;
+  aciklama?: string | null;
+  belge_no?: string | null;
+  yapan_user_id?: string | null;
+  created_at?: string;
+  // Join fields
+  kasalar?: { ad: string; tur: KasaTur } | null;
+  hedef_kasalar?: { ad: string; tur: KasaTur } | null;
+  profiles?: { ad_soyad: string } | null;
+}
+
+
