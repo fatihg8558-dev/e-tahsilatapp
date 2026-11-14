@@ -17,7 +17,14 @@ import { Islem } from './types/database';
 
 export const App: React.FC = () => {
   const { user, loading, isPeriodExpired } = useAuth();
-  const [currentTab, setCurrentTab] = useState<string>('dashboard');
+  const [currentTab, setCurrentTab] = useState<string>(() => {
+    if (typeof window !== 'undefined' && window.__ANDROID_PENDING_TAB__) {
+      const initial = window.__ANDROID_PENDING_TAB__.trim();
+      delete window.__ANDROID_PENDING_TAB__;
+      if (initial) return initial;
+    }
+    return 'dashboard';
+  });
   const [activeMakbuz, setActiveMakbuz] = useState<Islem | null>(null);
   const [editingIslem, setEditingIslem] = useState<Islem | null>(null);
   const [editReturnTab, setEditReturnTab] = useState<string>('islemler');
@@ -122,11 +129,26 @@ export const App: React.FC = () => {
     };
   }, []);
 
-  // Android bildiriminden belirli sekmeye yönlendirme desteği
+  // Android widget ve bildiriminden belirli sekmeye doğrudan yönlendirme desteği
   useEffect(() => {
+    const consumePendingTab = () => {
+      if (typeof window !== 'undefined' && window.__ANDROID_PENDING_TAB__) {
+        const pending = window.__ANDROID_PENDING_TAB__.trim();
+        delete window.__ANDROID_PENDING_TAB__;
+        if (pending) {
+          setEditingIslem(null);
+          setCurrentTab(pending);
+        }
+      }
+    };
+    consumePendingTab();
+
     const handleAndroidOpenTab = (e: Event) => {
       const tab = (e as CustomEvent<string>).detail;
       if (typeof tab === 'string' && tab.trim()) {
+        if (typeof window !== 'undefined') {
+          delete window.__ANDROID_PENDING_TAB__;
+        }
         setEditingIslem(null);
         setCurrentTab(tab.trim());
       }

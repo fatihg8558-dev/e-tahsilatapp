@@ -1,3 +1,7 @@
 <resources>
     <string name="app_name">Tahsilat ve Tediye Makbuzu</string>
+    <string name="widget_name">Tahsilat ve Tediye Hızlı İşlem</string>
+    <string name="widget_description">Ana ekrandan tek dokunuşla doğrudan Tahsilat veya Tediye makbuzu açın.</string>
+    <string name="widget_tahsilat_desc">Tahsilat Makbuzu Aç</string>
+    <string name="widget_tediye_desc">Tediye Makbuzu Aç</string>
 </resources>

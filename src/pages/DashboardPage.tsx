@@ -20,6 +20,7 @@ import {
   FileCheck,
   CheckCircle2,
   TrendingUp,
+  LayoutGrid,
 } from 'lucide-react';
 
 export interface VadeItem {
@@ -304,6 +305,17 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
                   Kasa & Hesaplar
                 </button>
               </>
+            )}
+            {typeof window !== 'undefined' && typeof window.AndroidBridge?.requestPinHomeWidget === 'function' && (
+              <button
+                type="button"
+                onClick={() => window.AndroidBridge?.requestPinHomeWidget?.()}
+                data-testid="pin_home_widget_btn"
+                className="bg-sky-500/15 hover:bg-sky-500/25 text-sky-300 border border-sky-500/35 font-bold text-xs px-4 py-2.5 rounded-xl transition flex items-center gap-2"
+              >
+                <LayoutGrid className="w-4 h-4 text-sky-400" />
+                <span>Ana Ekrana Widget Ekle</span>
+              </button>
             )}
           </div>
         )}

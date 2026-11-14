@@ -4,7 +4,19 @@ import { supabase, handleSupabaseError } from '../lib/supabase';
 import { Cari, IslemTip, IslemTur, Islem, Kasa } from '../types/database';
 import { formatCurrency, formatDate } from '../lib/formatters';
 import { getExchangeRates, ExchangeRates } from '../lib/currencyService';
-import { getPosConfig, generatePaymentLink, PosConfig, PaymentLinkResult } from '../lib/posService';
+import {
+  getPosConfig,
+  generatePaymentLink,
+  PosConfig,
+  PaymentLinkResult,
+  authorizeNfcPayment,
+  clearPendingCepPosTx,
+  getPendingCepPosTx,
+} from '../lib/posService';
+import {
+  NfcTahsilatModal,
+  NfcPaymentCompletePayload,
+} from '../components/islem/NfcTahsilatModal';
 import {
   ArrowDownLeft,
   ArrowUpRight,
@@ -30,6 +42,7 @@ import {
   Trash2,
   Pencil,
   Wallet,
+  Wifi,
 } from 'lucide-react';
 import { openWhatsApp } from '../lib/linkHelper';
 import { KarmaPaymentSection } from '../components/islem/KarmaPaymentSection';
@@ -292,6 +305,7 @@ export const IslemFormPage: React.FC<IslemFormPageProps> = ({
   // Sanal POS Konfigürasyonu & Link Oluşturucu
   const [posConfig] = useState<PosConfig>(() => getPosConfig(firma?.id));
   const [posLinkGenerated, setPosLinkGenerated] = useState<PaymentLinkResult | null>(null);
+  const [nfcModalOpen, setNfcModalOpen] = useState<boolean>(false);
 
   const [cariler, setCariler] = useState<Cari[]>([]);
   const [cariId, setCariId] = useState<string>(editingIslem?.cari_id || preSelectedCariId || '');
@@ -864,6 +878,121 @@ export const IslemFormPage: React.FC<IslemFormPageProps> = ({
       setKarmaKart((prev) => ({ ...prev, slipNo: linkResult.referenceNo }));
     }
   };
+
+  const handleCompleteNfcPayment = async (nfcPayload: NfcPaymentCompletePayload) => {
+    const targetCari = cariler.find((c) => c.id === nfcPayload.cariId);
+    const effectiveFirmaId = targetCari?.firma_id || profile?.firma_id || firma?.id;
+    if (!effectiveFirmaId) {
+      throw new Error('Firma bilgisi bulunamadı. Lütfen oturumu kapatıp tekrar giriş yapınız.');
+    }
+
+    const { data: sessionData } = await supabase.auth.getSession();
+    if (!sessionData.session) {
+      throw new Error('Oturum süreniz dolmuş. Lütfen sayfayı yenileyiniz veya tekrar giriş yapınız.');
+    }
+
+    const combinedAciklama = [nfcPayload.aciklamaTag, nfcPayload.userNote].filter(Boolean).join('\n');
+
+    // Kural: islemler insert ederken makbuz_no, yapan_user_id, durum ALANLARINI GÖNDERME!
+    const insertPayload: Record<string, any> = {
+      firma_id: effectiveFirmaId,
+      cari_id: nfcPayload.cariId,
+      tip: 'tahsilat',
+      tur: 'kredi_karti',
+      tutar: nfcPayload.tutar,
+      tarih: parseDateToIso(tarihDisplay) || tarih || new Date().toISOString().split('T')[0],
+      belge_no: nfcPayload.slipNo || null,
+      vade: null,
+      banka_adi: nfcPayload.bankaAdi || null,
+      aciklama: combinedAciklama || null,
+    };
+
+    const { data: insertedData, error: insertErr } = await supabase
+      .from('islemler')
+      .insert(insertPayload)
+      .select('*, cariler:cari_id(unvan, vergi_tc_no, telefon, email, bakiye), profiles:yapan_user_id(ad_soyad)')
+      .single();
+
+    if (insertErr) throw insertErr;
+
+    const savedRecord = insertedData as Islem;
+    if (isCentralAccount && !kasaTableMissing) {
+      await syncIslemToKasa({
+        islem: savedRecord,
+        firmaId: effectiveFirmaId,
+        userId: profile?.id,
+        kasaIdOverride: selectedKartKasaId || null,
+        knownKasalar: kasalar,
+        skipIfPlasiyerde: true,
+      });
+    }
+
+    setNfcModalOpen(false);
+    onSuccess(savedRecord);
+  };
+
+  // iyzico Cep POS App2App Geri Dönüş (Callback URI) Dinleyicisi
+  useEffect(() => {
+    const processCepPosCallback = async (detail?: Record<string, string>) => {
+      if (!detail) return;
+      const pendingTx = getPendingCepPosTx();
+      clearPendingCepPosTx();
+
+      const status = (detail.status || detail.result || '').toLowerCase();
+      if (status === 'failure' || status === 'cancelled' || status === 'cancel' || status === 'error') {
+        setError(detail.errorMessage || detail.message || 'iyzico Cep POS ödemesi iptal edildi veya başarısız oldu.');
+        return;
+      }
+
+      if (!pendingTx) return;
+      try {
+        setLoading(true);
+        const auth = await authorizeNfcPayment({
+          amount: pendingTx.tutar,
+          cardSummary: {
+            success: true,
+            brand: detail.cardBrand || detail.brand || 'iyzico Cep POS',
+            last4: detail.last4 || '',
+            method: 'ceppost_callback',
+          },
+          config: posConfig,
+          source: 'ceppost_callback',
+          externalAuthCode: detail.authCode || detail.paymentId || detail.reference,
+        });
+
+        await handleCompleteNfcPayment({
+          cariId: pendingTx.cariId,
+          tutar: pendingTx.tutar,
+          bankaAdi: auth.bankaAdi,
+          slipNo: auth.slipNo,
+          aciklamaTag: auth.aciklamaTag,
+          userNote: pendingTx.aciklama || '',
+          isTestMode: auth.isTestMode,
+        });
+      } catch (err: unknown) {
+        setError(err instanceof Error ? err.message : 'Cep POS callback işlenemedi.');
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    if (typeof window !== 'undefined' && window.__ANDROID_CEP_POS_CALLBACK__) {
+      const pendingCb = window.__ANDROID_CEP_POS_CALLBACK__;
+      delete window.__ANDROID_CEP_POS_CALLBACK__;
+      void processCepPosCallback(pendingCb);
+    }
+
+    const listener = (e: Event) => {
+      const detail = (e as CustomEvent<Record<string, string>>).detail;
+      if (typeof window !== 'undefined') {
+        delete window.__ANDROID_CEP_POS_CALLBACK__;
+      }
+      void processCepPosCallback(detail);
+    };
+
+    window.addEventListener('androidCepPosCallback', listener);
+    return () => window.removeEventListener('androidCepPosCallback', listener);
+  });
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -1669,57 +1798,75 @@ export const IslemFormPage: React.FC<IslemFormPageProps> = ({
           </p>
         </div>
 
-        {/* Hızlı İşlem Türü Değiştirici: Tahsilat / Tediye / Çapraz Ödeme */}
-        <div className="flex rounded-xl bg-black/40 p-1 border border-white/[0.06] text-xs">
-          <button
-            type="button"
-            onClick={() => {
-              setIsCapraz(false);
-              setTip('tahsilat');
-            }}
-            className={`px-3 py-1.5 rounded-lg font-bold transition flex items-center gap-1.5 ${
-              !isCapraz && tip === 'tahsilat'
-                ? 'bg-teal-400 text-[#0a0e13] shadow'
-                : 'text-gray-400 hover:text-white'
-            }`}
-          >
-            <ArrowDownLeft className="w-3.5 h-3.5" />
-            <span>Tahsilat</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              setIsCapraz(false);
-              setTip('tediye');
-            }}
-            className={`px-3 py-1.5 rounded-lg font-bold transition flex items-center gap-1.5 ${
-              !isCapraz && tip === 'tediye'
-                ? 'bg-orange-400 text-[#0a0e13] shadow'
-                : 'text-gray-400 hover:text-white'
-            }`}
-          >
-            <ArrowUpRight className="w-3.5 h-3.5" />
-            <span>Tediye</span>
-          </button>
-          {!isEditing && (
+        {/* Hızlı İşlem Türü Değiştirici: Tahsilat / Tediye / Çapraz Ödeme + NFC */}
+        <div className="flex flex-wrap items-center gap-2">
+          {!isEditing && tip === 'tahsilat' && !isCapraz && posConfig.nfcEnabled !== false && (
+            <button
+              type="button"
+              data-testid="open_nfc_tahsilat_header_btn"
+              onClick={() => {
+                setTur('kredi_karti');
+                setIsKarma(false);
+                setNfcModalOpen(true);
+              }}
+              className="px-3.5 py-2 rounded-xl bg-gradient-to-r from-teal-400 to-emerald-400 hover:from-teal-300 hover:to-emerald-300 text-[#0a0e13] font-black text-xs flex items-center gap-1.5 shadow-[0_0_20px_rgba(45,212,191,0.3)] transition active:scale-95"
+            >
+              <Wifi className="w-3.5 h-3.5 rotate-90" />
+              <span>NFC Kart Okut</span>
+            </button>
+          )}
+
+          <div className="flex rounded-xl bg-black/40 p-1 border border-white/[0.06] text-xs">
             <button
               type="button"
               onClick={() => {
-                setIsCapraz(true);
-                setIsKarma(false);
+                setIsCapraz(false);
                 setTip('tahsilat');
-                setTur('kredi_karti');
               }}
               className={`px-3 py-1.5 rounded-lg font-bold transition flex items-center gap-1.5 ${
-                isCapraz
-                  ? 'bg-purple-500 text-white shadow-[0_0_15px_rgba(168,85,247,0.4)]'
+                !isCapraz && tip === 'tahsilat'
+                  ? 'bg-teal-400 text-[#0a0e13] shadow'
                   : 'text-gray-400 hover:text-white'
               }`}
             >
-              <ArrowRightLeft className="w-3.5 h-3.5" />
-              <span>Çapraz Ödeme</span>
+              <ArrowDownLeft className="w-3.5 h-3.5" />
+              <span>Tahsilat</span>
             </button>
-          )}
+            <button
+              type="button"
+              onClick={() => {
+                setIsCapraz(false);
+                setTip('tediye');
+              }}
+              className={`px-3 py-1.5 rounded-lg font-bold transition flex items-center gap-1.5 ${
+                !isCapraz && tip === 'tediye'
+                  ? 'bg-orange-400 text-[#0a0e13] shadow'
+                  : 'text-gray-400 hover:text-white'
+              }`}
+            >
+              <ArrowUpRight className="w-3.5 h-3.5" />
+              <span>Tediye</span>
+            </button>
+            {!isEditing && (
+              <button
+                type="button"
+                onClick={() => {
+                  setIsCapraz(true);
+                  setIsKarma(false);
+                  setTip('tahsilat');
+                  setTur('kredi_karti');
+                }}
+                className={`px-3 py-1.5 rounded-lg font-bold transition flex items-center gap-1.5 ${
+                  isCapraz
+                    ? 'bg-purple-500 text-white shadow-[0_0_15px_rgba(168,85,247,0.4)]'
+                    : 'text-gray-400 hover:text-white'
+                }`}
+              >
+                <ArrowRightLeft className="w-3.5 h-3.5" />
+                <span>Çapraz Ödeme</span>
+              </button>
+            )}
+          </div>
         </div>
       </div>
 
@@ -2091,7 +2238,24 @@ export const IslemFormPage: React.FC<IslemFormPageProps> = ({
               </div>
             </div>
 
-            {/* SANAL POS ÖDEME LİNKİ BUTONU */}
+            {/* NFC TEMASSIZ KART OKUTMA & SANAL POS ÖDEME LİNKİ */}
+            {!isEditing && tip === 'tahsilat' && !isCapraz && posConfig.nfcEnabled !== false && (
+              <div className="pt-2 border-t border-white/[0.05] flex flex-col sm:flex-row items-center justify-between gap-2.5 bg-teal-500/[0.06] -mx-1 px-3 py-2.5 rounded-xl border border-teal-500/20">
+                <div className="text-[11px] text-teal-200/90 leading-snug">
+                  <strong className="text-teal-300">NFC ile Temassız Tahsilat:</strong> Tutarı girip kartı telefonun arkasına okutun; cariye, kasaya ve makbuza otomatik işlensin.
+                </div>
+                <button
+                  type="button"
+                  data-testid="open_nfc_tahsilat_btn"
+                  onClick={() => setNfcModalOpen(true)}
+                  className="w-full sm:w-auto px-4 py-2 rounded-xl bg-teal-400 hover:bg-teal-300 text-[#0a0e13] text-xs font-black flex items-center justify-center gap-1.5 shadow-lg transition whitespace-nowrap"
+                >
+                  <Wifi className="w-3.5 h-3.5 rotate-90" />
+                  <span>NFC ile Temassız Tahsilat Al</span>
+                </button>
+              </div>
+            )}
+
             {posConfig.enabled && posConfig.provider !== 'none' && (
               <div className="pt-2 border-t border-white/[0.05] flex flex-col sm:flex-row items-center justify-between gap-2">
                 <span className="text-[11px] text-gray-400">
@@ -2964,6 +3128,19 @@ export const IslemFormPage: React.FC<IslemFormPageProps> = ({
           </div>
         </div>
       )}
+
+      {/* NFC TEMASSIZ KART İLE TAHSİLAT MODALI */}
+      <NfcTahsilatModal
+        isOpen={nfcModalOpen}
+        onClose={() => setNfcModalOpen(false)}
+        firmaId={selectedCari?.firma_id || profile?.firma_id || firma?.id || ''}
+        cariler={sortedCariler}
+        initialCariId={cariId}
+        initialTutar={tutar}
+        initialAciklama={aciklama}
+        posConfig={posConfig}
+        onCompletePayment={handleCompleteNfcPayment}
+      />
     </div>
   );
 };

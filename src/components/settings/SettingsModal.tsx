@@ -14,8 +14,11 @@ import {
   getPosConfig,
   savePosConfig,
   PosConfig,
+  CepPosMode,
   validatePosConfig,
   generatePaymentLink,
+  getAndroidNfcStatus,
+  isAndroidCepPosInstalled,
 } from '../../lib/posService';
 import {
   X,
@@ -45,6 +48,8 @@ import {
   MapPin,
   Save,
   Code2,
+  Wifi,
+  Smartphone,
 } from 'lucide-react';
 import { openWhatsApp } from '../../lib/linkHelper';
 
@@ -1461,51 +1466,160 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
                         {/* iyzico ALANLARI */}
                         {posConfig.provider === 'iyzico' && (
-                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
-                            <div>
-                              <label className="block text-gray-300 font-semibold mb-1">
-                                iyzico API Key *
-                              </label>
-                              <input
-                                type="text"
-                                required
-                                value={posConfig.iyzicoApiKey || ''}
-                                onChange={(e) => setPosConfig({ ...posConfig, iyzicoApiKey: e.target.value })}
-                                placeholder="sandbox-xxx veya canli-api-key"
-                                className="w-full bg-[#0a0e13] border border-white/10 rounded-xl px-3 py-2 text-white font-mono placeholder-gray-500 focus:outline-none focus:border-teal-400"
-                              />
+                          <div className="space-y-4">
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                              <div>
+                                <label className="block text-gray-300 font-semibold mb-1">
+                                  iyzico API Key {posConfig.testMode ? '(Test modunda opsiyonel)' : '*'}
+                                </label>
+                                <input
+                                  type="text"
+                                  required={!posConfig.testMode}
+                                  value={posConfig.iyzicoApiKey || ''}
+                                  onChange={(e) => setPosConfig({ ...posConfig, iyzicoApiKey: e.target.value })}
+                                  placeholder="sandbox-xxx veya canli-api-key"
+                                  className="w-full bg-[#0a0e13] border border-white/10 rounded-xl px-3 py-2 text-white font-mono placeholder-gray-500 focus:outline-none focus:border-teal-400"
+                                />
+                              </div>
+
+                              <div>
+                                <label className="block text-gray-300 font-semibold mb-1">
+                                  iyzico Secret Key {posConfig.testMode ? '(Test modunda opsiyonel)' : '*'}
+                                </label>
+                                <input
+                                  type="password"
+                                  required={!posConfig.testMode}
+                                  value={posConfig.iyzicoSecretKey || ''}
+                                  onChange={(e) => setPosConfig({ ...posConfig, iyzicoSecretKey: e.target.value })}
+                                  placeholder="••••••••••••••••"
+                                  className="w-full bg-[#0a0e13] border border-white/10 rounded-xl px-3 py-2 text-white font-mono placeholder-gray-500 focus:outline-none focus:border-teal-400"
+                                />
+                              </div>
+
+                              <div className="sm:col-span-2">
+                                <label className="block text-gray-300 font-semibold mb-1">
+                                  iyzico API URL / Ortam
+                                </label>
+                                <select
+                                  value={posConfig.iyzicoBaseUrl || 'https://sandbox-api.iyzipay.com'}
+                                  onChange={(e) => setPosConfig({ ...posConfig, iyzicoBaseUrl: e.target.value })}
+                                  className="w-full bg-[#0a0e13] border border-white/10 rounded-xl px-3 py-2 text-white focus:outline-none focus:border-teal-400"
+                                >
+                                  <option value="https://sandbox-api.iyzipay.com">
+                                    Sandbox (Test Ortamı) - https://sandbox-api.iyzipay.com
+                                  </option>
+                                  <option value="https://api.iyzipay.com">
+                                    Canlı Üretim (Production) - https://api.iyzipay.com
+                                  </option>
+                                </select>
+                              </div>
                             </div>
 
-                            <div>
-                              <label className="block text-gray-300 font-semibold mb-1">
-                                iyzico Secret Key *
-                              </label>
-                              <input
-                                type="password"
-                                required
-                                value={posConfig.iyzicoSecretKey || ''}
-                                onChange={(e) => setPosConfig({ ...posConfig, iyzicoSecretKey: e.target.value })}
-                                placeholder="••••••••••••••••"
-                                className="w-full bg-[#0a0e13] border border-white/10 rounded-xl px-3 py-2 text-white font-mono placeholder-gray-500 focus:outline-none focus:border-teal-400"
-                              />
-                            </div>
+                            {/* NFC & iyzico CEP POS (SOFTPOS) PANELİ */}
+                            <div className="p-3.5 rounded-xl bg-teal-500/[0.06] border border-teal-500/20 space-y-3">
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <div className="flex items-center gap-2">
+                                  <Wifi className="w-4 h-4 text-teal-400 rotate-90" />
+                                  <span className="text-xs font-bold text-teal-300">
+                                    iyzico Cep POS & NFC Temassız Tahsilat
+                                  </span>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                  <span className="text-[10px] px-2 py-0.5 rounded-full bg-black/40 border border-white/10 text-gray-300 flex items-center gap-1">
+                                    <Smartphone className="w-3 h-3 text-teal-400" />
+                                    {getAndroidNfcStatus() === 'ready'
+                                      ? 'NFC Hazır'
+                                      : getAndroidNfcStatus() === 'disabled'
+                                      ? 'NFC Kapalı'
+                                      : getAndroidNfcStatus() === 'web'
+                                      ? 'Web Önizleme'
+                                      : 'NFC Yok'}
+                                  </span>
+                                  {isAndroidCepPosInstalled() && (
+                                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 font-bold">
+                                      Cep POS Yüklü
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
 
-                            <div className="sm:col-span-2">
-                              <label className="block text-gray-300 font-semibold mb-1">
-                                iyzico API URL / Ortam
+                              <label className="flex items-center gap-2.5 cursor-pointer">
+                                <input
+                                  type="checkbox"
+                                  data-testid="pos_nfc_enabled_checkbox"
+                                  checked={posConfig.nfcEnabled !== false}
+                                  onChange={(e) => setPosConfig({ ...posConfig, nfcEnabled: e.target.checked })}
+                                  className="w-4 h-4 rounded bg-[#0a0e13] border-white/20 text-teal-400 focus:ring-teal-400"
+                                />
+                                <span className="text-xs font-semibold text-white">
+                                  Tahsilat ekranında NFC ile Temassız Kart Okutma özelliğini göster
+                                </span>
                               </label>
-                              <select
-                                value={posConfig.iyzicoBaseUrl || 'https://sandbox-api.iyzipay.com'}
-                                onChange={(e) => setPosConfig({ ...posConfig, iyzicoBaseUrl: e.target.value })}
-                                className="w-full bg-[#0a0e13] border border-white/10 rounded-xl px-3 py-2 text-white focus:outline-none focus:border-teal-400"
-                              >
-                                <option value="https://sandbox-api.iyzipay.com">
-                                  Sandbox (Test Ortamı) - https://sandbox-api.iyzipay.com
-                                </option>
-                                <option value="https://api.iyzipay.com">
-                                  Canlı Üretim (Production) - https://api.iyzipay.com
-                                </option>
-                              </select>
+
+                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                <div>
+                                  <label className="block text-[11px] text-gray-300 font-semibold mb-1">
+                                    NFC Çalışma Modeli
+                                  </label>
+                                  <select
+                                    data-testid="pos_ceppos_mode_select"
+                                    value={posConfig.cepPosMode || 'hybrid'}
+                                    onChange={(e) =>
+                                      setPosConfig({
+                                        ...posConfig,
+                                        cepPosMode: e.target.value as CepPosMode,
+                                      })
+                                    }
+                                    className="w-full bg-[#0a0e13] border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-teal-400"
+                                  >
+                                    <option value="hybrid">Hibrit (iyzico Cep POS + Android NFC)</option>
+                                    <option value="app2app">Sadece iyzico Cep POS (App2App)</option>
+                                    <option value="nfc_only">Sadece Android NFC Kart Okuyucu</option>
+                                  </select>
+                                </div>
+
+                                <div>
+                                  <label className="block text-[11px] text-gray-300 font-semibold mb-1">
+                                    Cep POS DeepLink / Şema URL (Opsiyonel)
+                                  </label>
+                                  <input
+                                    type="text"
+                                    value={posConfig.cepPosDeepLinkBase || ''}
+                                    onChange={(e) =>
+                                      setPosConfig({ ...posConfig, cepPosDeepLinkBase: e.target.value })
+                                    }
+                                    placeholder="Örn: iyzico://ceppost/payment"
+                                    className="w-full bg-[#0a0e13] border border-white/10 rounded-xl px-3 py-2 text-xs text-white font-mono placeholder-gray-500 focus:outline-none focus:border-teal-400"
+                                  />
+                                </div>
+                              </div>
+
+                              <div className="flex flex-wrap items-center justify-between gap-2 pt-1 text-[11px] text-gray-400">
+                                <span>
+                                  Geri Dönüş (Callback) URI:{' '}
+                                  <code className="text-teal-300 font-mono">
+                                    {posConfig.cepPosCallbackScheme || 'tahsilatim://ceppost-callback'}
+                                  </code>
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    navigator.clipboard.writeText(
+                                      posConfig.cepPosCallbackScheme || 'tahsilatim://ceppost-callback'
+                                    );
+                                    alert('Callback URI kopyalandı!');
+                                  }}
+                                  className="px-2 py-0.5 rounded bg-white/5 hover:bg-white/10 text-gray-200 flex items-center gap-1"
+                                >
+                                  <Copy className="w-3 h-3" />
+                                  <span>Kopyala</span>
+                                </button>
+                              </div>
+
+                              <p className="text-[10px] text-amber-200/80 leading-relaxed bg-amber-500/10 border border-amber-500/20 rounded-lg p-2">
+                                Başvuru veya Test aşamasındayken Android NFC okuyucu gerçek fiziksel karttan marka ve son 4 haneyi okuyarak{' '}
+                                <strong>TEST / SİMÜLASYON</strong> onayıyla makbuzu keser ve kasaya işler. Canlı kart çekimi için iyzico Cep POS App2App bilgilerinizi tanımlayın.
+                              </p>
                             </div>
                           </div>
                         )}
@@ -1515,11 +1629,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5">
                             <div>
                               <label className="block text-gray-300 font-semibold mb-1">
-                                PayTR Mağaza No (Merchant ID) *
+                                PayTR Mağaza No (Merchant ID) {posConfig.testMode ? '(Opsiyonel)' : '*'}
                               </label>
                               <input
                                 type="text"
-                                required
+                                required={!posConfig.testMode}
                                 value={posConfig.paytrMerchantId || ''}
                                 onChange={(e) => setPosConfig({ ...posConfig, paytrMerchantId: e.target.value })}
                                 placeholder="Örn: 123456"
@@ -1529,11 +1643,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
                             <div>
                               <label className="block text-gray-300 font-semibold mb-1">
-                                Mağaza Parolası (Merchant Key) *
+                                Mağaza Parolası (Merchant Key) {posConfig.testMode ? '(Opsiyonel)' : '*'}
                               </label>
                               <input
                                 type="password"
-                                required
+                                required={!posConfig.testMode}
                                 value={posConfig.paytrMerchantKey || ''}
                                 onChange={(e) => setPosConfig({ ...posConfig, paytrMerchantKey: e.target.value })}
                                 placeholder="••••••••"
@@ -1543,11 +1657,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
                             <div>
                               <label className="block text-gray-300 font-semibold mb-1">
-                                Mağaza Gizli Anahtar (Merchant Salt) *
+                                Mağaza Gizli Anahtar (Merchant Salt) {posConfig.testMode ? '(Opsiyonel)' : '*'}
                               </label>
                               <input
                                 type="password"
-                                required
+                                required={!posConfig.testMode}
                                 value={posConfig.paytrMerchantSalt || ''}
                                 onChange={(e) => setPosConfig({ ...posConfig, paytrMerchantSalt: e.target.value })}
                                 placeholder="••••••••"

@@ -66,6 +66,8 @@ export interface RestoreResult {
 
 declare global {
   interface Window {
+    __ANDROID_PENDING_TAB__?: string;
+    __ANDROID_CEP_POS_CALLBACK__?: Record<string, string>;
     AndroidBridge?: {
       sharePdfFile?: (
         base64Data: string,
@@ -82,6 +84,13 @@ declare global {
         fileName: string,
         mimeType: string
       ) => boolean;
+      requestPinHomeWidget?: () => boolean;
+      getNfcStatus?: () => 'ready' | 'disabled' | 'unsupported' | string;
+      openNfcSettings?: () => boolean;
+      startNfcReader?: () => 'started' | 'disabled' | 'unsupported' | string;
+      stopNfcReader?: () => boolean;
+      isCepPosAppInstalled?: () => boolean;
+      launchCepPosDeepLink?: (deepLinkUrl?: string) => boolean;
     };
   }
 }

@@ -5,15 +5,20 @@ import android.annotation.SuppressLint
 import android.app.Activity
 import android.app.AlarmManager
 import android.app.PendingIntent
+import android.appwidget.AppWidgetManager
 import android.content.ClipData
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.net.Uri
+import android.nfc.NfcAdapter
+import android.nfc.Tag
 import android.os.Build
 import android.os.Bundle
 import android.os.Parcelable
+import android.provider.Settings
 import android.util.Base64
 import android.util.Log
 import android.view.ViewGroup
@@ -28,10 +33,10 @@ import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.FrameLayout
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
-import androidx.activity.result.ActivityResultLauncher
-import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import androidx.core.view.ViewCompat
@@ -42,38 +47,23 @@ import java.io.ByteArrayInputStream
 import java.io.File
 import java.io.FileOutputStream
 import java.util.Calendar
+import org.json.JSONObject
 
 class MainActivity : ComponentActivity() {
   private var webView: WebView? = null
   private var filePathCallback: ValueCallback<Array<Uri>>? = null
   private var pendingOpenTab: String? = null
-
-  private val notificationPermissionLauncher: ActivityResultLauncher<String> =
-    registerForActivityResult(ActivityResultContracts.RequestPermission()) { _ -> }
-
-  private val fileChooserLauncher: ActivityResultLauncher<Intent> =
-    registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-      val callback = filePathCallback
-      filePathCallback = null
-      if (callback == null) return@registerForActivityResult
-
-      var results: Array<Uri>? = null
-      if (result.resultCode == Activity.RESULT_OK && result.data != null) {
-        val data = result.data!!
-        val clipData = data.clipData
-        if (clipData != null && clipData.itemCount > 0) {
-          results = Array(clipData.itemCount) { i -> clipData.getItemAt(i).uri }
-        } else if (data.data != null) {
-          results = arrayOf(data.data!!)
-        }
-      }
-      callback.onReceiveValue(results)
-    }
+  private var pendingCepPosCallbackJson: String? = null
+  @Volatile
+  private var nfcReaderActive: Boolean = false
+  private var nfcAdapter: NfcAdapter? = null
 
   companion object {
     private const val APP_ASSETS_ORIGIN = "https://appassets.androidplatform.net"
     private const val APP_ASSETS_ENTRY = "$APP_ASSETS_ORIGIN/assets/index.html"
+    private const val FILE_CHOOSER_REQUEST_CODE = 5001
     private const val FRIDAY_BACKUP_REQUEST_CODE = 5002
+    private const val NOTIFICATION_PERMISSION_REQUEST_CODE = 5003
   }
 
   private fun guessMimeType(path: String): String {
@@ -103,10 +93,9 @@ class MainActivity : ComponentActivity() {
     WindowCompat.setDecorFitsSystemWindows(window, false)
     hideSystemBars()
 
+    nfcAdapter = NfcAdapter.getDefaultAdapter(this)
     pendingOpenTab = intent?.getStringExtra("open_tab")
-    FridayBackupReceiver.ensureChannel(this)
-    requestNotificationPermissionIfNeeded()
-    scheduleWeeklyFridayBackupReminder()
+    pendingCepPosCallbackJson = extractCepPosCallbackJson(intent)
 
     try {
       WebView.setWebContentsDebuggingEnabled(true)
@@ -164,7 +153,8 @@ class MainActivity : ComponentActivity() {
               if (fileChooserParams?.mode == FileChooserParams.MODE_OPEN_MULTIPLE) {
                 intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
               }
-              fileChooserLauncher.launch(intent)
+              @Suppress("DEPRECATION")
+              startActivityForResult(intent, FILE_CHOOSER_REQUEST_CODE)
               true
             } catch (e: Exception) {
               Log.e("MainActivity", "File chooser error", e)
@@ -238,6 +228,11 @@ class MainActivity : ComponentActivity() {
               pendingOpenTab = null
               dispatchOpenTabToWeb(tabToOpen)
             }
+            val cepCallback = pendingCepPosCallbackJson
+            if (!cepCallback.isNullOrBlank()) {
+              pendingCepPosCallbackJson = null
+              dispatchCepPosCallbackToWeb(cepCallback)
+            }
           }
 
           override fun onReceivedError(
@@ -301,6 +296,14 @@ class MainActivity : ComponentActivity() {
           }
         }
       })
+
+      try {
+        FridayBackupReceiver.ensureChannel(this)
+        scheduleWeeklyFridayBackupReminder()
+        requestNotificationPermissionIfNeeded()
+      } catch (e: Exception) {
+        Log.w("MainActivity", "Notification setup warning", e)
+      }
     } catch (e: Exception) {
       Log.e("MainActivity", "Failed to initialize WebView", e)
     }
@@ -587,6 +590,41 @@ class MainActivity : ComponentActivity() {
     }
 
     @JavascriptInterface
+    fun requestPinHomeWidget(): Boolean {
+      return try {
+        runOnUiThread {
+          try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+              val appWidgetManager = AppWidgetManager.getInstance(this@MainActivity)
+              val provider = ComponentName(this@MainActivity, TahsilatWidgetProvider::class.java)
+              if (appWidgetManager.isRequestPinAppWidgetSupported) {
+                appWidgetManager.requestPinAppWidget(provider, null, null)
+              } else {
+                Toast.makeText(
+                  this@MainActivity,
+                  "Ana ekrana basılı tutup Widget'lar menüsünden Tahsilatım Widget'ını ekleyebilirsiniz.",
+                  Toast.LENGTH_LONG
+                ).show()
+              }
+            } else {
+              Toast.makeText(
+                this@MainActivity,
+                "Ana ekrana basılı tutup Widget'lar menüsünden Tahsilatım Widget'ını ekleyebilirsiniz.",
+                Toast.LENGTH_LONG
+              ).show()
+            }
+          } catch (e: Exception) {
+            Log.e("AndroidBridge", "requestPinHomeWidget UI error", e)
+          }
+        }
+        true
+      } catch (e: Exception) {
+        Log.e("AndroidBridge", "requestPinHomeWidget failed", e)
+        false
+      }
+    }
+
+    @JavascriptInterface
     fun openExternal(url: String?): Boolean {
       if (url.isNullOrBlank()) return false
       return try {
@@ -599,6 +637,172 @@ class MainActivity : ComponentActivity() {
         false
       }
     }
+
+    @JavascriptInterface
+    fun getNfcStatus(): String {
+      val adapter = nfcAdapter ?: NfcAdapter.getDefaultAdapter(this@MainActivity).also {
+        nfcAdapter = it
+      }
+      return when {
+        adapter == null -> "unsupported"
+        !adapter.isEnabled -> "disabled"
+        else -> "ready"
+      }
+    }
+
+    @JavascriptInterface
+    fun openNfcSettings(): Boolean {
+      return try {
+        runOnUiThread {
+          val intent = Intent(Settings.ACTION_NFC_SETTINGS).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+          }
+          startActivity(intent)
+        }
+        true
+      } catch (e: Exception) {
+        Log.e("AndroidBridge", "openNfcSettings failed", e)
+        false
+      }
+    }
+
+    @JavascriptInterface
+    fun startNfcReader(): String {
+      val adapter = nfcAdapter ?: NfcAdapter.getDefaultAdapter(this@MainActivity).also {
+        nfcAdapter = it
+      }
+      if (adapter == null) return "unsupported"
+      if (!adapter.isEnabled) return "disabled"
+      nfcReaderActive = true
+      runOnUiThread {
+        enableNfcReaderModeInternal()
+      }
+      return "started"
+    }
+
+    @JavascriptInterface
+    fun stopNfcReader(): Boolean {
+      nfcReaderActive = false
+      runOnUiThread {
+        disableNfcReaderModeInternal()
+      }
+      return true
+    }
+
+    @JavascriptInterface
+    fun isCepPosAppInstalled(): Boolean {
+      val candidates = listOf("com.iyzico.ceppos", "com.iyzico.isimicin")
+      for (pkg in candidates) {
+        if (isPackageInstalled(pkg)) return true
+      }
+      return false
+    }
+
+    @JavascriptInterface
+    fun launchCepPosDeepLink(deepLinkUrl: String?): Boolean {
+      return try {
+        val trimmed = deepLinkUrl?.trim() ?: ""
+        runOnUiThread {
+          try {
+            if (trimmed.isNotEmpty()) {
+              val intent = Intent(Intent.ACTION_VIEW, Uri.parse(trimmed)).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+              }
+              startActivity(intent)
+            } else {
+              val installedPkg = listOf("com.iyzico.ceppos", "com.iyzico.isimicin")
+                .firstOrNull { isPackageInstalled(it) }
+              val launchIntent = installedPkg?.let { packageManager.getLaunchIntentForPackage(it) }
+              if (launchIntent != null) {
+                launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                startActivity(launchIntent)
+              } else {
+                Toast.makeText(
+                  this@MainActivity,
+                  "iyzico Cep POS uygulaması cihazda bulunamadı.",
+                  Toast.LENGTH_SHORT
+                ).show()
+              }
+            }
+          } catch (e: Exception) {
+            Log.e("AndroidBridge", "launchCepPosDeepLink UI error", e)
+          }
+        }
+        true
+      } catch (e: Exception) {
+        Log.e("AndroidBridge", "launchCepPosDeepLink failed", e)
+        false
+      }
+    }
+  }
+
+  private fun isPackageInstalled(packageName: String): Boolean {
+    return try {
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        packageManager.getPackageInfo(packageName, PackageManager.PackageInfoFlags.of(0))
+      } else {
+        @Suppress("DEPRECATION")
+        packageManager.getPackageInfo(packageName, 0)
+      }
+      true
+    } catch (_: Exception) {
+      false
+    }
+  }
+
+  private val nfcReaderCallback = NfcAdapter.ReaderCallback { tag: Tag? ->
+    if (tag == null || !nfcReaderActive) return@ReaderCallback
+    val summary = NfcEmvHelper.readCardSummary(tag)
+    if (summary.success) {
+      nfcReaderActive = false
+      runOnUiThread {
+        disableNfcReaderModeInternal()
+        val payload = summary.toJson().toString()
+        val js = "window.dispatchEvent(new CustomEvent('androidNfcCardRead',{detail:$payload}));"
+        webView?.evaluateJavascript(js, null)
+      }
+    } else {
+      runOnUiThread {
+        val errPayload = JSONObject().apply {
+          put("error", summary.error ?: "Kart okunamadı.")
+        }.toString()
+        val js = "window.dispatchEvent(new CustomEvent('androidNfcError',{detail:$errPayload}));"
+        webView?.evaluateJavascript(js, null)
+      }
+    }
+  }
+
+  private fun enableNfcReaderModeInternal() {
+    val adapter = nfcAdapter ?: return
+    if (!adapter.isEnabled || !nfcReaderActive) return
+    try {
+      val flags = NfcAdapter.FLAG_READER_NFC_A or
+        NfcAdapter.FLAG_READER_NFC_B or
+        NfcAdapter.FLAG_READER_SKIP_NDEF_CHECK
+      adapter.enableReaderMode(this, nfcReaderCallback, flags, null)
+    } catch (e: Exception) {
+      Log.w("MainActivity", "enableReaderMode warning", e)
+    }
+  }
+
+  private fun disableNfcReaderModeInternal() {
+    try {
+      nfcAdapter?.disableReaderMode(this)
+    } catch (e: Exception) {
+      Log.w("MainActivity", "disableReaderMode warning", e)
+    }
+  }
+
+  override fun onResume() {
+    super.onResume()
+    if (nfcReaderActive) {
+      enableNfcReaderModeInternal()
+    }
+  }
+
+  override fun onPause() {
+    disableNfcReaderModeInternal()
+    super.onPause()
   }
 
   override fun onNewIntent(intent: Intent) {
@@ -608,16 +812,62 @@ class MainActivity : ComponentActivity() {
     if (!openTab.isNullOrBlank()) {
       dispatchOpenTabToWeb(openTab)
     }
+    val cepCallbackJson = extractCepPosCallbackJson(intent)
+    if (!cepCallbackJson.isNullOrBlank()) {
+      dispatchCepPosCallbackToWeb(cepCallbackJson)
+    }
+  }
+
+  private fun extractCepPosCallbackJson(intent: Intent?): String? {
+    val data = intent?.data ?: return null
+    if (data.scheme != "tahsilatim" || data.host != "ceppost-callback") return null
+    return try {
+      val json = JSONObject()
+      for (name in data.queryParameterNames) {
+        json.put(name, data.getQueryParameter(name) ?: "")
+      }
+      json.put("rawUrl", data.toString())
+      json.toString()
+    } catch (e: Exception) {
+      Log.w("MainActivity", "Failed to parse ceppost callback URI", e)
+      null
+    }
+  }
+
+  private fun dispatchCepPosCallbackToWeb(jsonString: String) {
+    val js = "window.__ANDROID_CEP_POS_CALLBACK__=$jsonString;window.dispatchEvent(new CustomEvent('androidCepPosCallback',{detail:$jsonString}));"
+    webView?.post { webView?.evaluateJavascript(js, null) }
+    webView?.postDelayed({ webView?.evaluateJavascript(js, null) }, 350)
   }
 
   private fun dispatchOpenTabToWeb(tab: String) {
-    val sanitized = tab.replace("'", "")
-    webView?.postDelayed({
-      webView?.evaluateJavascript(
-        "window.dispatchEvent(new CustomEvent('androidOpenTab', { detail: '$sanitized' }));",
-        null
-      )
-    }, 350)
+    val sanitized = tab.replace("'", "").trim()
+    if (sanitized.isEmpty()) return
+    val js = "window.__ANDROID_PENDING_TAB__='$sanitized';window.dispatchEvent(new CustomEvent('androidOpenTab',{detail:'$sanitized'}));"
+    webView?.post { webView?.evaluateJavascript(js, null) }
+    webView?.postDelayed({ webView?.evaluateJavascript(js, null) }, 350)
+  }
+
+  @Deprecated("Deprecated in Java")
+  override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+    @Suppress("DEPRECATION")
+    super.onActivityResult(requestCode, resultCode, data)
+    if (requestCode == FILE_CHOOSER_REQUEST_CODE) {
+      val callback = filePathCallback
+      filePathCallback = null
+      if (callback == null) return
+
+      var results: Array<Uri>? = null
+      if (resultCode == Activity.RESULT_OK && data != null) {
+        val clipData = data.clipData
+        if (clipData != null && clipData.itemCount > 0) {
+          results = Array(clipData.itemCount) { i -> clipData.getItemAt(i).uri }
+        } else if (data.data != null) {
+          results = arrayOf(data.data!!)
+        }
+      }
+      callback.onReceiveValue(results)
+    }
   }
 
   private fun requestNotificationPermissionIfNeeded() {
@@ -627,7 +877,11 @@ class MainActivity : ComponentActivity() {
         Manifest.permission.POST_NOTIFICATIONS
       ) == PackageManager.PERMISSION_GRANTED
       if (!granted) {
-        notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        ActivityCompat.requestPermissions(
+          this,
+          arrayOf(Manifest.permission.POST_NOTIFICATIONS),
+          NOTIFICATION_PERMISSION_REQUEST_CODE
+        )
       }
     }
   }
@@ -636,11 +890,7 @@ class MainActivity : ComponentActivity() {
     try {
       val alarmManager = getSystemService(Context.ALARM_SERVICE) as? AlarmManager ?: return
       val intent = Intent(this, FridayBackupReceiver::class.java)
-      val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-      } else {
-        PendingIntent.FLAG_UPDATE_CURRENT
-      }
+      val flags = PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
       val pendingIntent = PendingIntent.getBroadcast(
         this,
         FRIDAY_BACKUP_REQUEST_CODE,

@@ -4,12 +4,29 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.NFC" />
 
-    <!-- Android 11+ (API 30+) Paket Görünürlüğü (WhatsApp, Mail, Telefon ve Tarayıcı) -->
+    <uses-feature
+        android:name="android.hardware.nfc"
+        android:required="false" />
+
+    <!-- Android 11+ (API 30+) Paket Görünürlüğü (WhatsApp, Mail, Telefon, iyzico Cep POS ve Tarayıcı) -->
     <queries>
         <!-- WhatsApp resmi uygulaması ve WhatsApp Business -->
         <package android:name="com.whatsapp" />
         <package android:name="com.whatsapp.w4b" />
+
+        <!-- iyzico Cep POS / İşim İçin uygulamaları -->
+        <package android:name="com.iyzico.ceppos" />
+        <package android:name="com.iyzico.isimicin" />
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="iyzico" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="ceppost" />
+        </intent>
         
         <!-- Web ve Genel HTTPS intentleri -->
         <intent>
@@ -59,12 +76,21 @@
         <activity
             android:name=".MainActivity"
             android:exported="true"
+            android:launchMode="singleTop"
             android:label="@string/app_name"
             android:windowSoftInputMode="adjustResize"
             android:theme="@style/Theme.MyApplication">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="tahsilatim"
+                    android:host="ceppost-callback" />
             </intent-filter>
         </activity>
 
@@ -82,5 +108,17 @@
         <receiver
             android:name=".FridayBackupReceiver"
             android:exported="false" />
+
+        <receiver
+            android:name=".TahsilatWidgetProvider"
+            android:exported="true"
+            android:label="@string/widget_name">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/tahsilat_widget_info" />
+        </receiver>
     </application>
 </manifest>

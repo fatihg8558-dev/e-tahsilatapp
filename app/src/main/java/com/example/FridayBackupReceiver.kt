@@ -56,11 +56,7 @@ class FridayBackupReceiver : BroadcastReceiver() {
         flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
         putExtra("open_tab", "yedekleme")
       }
-      val pendingIntentFlags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-      } else {
-        PendingIntent.FLAG_UPDATE_CURRENT
-      }
+      val pendingIntentFlags = PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
       val contentIntent = PendingIntent.getActivity(
         context,
         NOTIFICATION_ID,
