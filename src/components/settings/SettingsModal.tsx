@@ -1,12 +1,15 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../../context/AuthContext';
-import { supabase } from '../../lib/supabase';
+import { supabase, handleSupabaseError } from '../../lib/supabase';
 import {
   createPlasiyer,
   fetchPlasiyerler,
   togglePlasiyerAktif,
+  deletePlasiyer,
   PlasiyerItem,
+  PLASIYER_RLS_SQL,
 } from '../../lib/plasiyerService';
+import { deleteFirmaAndAccounts } from '../../lib/accountDeleteHelper';
 import {
   getPosConfig,
   savePosConfig,
@@ -39,6 +42,9 @@ import {
   Globe,
   Share2,
   LogOut,
+  MapPin,
+  Save,
+  Code2,
 } from 'lucide-react';
 import { openWhatsApp } from '../../lib/linkHelper';
 
@@ -84,18 +90,47 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const [formSuccess, setFormSuccess] = useState<string | null>(null);
+  const [formWarning, setFormWarning] = useState<string | null>(null);
+  const [showRlsSqlHelp, setShowRlsSqlHelp] = useState(false);
+  const [copiedSql, setCopiedSql] = useState(false);
+
+  // Firma Bilgileri Düzenleme Durumu
+  const [firmaUnvan, setFirmaUnvan] = useState(firma?.unvan || '');
+  const [firmaVergiNo, setFirmaVergiNo] = useState(firma?.vergi_no || '');
+  const [firmaVergiDairesi, setFirmaVergiDairesi] = useState(firma?.vergi_dairesi || '');
+  const [firmaTelefon, setFirmaTelefon] = useState(firma?.telefon || '');
+  const [firmaEmail, setFirmaEmail] = useState(firma?.email || '');
+  const [firmaAdres, setFirmaAdres] = useState(firma?.adres || '');
+  const [firmaWeb, setFirmaWeb] = useState(firma?.web || '');
+  const [firmaSaving, setFirmaSaving] = useState(false);
+  const [firmaMsg, setFirmaMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [deletingPlasiyerId, setDeletingPlasiyerId] = useState<string | null>(null);
+  const [deletingOwnFirma, setDeletingOwnFirma] = useState(false);
 
   // Kopyalama bildirim durumu
   const [copiedEmail, setCopiedEmail] = useState<string | null>(null);
 
   const isAnaHesap = profile?.rol === 'ana' || isSuperAdmin;
 
-  // Firma değiştiğinde POS konfigürasyonunu yükle
+  // Modal açıldığında veya firma değiştiğinde aktif sekme, firma formu ve POS konfigürasyonunu senkronize et
   useEffect(() => {
+    if (isOpen) {
+      setActiveTab(initialTab);
+    }
     if (firma?.id) {
       setPosConfig(getPosConfig(firma.id));
     }
-  }, [firma?.id]);
+    if (isOpen && firma) {
+      setFirmaUnvan(firma.unvan || '');
+      setFirmaVergiNo(firma.vergi_no || '');
+      setFirmaVergiDairesi(firma.vergi_dairesi || '');
+      setFirmaTelefon(firma.telefon || '');
+      setFirmaEmail(firma.email || '');
+      setFirmaAdres(firma.adres || '');
+      setFirmaWeb(firma.web || '');
+      setFirmaMsg(null);
+    }
+  }, [isOpen, firma]);
 
   const loadPlasiyerler = async () => {
     if (!firma?.id) return;
@@ -131,29 +166,42 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       setSaving(true);
       setFormError(null);
       setFormSuccess(null);
+      setFormWarning(null);
+
+      const createdAdSoyad = adSoyad.trim();
+      const createdEmail = email.trim().toLowerCase();
 
       const res = await createPlasiyer({
-        ad_soyad: adSoyad,
-        email,
+        ad_soyad: createdAdSoyad,
+        email: createdEmail,
         password,
         telefon,
         firma_id: firma.id,
         ana_hesap_id: profile.id,
+        firma_unvan: firma.unvan,
       });
 
       if (!res.success) {
         setFormError(res.error || 'Plasiyer kaydı başarısız oldu.');
+        if (res.rlsWarning) {
+          setShowRlsSqlHelp(true);
+        }
       } else {
-        setFormSuccess(
-          `Plasiyer "${adSoyad}" başarıyla oluşturuldu! Belirlediğiniz e-posta (${email}) ve şifre ile giriş yapabilir.`
-        );
+        if (res.warning) {
+          setFormWarning(res.warning);
+          setShowRlsSqlHelp(true);
+        } else {
+          setFormSuccess(
+            `Plasiyer "${createdAdSoyad}" başarıyla oluşturuldu ve firmanıza bağlandı! Belirlediğiniz e-posta (${createdEmail}) ve şifre ile giriş yapabilir.`
+          );
+        }
         // Formu temizle
         setAdSoyad('');
         setEmail('');
         setPassword('');
         setTelefon('');
         // Listeyi tazele
-        loadPlasiyerler();
+        await loadPlasiyerler();
       }
     } catch {
       setFormError('Beklenmeyen bir hata oluştu.');
@@ -171,6 +219,65 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       );
     } else {
       alert(res.error || 'Durum güncellenemedi.');
+    }
+  };
+
+  const handleDeletePlasiyer = async (p: PlasiyerItem) => {
+    if (
+      !window.confirm(
+        `"${p.ad_soyad}" (${p.email}) plasiyer hesabını kalıcı olarak silmek istediğinize emin misiniz?\n\nKestiği makbuzlar firmada korunur ancak plasiyer hesabı silinir.`
+      )
+    ) {
+      return;
+    }
+
+    try {
+      setDeletingPlasiyerId(p.id);
+      const res = await deletePlasiyer(p.id, profile?.id);
+      if (res.success) {
+        setPlasiyerler((prev) => prev.filter((item) => item.id !== p.id));
+        setFormSuccess(`Plasiyer "${p.ad_soyad}" başarıyla silindi.`);
+      } else {
+        setFormError(res.error || 'Plasiyer silinemedi.');
+        if (res.rlsWarning) {
+          setShowRlsSqlHelp(true);
+        }
+      }
+    } finally {
+      setDeletingPlasiyerId(null);
+    }
+  };
+
+  const handleDeleteOwnFirma = async () => {
+    if (!firma?.id) return;
+    if (
+      !window.confirm(
+        `DİKKAT: "${firma.unvan}" firmasını ve firmaya bağlı TÜM kullanıcı hesaplarını, carileri, makbuzları ve kasa kayıtlarını kalıcı olarak silmek istediğinize emin misiniz? Bu işlem geri alınamaz!`
+      )
+    ) {
+      return;
+    }
+
+    const typed = window.prompt('Onaylamak için firma ünvanını veya SİL yazınız:');
+    if (!typed || (typed.trim().toUpperCase() !== 'SİL' && typed.trim().toUpperCase() !== 'SIL' && typed.trim() !== firma.unvan.trim())) {
+      return;
+    }
+
+    try {
+      setDeletingOwnFirma(true);
+      setFirmaMsg(null);
+      const res = await deleteFirmaAndAccounts(firma.id, profile?.id);
+      if (!res.success) {
+        setFirmaMsg({
+          type: 'error',
+          text: res.error || 'Hesap ve firma silinemedi.',
+        });
+        return;
+      }
+      onClose();
+      await signOut();
+    } finally {
+      setDeletingOwnFirma(false);
     }
   };
 
@@ -268,6 +375,60 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       }
     } finally {
       setLogoUploading(false);
+    }
+  };
+
+  const handleSaveFirmaInfo = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!firma?.id) return;
+
+    const cleanUnvan = firmaUnvan.trim();
+    const cleanVergiNo = firmaVergiNo.trim();
+    if (!cleanUnvan) {
+      setFirmaMsg({ type: 'error', text: 'Firma ünvanı boş bırakılamaz.' });
+      return;
+    }
+    if (!cleanVergiNo) {
+      setFirmaMsg({ type: 'error', text: 'Vergi No / TCKN boş bırakılamaz.' });
+      return;
+    }
+
+    try {
+      setFirmaSaving(true);
+      setFirmaMsg(null);
+
+      const { error } = await supabase
+        .from('firmalar')
+        .update({
+          unvan: cleanUnvan,
+          vergi_no: cleanVergiNo,
+          vergi_dairesi: firmaVergiDairesi.trim() || null,
+          telefon: firmaTelefon.trim() || null,
+          email: firmaEmail.trim() || null,
+          adres: firmaAdres.trim() || null,
+          web: firmaWeb.trim() || null,
+        })
+        .eq('id', firma.id);
+
+      if (error) {
+        setFirmaMsg({
+          type: 'error',
+          text: handleSupabaseError(error, 'Firma bilgileri güncellenemedi.', {
+            isFirmaUnlimited: Boolean(firma.sinirsiz),
+          }),
+        });
+        return;
+      }
+
+      await refreshProfileAndFirma();
+      setFirmaMsg({ type: 'success', text: 'Firma bilgileriniz başarıyla güncellendi!' });
+    } catch (err) {
+      setFirmaMsg({
+        type: 'error',
+        text: handleSupabaseError(err, 'Firma bilgileri güncellenirken beklenmeyen bir hata oluştu.'),
+      });
+    } finally {
+      setFirmaSaving(false);
     }
   };
 
@@ -456,9 +617,16 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       </div>
 
                       {formError && (
-                        <div className="p-3 rounded-xl bg-red-500/10 border border-red-500/20 text-red-400 text-xs flex items-center gap-2">
-                          <AlertCircle className="w-4 h-4 shrink-0" />
+                        <div className="p-3 rounded-xl bg-red-500/10 border border-red-500/20 text-red-400 text-xs flex items-start gap-2">
+                          <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
                           <span>{formError}</span>
+                        </div>
+                      )}
+
+                      {formWarning && (
+                        <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/25 text-amber-300 text-xs flex items-start gap-2">
+                          <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                          <span>{formWarning}</span>
                         </div>
                       )}
 
@@ -686,7 +854,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                               </div>
                             </div>
 
-                            {/* DURUM TOGGLE BUTONU */}
+                            {/* DURUM TOGGLE & SİLME BUTONU */}
                             <div className="flex items-center gap-2 self-end sm:self-center">
                               <button
                                 onClick={() => handleToggleAktif(p)}
@@ -699,9 +867,65 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                                 <Power className="w-3.5 h-3.5" />
                                 <span>{p.aktif ? 'Hesabı Dondur' : 'Aktif Et'}</span>
                               </button>
+
+                              <button
+                                type="button"
+                                disabled={deletingPlasiyerId === p.id}
+                                data-testid={`delete_plasiyer_btn_${p.id}`}
+                                onClick={() => handleDeletePlasiyer(p)}
+                                title="Plasiyer Hesabını Sil"
+                                className="px-2.5 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition border bg-red-500/10 hover:bg-red-500/20 text-red-300 border-red-500/30 disabled:opacity-50"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                                <span>{deletingPlasiyerId === p.id ? 'Siliniyor...' : 'Sil'}</span>
+                              </button>
                             </div>
                           </div>
                         ))}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* VERİTABANI RLS / ONARIM YARDIMCISI */}
+                  <div className="pt-2 border-t border-white/[0.06] space-y-3">
+                    <button
+                      type="button"
+                      onClick={() => setShowRlsSqlHelp((prev) => !prev)}
+                      data-testid="toggle_plasiyer_rls_sql_btn"
+                      className="text-[11px] font-semibold text-amber-300/90 hover:text-amber-200 flex items-center gap-1.5 transition"
+                    >
+                      <Code2 className="w-3.5 h-3.5" />
+                      <span>
+                        {showRlsSqlHelp
+                          ? 'Plasiyer DB / RLS Onarım SQL Kodunu Gizle'
+                          : 'Plasiyer listede görünmüyorsa veya carileri göremiyorsa DB / RLS Onarım SQL’i Göster'}
+                      </span>
+                    </button>
+
+                    {showRlsSqlHelp && (
+                      <div className="p-4 rounded-xl bg-[#0a0e13] border border-amber-500/30 space-y-3">
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                          <p className="text-[11px] text-gray-300 leading-relaxed">
+                            Daha önce eklediğiniz plasiyerler ana hesapta görünmüyorsa veya plasiyer girişinde cariler boş geliyorsa, bu SQL kodunu{' '}
+                            <strong className="text-amber-300">Supabase Dashboard &gt; SQL Editor</strong> kısmında bir kez çalıştırın.
+                          </p>
+                          <button
+                            type="button"
+                            data-testid="copy_plasiyer_rls_sql_btn"
+                            onClick={() => {
+                              navigator.clipboard.writeText(PLASIYER_RLS_SQL);
+                              setCopiedSql(true);
+                              setTimeout(() => setCopiedSql(false), 2000);
+                            }}
+                            className="shrink-0 px-3 py-1.5 rounded-lg bg-amber-400 hover:bg-amber-300 text-[#0a0e13] font-bold text-[11px] flex items-center gap-1.5 transition"
+                          >
+                            {copiedSql ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                            <span>{copiedSql ? 'SQL Kopyalandı' : 'SQL Kopyala'}</span>
+                          </button>
+                        </div>
+                        <pre className="p-3 rounded-lg bg-black/50 border border-white/10 text-[10px] text-teal-300 overflow-x-auto max-h-48 font-mono leading-relaxed">
+                          {PLASIYER_RLS_SQL}
+                        </pre>
                       </div>
                     )}
                   </div>
@@ -713,7 +937,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           {/* TAB 2: FİRMA VE LİSANS BİLGİLERİ */}
           {activeTab === 'firma' && (
             <div className="space-y-5 text-xs">
-              <div className="p-4 rounded-xl bg-black/20 border border-white/[0.06] space-y-3">
+              <div className="p-4 rounded-xl bg-black/20 border border-white/[0.06] space-y-4">
                 <div className="flex items-center justify-between pb-2 border-b border-white/[0.05]">
                   <span className="font-bold text-white uppercase text-xs tracking-wider">
                     Firma Bilgileri
@@ -723,41 +947,220 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   </span>
                 </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-gray-300">
-                  <div>
-                    <span className="text-gray-500 block text-[10px] uppercase font-semibold">Firma Ünvanı</span>
-                    <span className="font-bold text-white text-sm">{firma?.unvan || '-'}</span>
-                  </div>
-
-                  <div>
-                    <span className="text-gray-500 block text-[10px] uppercase font-semibold">Vergi No / TCKN</span>
-                    <span className="font-mono text-white">{firma?.vergi_no || '-'}</span>
-                  </div>
-
+                {/* Yetkili & Hesap Özeti */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 p-3 rounded-xl bg-white/[0.02] border border-white/[0.04] text-gray-300">
                   <div>
                     <span className="text-gray-500 block text-[10px] uppercase font-semibold">Yetkili Ad Soyad</span>
-                    <span className="text-white">{profile?.ad_soyad || '-'}</span>
+                    <span className="text-white font-semibold">{profile?.ad_soyad || '-'}</span>
                   </div>
-
                   <div>
-                    <span className="text-gray-500 block text-[10px] uppercase font-semibold">Kayıtlı E-posta</span>
+                    <span className="text-gray-500 block text-[10px] uppercase font-semibold">Kayıtlı Giriş E-postası</span>
                     <span className="font-mono text-white">{profile?.email || user?.email || '-'}</span>
                   </div>
-
-                  {firma?.telefon && (
-                    <div>
-                      <span className="text-gray-500 block text-[10px] uppercase font-semibold">Telefon</span>
-                      <span className="text-white">{firma.telefon}</span>
-                    </div>
-                  )}
-
-                  {firma?.vergi_dairesi && (
-                    <div>
-                      <span className="text-gray-500 block text-[10px] uppercase font-semibold">Vergi Dairesi</span>
-                      <span className="text-white">{firma.vergi_dairesi}</span>
-                    </div>
-                  )}
                 </div>
+
+                {firmaMsg && (
+                  <div
+                    className={`p-3 rounded-xl text-xs flex items-center gap-2 ${
+                      firmaMsg.type === 'success'
+                        ? 'bg-emerald-500/10 border border-emerald-500/20 text-emerald-300'
+                        : 'bg-red-500/10 border border-red-500/20 text-red-400'
+                    }`}
+                  >
+                    {firmaMsg.type === 'success' ? (
+                      <CheckCircle2 className="w-4 h-4 shrink-0" />
+                    ) : (
+                      <AlertCircle className="w-4 h-4 shrink-0" />
+                    )}
+                    <span>{firmaMsg.text}</span>
+                  </div>
+                )}
+
+                {isAnaHesap ? (
+                  <form onSubmit={handleSaveFirmaInfo} className="space-y-3.5">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                      <div>
+                        <label className="block text-gray-300 font-semibold mb-1">
+                          Firma Ünvanı *
+                        </label>
+                        <input
+                          type="text"
+                          required
+                          data-testid="firma_unvan_input"
+                          value={firmaUnvan}
+                          onChange={(e) => setFirmaUnvan(e.target.value)}
+                          placeholder="Örn: Örnek Ticaret Ltd. Şti."
+                          className="w-full min-h-[44px] bg-[#0a0e13] border border-white/10 rounded-xl px-3 py-2 text-white placeholder-gray-500 focus:outline-none focus:border-teal-400"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-gray-300 font-semibold mb-1">
+                          Vergi No / TCKN *
+                        </label>
+                        <input
+                          type="text"
+                          required
+                          data-testid="firma_vergi_no_input"
+                          value={firmaVergiNo}
+                          onChange={(e) => setFirmaVergiNo(e.target.value)}
+                          placeholder="10 veya 11 haneli numara"
+                          className="w-full min-h-[44px] bg-[#0a0e13] border border-white/10 rounded-xl px-3 py-2 text-white font-mono placeholder-gray-500 focus:outline-none focus:border-teal-400"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-gray-300 font-semibold mb-1">
+                          Vergi Dairesi
+                        </label>
+                        <input
+                          type="text"
+                          data-testid="firma_vergi_dairesi_input"
+                          value={firmaVergiDairesi}
+                          onChange={(e) => setFirmaVergiDairesi(e.target.value)}
+                          placeholder="Örn: Kadıköy V.D."
+                          className="w-full min-h-[44px] bg-[#0a0e13] border border-white/10 rounded-xl px-3 py-2 text-white placeholder-gray-500 focus:outline-none focus:border-teal-400"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-gray-300 font-semibold mb-1">
+                          Firma Telefonu
+                        </label>
+                        <div className="relative">
+                          <Phone className="w-4 h-4 absolute left-3 top-3.5 text-gray-500" />
+                          <input
+                            type="tel"
+                            data-testid="firma_telefon_input"
+                            value={firmaTelefon}
+                            onChange={(e) => setFirmaTelefon(e.target.value)}
+                            placeholder="0212 XXX XX XX / 05XX..."
+                            className="w-full min-h-[44px] bg-[#0a0e13] border border-white/10 rounded-xl pl-9 pr-3 py-2 text-white placeholder-gray-500 focus:outline-none focus:border-teal-400"
+                          />
+                        </div>
+                      </div>
+
+                      <div>
+                        <label className="block text-gray-300 font-semibold mb-1">
+                          Firma E-posta (Makbuzlarda Görünür)
+                        </label>
+                        <div className="relative">
+                          <Mail className="w-4 h-4 absolute left-3 top-3.5 text-gray-500" />
+                          <input
+                            type="email"
+                            data-testid="firma_email_input"
+                            value={firmaEmail}
+                            onChange={(e) => setFirmaEmail(e.target.value)}
+                            placeholder="info@firmaniz.com"
+                            className="w-full min-h-[44px] bg-[#0a0e13] border border-white/10 rounded-xl pl-9 pr-3 py-2 text-white placeholder-gray-500 focus:outline-none focus:border-teal-400"
+                          />
+                        </div>
+                      </div>
+
+                      <div>
+                        <label className="block text-gray-300 font-semibold mb-1">
+                          Web Sitesi
+                        </label>
+                        <div className="relative">
+                          <Globe className="w-4 h-4 absolute left-3 top-3.5 text-gray-500" />
+                          <input
+                            type="text"
+                            data-testid="firma_web_input"
+                            value={firmaWeb}
+                            onChange={(e) => setFirmaWeb(e.target.value)}
+                            placeholder="www.firmaniz.com"
+                            className="w-full min-h-[44px] bg-[#0a0e13] border border-white/10 rounded-xl pl-9 pr-3 py-2 text-white placeholder-gray-500 focus:outline-none focus:border-teal-400"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="sm:col-span-2">
+                        <label className="block text-gray-300 font-semibold mb-1">
+                          Firma Adresi
+                        </label>
+                        <div className="relative">
+                          <MapPin className="w-4 h-4 absolute left-3 top-3 text-gray-500" />
+                          <textarea
+                            rows={2}
+                            data-testid="firma_adres_input"
+                            value={firmaAdres}
+                            onChange={(e) => setFirmaAdres(e.target.value)}
+                            placeholder="Mahalle, Cadde/Sokak, No, İlçe / İl"
+                            className="w-full bg-[#0a0e13] border border-white/10 rounded-xl pl-9 pr-3 py-2.5 text-white placeholder-gray-500 focus:outline-none focus:border-teal-400 resize-none"
+                          />
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="flex justify-end pt-1">
+                      <button
+                        type="submit"
+                        disabled={firmaSaving}
+                        data-testid="save_firma_info_btn"
+                        className="min-h-[44px] px-5 py-2.5 rounded-xl bg-teal-400 hover:bg-teal-300 disabled:opacity-50 text-[#0a0e13] font-bold text-xs flex items-center gap-2 shadow-lg transition"
+                      >
+                        {firmaSaving ? (
+                          <>
+                            <RefreshCw className="w-4 h-4 animate-spin" />
+                            <span>Güncelleniyor...</span>
+                          </>
+                        ) : (
+                          <>
+                            <Save className="w-4 h-4" />
+                            <span>Bilgileri Güncelle</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  </form>
+                ) : (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-gray-300">
+                    <div>
+                      <span className="text-gray-500 block text-[10px] uppercase font-semibold">Firma Ünvanı</span>
+                      <span className="font-bold text-white text-sm">{firma?.unvan || '-'}</span>
+                    </div>
+
+                    <div>
+                      <span className="text-gray-500 block text-[10px] uppercase font-semibold">Vergi No / TCKN</span>
+                      <span className="font-mono text-white">{firma?.vergi_no || '-'}</span>
+                    </div>
+
+                    {firma?.vergi_dairesi && (
+                      <div>
+                        <span className="text-gray-500 block text-[10px] uppercase font-semibold">Vergi Dairesi</span>
+                        <span className="text-white">{firma.vergi_dairesi}</span>
+                      </div>
+                    )}
+
+                    {firma?.telefon && (
+                      <div>
+                        <span className="text-gray-500 block text-[10px] uppercase font-semibold">Telefon</span>
+                        <span className="text-white">{firma.telefon}</span>
+                      </div>
+                    )}
+
+                    {firma?.email && (
+                      <div>
+                        <span className="text-gray-500 block text-[10px] uppercase font-semibold">Firma E-postası</span>
+                        <span className="text-white">{firma.email}</span>
+                      </div>
+                    )}
+
+                    {firma?.web && (
+                      <div>
+                        <span className="text-gray-500 block text-[10px] uppercase font-semibold">Web Sitesi</span>
+                        <span className="text-white">{firma.web}</span>
+                      </div>
+                    )}
+
+                    {firma?.adres && (
+                      <div className="sm:col-span-2">
+                        <span className="text-gray-500 block text-[10px] uppercase font-semibold">Adres</span>
+                        <span className="text-white">{firma.adres}</span>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
 
               {/* FİRMA LOGOSU ALANI */}
@@ -884,6 +1287,33 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     : `Hesabınızın kullanım süresi devam etmektedir. Süre bitiminde paket satın alarak devam edebilirsiniz.`}
                 </p>
               </div>
+
+              {/* HESABI / FİRMAYI KALICI SİLME ALANI (ANA HESAP) */}
+              {isAnaHesap && firma?.id && (
+                <div className="p-4 rounded-xl bg-red-500/5 border border-red-500/25 space-y-3">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div>
+                      <h4 className="text-xs font-extrabold text-red-300 uppercase tracking-wider flex items-center gap-1.5">
+                        <Trash2 className="w-4 h-4" />
+                        <span>Hesabı ve Firmayı Kalıcı Olarak Sil</span>
+                      </h4>
+                      <p className="text-[11px] text-gray-400 mt-1 leading-relaxed">
+                        Firmanızı ve bağlı kullanıcı hesaplarını, carileri ve tüm kayıtları kalıcı olarak siler. İşlem öncesi JSON yedeğinizi almanız önerilir.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      disabled={deletingOwnFirma}
+                      data-testid="delete_own_account_btn"
+                      onClick={handleDeleteOwnFirma}
+                      className="shrink-0 min-h-[42px] px-4 py-2 rounded-xl bg-red-500/15 hover:bg-red-500/25 text-red-300 border border-red-500/40 text-xs font-extrabold flex items-center gap-1.5 transition disabled:opacity-50"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      <span>{deletingOwnFirma ? 'Siliniyor...' : 'Hesabı Sil'}</span>
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 

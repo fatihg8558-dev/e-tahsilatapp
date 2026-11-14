@@ -40,7 +40,8 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
   onOpenMakbuz,
   refreshKey = 0,
 }) => {
-  const { firma } = useAuth();
+  const { firma, profile } = useAuth();
+  const effectiveFirmaId = firma?.id || profile?.firma_id;
   const [cariler, setCariler] = useState<Cari[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
@@ -67,14 +68,17 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
   const [cariToDelete, setCariToDelete] = useState<Cari | null>(null);
 
   const fetchCariler = async () => {
-    if (!firma?.id) return;
+    if (!effectiveFirmaId) {
+      setLoading(false);
+      return;
+    }
     try {
       setLoading(true);
       setError(null);
       const { data, error: fetchErr } = await supabase
         .from('cariler')
         .select('*')
-        .eq('firma_id', firma.id)
+        .eq('firma_id', effectiveFirmaId)
         .order('unvan', { ascending: true });
 
       if (fetchErr) throw fetchErr;
@@ -91,7 +95,7 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
     if (selectedCariForDetail) {
       openDetail(selectedCariForDetail);
     }
-  }, [firma?.id, refreshKey]);
+  }, [effectiveFirmaId, refreshKey]);
 
   const openAddModal = () => {
     setEditingCari(null);
@@ -115,7 +119,7 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
 
   const handleSaveCari = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!firma?.id) return;
+    if (!effectiveFirmaId) return;
     if (!formUnvan.trim()) {
       setError('Cari unvanı zorunludur.');
       return;
@@ -137,7 +141,7 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
             tur: formTur,
           })
           .eq('id', editingCari.id)
-          .eq('firma_id', firma.id);
+          .eq('firma_id', effectiveFirmaId);
 
         if (updateErr) throw updateErr;
       } else {
@@ -145,7 +149,7 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
         const { error: insertErr } = await supabase
           .from('cariler')
           .insert({
-            firma_id: firma.id,
+            firma_id: effectiveFirmaId,
             unvan: formUnvan.trim(),
             vergi_tc_no: formVergiTcNo.trim() || null,
             telefon: formTelefon.trim() || null,
@@ -167,14 +171,14 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
   };
 
   const handleDeleteCari = async () => {
-    if (!cariToDelete || !firma?.id) return;
+    if (!cariToDelete || !effectiveFirmaId) return;
     try {
       setError(null);
       const { error: delErr } = await supabase
         .from('cariler')
         .delete()
         .eq('id', cariToDelete.id)
-        .eq('firma_id', firma.id);
+        .eq('firma_id', effectiveFirmaId);
 
       if (delErr) throw delErr;
 

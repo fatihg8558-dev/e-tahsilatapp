@@ -1,11 +1,17 @@
 package com.example
 
+import android.Manifest
 import android.annotation.SuppressLint
 import android.app.Activity
+import android.app.AlarmManager
+import android.app.PendingIntent
 import android.content.ClipData
+import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.Color
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.os.Parcelable
 import android.util.Base64
@@ -26,6 +32,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
@@ -34,10 +41,15 @@ import androidx.core.view.WindowInsetsControllerCompat
 import java.io.ByteArrayInputStream
 import java.io.File
 import java.io.FileOutputStream
+import java.util.Calendar
 
 class MainActivity : ComponentActivity() {
   private var webView: WebView? = null
   private var filePathCallback: ValueCallback<Array<Uri>>? = null
+  private var pendingOpenTab: String? = null
+
+  private val notificationPermissionLauncher: ActivityResultLauncher<String> =
+    registerForActivityResult(ActivityResultContracts.RequestPermission()) { _ -> }
 
   private val fileChooserLauncher: ActivityResultLauncher<Intent> =
     registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
@@ -61,6 +73,7 @@ class MainActivity : ComponentActivity() {
   companion object {
     private const val APP_ASSETS_ORIGIN = "https://appassets.androidplatform.net"
     private const val APP_ASSETS_ENTRY = "$APP_ASSETS_ORIGIN/assets/index.html"
+    private const val FRIDAY_BACKUP_REQUEST_CODE = 5002
   }
 
   private fun guessMimeType(path: String): String {
@@ -89,6 +102,11 @@ class MainActivity : ComponentActivity() {
     // Tam ekran sürükleyici mod: Sistem navigasyon ve durum çubuğu otomatik saklanır
     WindowCompat.setDecorFitsSystemWindows(window, false)
     hideSystemBars()
+
+    pendingOpenTab = intent?.getStringExtra("open_tab")
+    FridayBackupReceiver.ensureChannel(this)
+    requestNotificationPermissionIfNeeded()
+    scheduleWeeklyFridayBackupReminder()
 
     try {
       WebView.setWebContentsDebuggingEnabled(true)
@@ -211,6 +229,15 @@ class MainActivity : ComponentActivity() {
               return false
             }
             return handleExternalUrl(url)
+          }
+
+          override fun onPageFinished(view: WebView?, url: String?) {
+            super.onPageFinished(view, url)
+            val tabToOpen = pendingOpenTab
+            if (!tabToOpen.isNullOrBlank()) {
+              pendingOpenTab = null
+              dispatchOpenTabToWeb(tabToOpen)
+            }
           }
 
           override fun onReceivedError(
@@ -517,6 +544,49 @@ class MainActivity : ComponentActivity() {
     }
 
     @JavascriptInterface
+    fun saveAndShareTextFile(content: String?, fileName: String?, mimeType: String?): Boolean {
+      if (content.isNullOrBlank()) return false
+      return try {
+        val validName = if (!fileName.isNullOrBlank()) fileName.trim() else "tahsilatim_yedek.json"
+        val validMime = if (!mimeType.isNullOrBlank()) mimeType.trim() else "application/json"
+
+        val exportDir = File(cacheDir, "pdf_shares").apply { mkdirs() }
+        val outFile = File(exportDir, validName)
+        FileOutputStream(outFile).use { it.write(content.toByteArray(Charsets.UTF_8)) }
+
+        val contentUri = FileProvider.getUriForFile(
+          this@MainActivity,
+          "${applicationContext.packageName}.fileprovider",
+          outFile
+        )
+
+        runOnUiThread {
+          try {
+            val shareIntent = Intent(Intent.ACTION_SEND).apply {
+              type = validMime
+              putExtra(Intent.EXTRA_STREAM, contentUri)
+              putExtra(Intent.EXTRA_SUBJECT, validName)
+              clipData = ClipData.newRawUri(validName, contentUri)
+              addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+              addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            val chooser = Intent.createChooser(shareIntent, "JSON Yedeği Kaydet veya Paylaş").apply {
+              addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+              addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            startActivity(chooser)
+          } catch (e: Exception) {
+            Log.e("AndroidBridge", "Failed to share JSON backup", e)
+          }
+        }
+        true
+      } catch (e: Exception) {
+        Log.e("AndroidBridge", "saveAndShareTextFile error", e)
+        false
+      }
+    }
+
+    @JavascriptInterface
     fun openExternal(url: String?): Boolean {
       if (url.isNullOrBlank()) return false
       return try {
@@ -528,6 +598,76 @@ class MainActivity : ComponentActivity() {
         Log.e("AndroidBridge", "openExternal failed", e)
         false
       }
+    }
+  }
+
+  override fun onNewIntent(intent: Intent) {
+    super.onNewIntent(intent)
+    setIntent(intent)
+    val openTab = intent.getStringExtra("open_tab")
+    if (!openTab.isNullOrBlank()) {
+      dispatchOpenTabToWeb(openTab)
+    }
+  }
+
+  private fun dispatchOpenTabToWeb(tab: String) {
+    val sanitized = tab.replace("'", "")
+    webView?.postDelayed({
+      webView?.evaluateJavascript(
+        "window.dispatchEvent(new CustomEvent('androidOpenTab', { detail: '$sanitized' }));",
+        null
+      )
+    }, 350)
+  }
+
+  private fun requestNotificationPermissionIfNeeded() {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+      val granted = ContextCompat.checkSelfPermission(
+        this,
+        Manifest.permission.POST_NOTIFICATIONS
+      ) == PackageManager.PERMISSION_GRANTED
+      if (!granted) {
+        notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+      }
+    }
+  }
+
+  private fun scheduleWeeklyFridayBackupReminder() {
+    try {
+      val alarmManager = getSystemService(Context.ALARM_SERVICE) as? AlarmManager ?: return
+      val intent = Intent(this, FridayBackupReceiver::class.java)
+      val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+      } else {
+        PendingIntent.FLAG_UPDATE_CURRENT
+      }
+      val pendingIntent = PendingIntent.getBroadcast(
+        this,
+        FRIDAY_BACKUP_REQUEST_CODE,
+        intent,
+        flags
+      )
+
+      val now = Calendar.getInstance()
+      val nextFriday = Calendar.getInstance().apply {
+        set(Calendar.DAY_OF_WEEK, Calendar.FRIDAY)
+        set(Calendar.HOUR_OF_DAY, 10)
+        set(Calendar.MINUTE, 0)
+        set(Calendar.SECOND, 0)
+        set(Calendar.MILLISECOND, 0)
+        if (timeInMillis <= now.timeInMillis) {
+          add(Calendar.WEEK_OF_YEAR, 1)
+        }
+      }
+
+      alarmManager.setInexactRepeating(
+        AlarmManager.RTC_WAKEUP,
+        nextFriday.timeInMillis,
+        AlarmManager.INTERVAL_DAY * 7,
+        pendingIntent
+      )
+    } catch (e: Exception) {
+      Log.w("MainActivity", "Could not schedule weekly Friday backup alarm", e)
     }
   }
 

@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { useAuth, SUPER_ADMIN_EMAIL } from '../context/AuthContext';
 import { OdemelerPanel } from './OdemelerPanel';
 import { supabase } from '../lib/supabase';
+import { deleteFirmaAndAccounts, deleteUserProfileAccount } from '../lib/accountDeleteHelper';
 import { Firma, Profile, Paket, UserRole } from '../types/database';
 import { formatCurrency, formatDate } from '../lib/formatters';
 import {
@@ -92,7 +93,7 @@ function addDaysFromBase(baseDateStr: string | null | undefined, days: number): 
 }
 
 export const SuperAdminPage: React.FC<SuperAdminPageProps> = ({ onBackToDashboard }) => {
-  const { isSuperAdmin, firma: currentFirma, refreshProfileAndFirma } = useAuth();
+  const { isSuperAdmin, profile: currentProfile, firma: currentFirma, refreshProfileAndFirma } = useAuth();
 
   const [activeTab, setActiveTab] = useState<AdminTab>('firmalar');
   const [loading, setLoading] = useState<boolean>(true);
@@ -454,6 +455,44 @@ export const SuperAdminPage: React.FC<SuperAdminPageProps> = ({ onBackToDashboar
     }
   };
 
+  // Kullanıcı Firma Değiştirme / Firmaya Bağlama
+  const handleChangeUserFirma = async (u: Profile, newFirmaId: string) => {
+    if (!newFirmaId || newFirmaId === u.firma_id) return;
+
+    try {
+      setSavingId(u.id);
+      setFeedback(null);
+
+      const firmaUsers = profilesByFirma[newFirmaId] || [];
+      const anaUser = firmaUsers.find((p) => p.rol === 'ana') || null;
+      const updatePayload: Partial<Profile> = {
+        firma_id: newFirmaId,
+        ...(anaUser?.id ? { ana_hesap_id: anaUser.id } : {}),
+      };
+
+      const { error } = await supabase
+        .from('profiles')
+        .update(updatePayload)
+        .eq('id', u.id);
+
+      if (error) throw error;
+
+      setProfiles((prev) =>
+        prev.map((item) => (item.id === u.id ? { ...item, ...updatePayload } : item))
+      );
+      const targetFirma = firmalar.find((item) => item.id === newFirmaId);
+      setFeedback({
+        type: 'success',
+        text: `${u.ad_soyad || u.email} kullanıcısı "${targetFirma?.unvan || 'seçili firma'}" firmasına bağlandı.`,
+      });
+    } catch (err) {
+      const parsed = extractAdminError(err, 'Kullanıcı firma ataması güncellenemedi.');
+      setFeedback({ type: 'error', text: parsed.message, isRls: parsed.isRls });
+    } finally {
+      setSavingId(null);
+    }
+  };
+
   // Kullanıcı Aktif/Pasif Değiştirme
   const handleToggleUserAktif = async (u: Profile) => {
     if (u.email?.trim().toLowerCase() === SUPER_ADMIN_EMAIL && u.aktif) {
@@ -485,6 +524,94 @@ export const SuperAdminPage: React.FC<SuperAdminPageProps> = ({ onBackToDashboar
     } catch (err) {
       const parsed = extractAdminError(err, 'Kullanıcı durumu güncellenemedi.');
       setFeedback({ type: 'error', text: parsed.message, isRls: parsed.isRls });
+    } finally {
+      setSavingId(null);
+    }
+  };
+
+  // Kullanıcı Hesabı Silme (Süper Admin)
+  const handleDeleteUser = async (u: Profile) => {
+    if (u.email?.trim().toLowerCase() === SUPER_ADMIN_EMAIL || u.id === currentProfile?.id) {
+      setFeedback({
+        type: 'error',
+        text: 'Ana Süper Admin veya kendi aktif oturum hesabınız silinemez.',
+      });
+      return;
+    }
+
+    if (
+      !window.confirm(
+        `"${u.ad_soyad || u.email}" (${u.email}) kullanıcı hesabını kalıcı olarak silmek istediğinize emin misiniz?`
+      )
+    ) {
+      return;
+    }
+
+    try {
+      setSavingId(u.id);
+      setFeedback(null);
+      const res = await deleteUserProfileAccount(u.id);
+      if (!res.success) {
+        setFeedback({
+          type: 'error',
+          text: res.error || 'Kullanıcı silinemedi.',
+          isRls: Boolean(res.isRls),
+        });
+        return;
+      }
+
+      setProfiles((prev) => prev.filter((item) => item.id !== u.id));
+      setFeedback({
+        type: 'success',
+        text: `${u.ad_soyad || u.email} kullanıcı hesabı başarıyla silindi.`,
+      });
+    } finally {
+      setSavingId(null);
+    }
+  };
+
+  // Firma ve Bağlı Tüm Hesapları Silme (Süper Admin)
+  const handleDeleteFirma = async (f: Firma) => {
+    const firmaUsers = profilesByFirma[f.id] || [];
+    const hasProtected =
+      f.id === currentFirma?.id ||
+      firmaUsers.some((u) => u.email?.trim().toLowerCase() === SUPER_ADMIN_EMAIL);
+
+    if (hasProtected) {
+      setFeedback({
+        type: 'error',
+        text: 'Ana Süper Admin firması veya şu an aktif olan firma panelden silinemez.',
+      });
+      return;
+    }
+
+    if (
+      !window.confirm(
+        `DİKKAT: "${f.unvan}" firmasını, bağlı tüm kullanıcı hesaplarını (${firmaUsers.length} kişi), carileri, makbuzları ve kasa verilerini kalıcı olarak silmek istediğinize emin misiniz?`
+      )
+    ) {
+      return;
+    }
+
+    try {
+      setSavingId(f.id);
+      setFeedback(null);
+      const res = await deleteFirmaAndAccounts(f.id);
+      if (!res.success) {
+        setFeedback({
+          type: 'error',
+          text: res.error || 'Firma silinemedi.',
+          isRls: Boolean(res.isRls),
+        });
+        return;
+      }
+
+      setFirmalar((prev) => prev.filter((item) => item.id !== f.id));
+      setProfiles((prev) => prev.filter((p) => p.firma_id !== f.id));
+      setFeedback({
+        type: 'success',
+        text: `"${f.unvan}" firması ve bağlı tüm hesaplar kalıcı olarak silindi.`,
+      });
     } finally {
       setSavingId(null);
     }
@@ -1055,6 +1182,23 @@ export const SuperAdminPage: React.FC<SuperAdminPageProps> = ({ onBackToDashboar
                           <span>Kullanıcılar ({firmaUsers.length})</span>
                           {isExpanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
                         </button>
+
+                        {f.id !== currentFirma?.id &&
+                          !firmaUsers.some(
+                            (u) => u.email?.trim().toLowerCase() === SUPER_ADMIN_EMAIL
+                          ) && (
+                            <button
+                              type="button"
+                              disabled={isBusy}
+                              onClick={() => handleDeleteFirma(f)}
+                              data-testid={`superadmin_delete_firma_btn_${f.id}`}
+                              title="Firmayı ve Bağlı Hesapları Sil"
+                              className="min-h-[40px] px-3 py-2 rounded-xl text-xs font-bold bg-red-500/10 hover:bg-red-500/20 text-red-300 border border-red-500/30 flex items-center gap-1.5 transition disabled:opacity-50"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                              <span>Firmayı Sil</span>
+                            </button>
+                          )}
                       </div>
                     </div>
 
@@ -1103,6 +1247,22 @@ export const SuperAdminPage: React.FC<SuperAdminPageProps> = ({ onBackToDashboar
 
                                 <div className="flex items-center gap-2 flex-wrap">
                                   <select
+                                    value={u.firma_id || ''}
+                                    disabled={uBusy || isProtectedMaster}
+                                    onChange={(e) =>
+                                      handleChangeUserFirma(u, e.target.value)
+                                    }
+                                    aria-label={`${u.email} firma seçimi`}
+                                    className="bg-[#111c2e] border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-teal-400 disabled:opacity-60 max-w-[180px]"
+                                  >
+                                    {firmalar.map((firmOpt) => (
+                                      <option key={firmOpt.id} value={firmOpt.id}>
+                                        {firmOpt.unvan}
+                                      </option>
+                                    ))}
+                                  </select>
+
+                                  <select
                                     value={u.rol}
                                     disabled={uBusy || isProtectedMaster}
                                     onChange={(e) =>
@@ -1130,6 +1290,20 @@ export const SuperAdminPage: React.FC<SuperAdminPageProps> = ({ onBackToDashboar
                                     <Power className="w-3.5 h-3.5" />
                                     <span>{u.aktif ? 'Pasife Al' : 'Aktif Et'}</span>
                                   </button>
+
+                                  {!isProtectedMaster && u.id !== currentProfile?.id && (
+                                    <button
+                                      type="button"
+                                      disabled={uBusy}
+                                      onClick={() => handleDeleteUser(u)}
+                                      data-testid={`superadmin_delete_user_btn_${u.id}`}
+                                      title="Kullanıcı Hesabını Sil"
+                                      className="px-2.5 py-1.5 rounded-lg text-[11px] font-bold flex items-center gap-1 border transition bg-red-500/10 text-red-300 border-red-500/30 hover:bg-red-500/20 disabled:opacity-50"
+                                    >
+                                      <Trash2 className="w-3.5 h-3.5" />
+                                      <span>Sil</span>
+                                    </button>
+                                  )}
                                 </div>
                               </div>
                             );
@@ -1161,7 +1335,21 @@ export const SuperAdminPage: React.FC<SuperAdminPageProps> = ({ onBackToDashboar
                         <div className="text-xs font-bold text-white">{u.ad_soyad || u.email}</div>
                         <div className="text-[11px] text-slate-400 font-mono">{u.email}</div>
                       </div>
-                      <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <select
+                          value={u.firma_id || ''}
+                          disabled={savingId === u.id || isProtectedMaster}
+                          onChange={(e) => handleChangeUserFirma(u, e.target.value)}
+                          aria-label={`${u.email} firma bağla`}
+                          className="bg-[#111c2e] border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white max-w-[180px]"
+                        >
+                          <option value="">Firmaya Bağla...</option>
+                          {firmalar.map((firmOpt) => (
+                            <option key={firmOpt.id} value={firmOpt.id}>
+                              {firmOpt.unvan}
+                            </option>
+                          ))}
+                        </select>
                         <select
                           value={u.rol}
                           disabled={savingId === u.id || isProtectedMaster}
@@ -1181,6 +1369,18 @@ export const SuperAdminPage: React.FC<SuperAdminPageProps> = ({ onBackToDashboar
                         >
                           {u.aktif ? 'Pasife Al' : 'Aktif Et'}
                         </button>
+                        {!isProtectedMaster && u.id !== currentProfile?.id && (
+                          <button
+                            type="button"
+                            disabled={savingId === u.id}
+                            onClick={() => handleDeleteUser(u)}
+                            data-testid={`superadmin_delete_user_btn_${u.id}`}
+                            className="px-2.5 py-1.5 rounded-lg text-[11px] font-bold bg-red-500/10 border border-red-500/30 text-red-300 hover:bg-red-500/20 flex items-center gap-1"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                            <span>Sil</span>
+                          </button>
+                        )}
                       </div>
                     </div>
                   );

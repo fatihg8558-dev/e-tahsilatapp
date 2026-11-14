@@ -1,6 +1,7 @@
 import { supabase, handleSupabaseError } from './supabase';
 import { Islem } from '../types/database';
 import { extractKarmaRef } from './karmaReceiptHelper';
+import { removeIslemsFromKasa } from './kasaSyncService';
 
 export interface ReceiptDeletionInspection {
   mainRows: Islem[];
@@ -201,6 +202,9 @@ export async function deleteReceiptRows(params: {
   // 4. Cari bakiyelerini kontrol et / gerekirse geri al
   await syncCariBalancesAfterRemoval(firmaId, uniqueRows, beforeBalanceMap);
 
+  // 5. Bağlı Kasa / Gelir-Gider kayıtlarını temizle ve bakiyeyi düzelt
+  await removeIslemsFromKasa(ids, firmaId);
+
   return { deletedCount: deletedRows.length };
 }
 
@@ -254,5 +258,6 @@ export async function cancelReceiptRowsFallback(params: {
   }
 
   await syncCariBalancesAfterRemoval(firmaId, activeRows, beforeBalanceMap);
+  await removeIslemsFromKasa(ids, firmaId);
   return { cancelledCount: activeRows.length };
 }

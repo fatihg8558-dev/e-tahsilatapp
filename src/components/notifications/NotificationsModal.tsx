@@ -15,7 +15,13 @@ import {
   ChevronRight,
   Inbox,
   AlertCircle,
+  FileJson,
+  Download,
 } from 'lucide-react';
+import {
+  dismissFridayBackupReminder,
+  isFridayBackupReminderDue,
+} from '../../lib/backupService';
 
 interface NotificationsModalProps {
   isOpen: boolean;
@@ -39,13 +45,14 @@ export const NotificationsModal: React.FC<NotificationsModalProps> = ({
   onNavigateTab,
   onBadgeUpdated,
 }) => {
-  const { firma } = useAuth();
+  const { firma, profile, user } = useAuth();
   const [activeTab, setActiveTab] = useState<'gelen' | 'vade'>('gelen');
   const [loading, setLoading] = useState(false);
   const [updatingId, setUpdatingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [bildirimler, setBildirimler] = useState<Bildirim[]>([]);
   const [vadeAlerts, setVadeAlerts] = useState<VadeAlertItem[]>([]);
+  const [fridayDue, setFridayDue] = useState(false);
 
   const loadNotifications = useCallback(async () => {
     if (!firma?.id) return;
@@ -134,14 +141,26 @@ export const NotificationsModal: React.FC<NotificationsModalProps> = ({
   }, [firma?.id]);
 
   useEffect(() => {
-    if (isOpen && firma?.id) {
-      loadNotifications();
+    if (isOpen) {
+      setFridayDue(
+        isFridayBackupReminderDue(firma?.id || profile?.firma_id, profile?.id || user?.id)
+      );
+      if (firma?.id) {
+        loadNotifications();
+      }
     }
-  }, [isOpen, firma?.id, loadNotifications]);
+  }, [isOpen, firma?.id, profile?.firma_id, profile?.id, user?.id, loadNotifications]);
 
   if (!isOpen) return null;
 
   const pendingCount = bildirimler.filter((b) => b.durum === 'bekliyor').length;
+  const totalIncomingBadge = pendingCount + (fridayDue ? 1 : 0);
+
+  const handleDismissFriday = () => {
+    dismissFridayBackupReminder(firma?.id || profile?.firma_id, profile?.id || user?.id);
+    setFridayDue(false);
+    onBadgeUpdated?.();
+  };
 
   const handleUpdateBildirim = async (b: Bildirim, durum: 'onaylandi' | 'red') => {
     try {
@@ -173,9 +192,9 @@ export const NotificationsModal: React.FC<NotificationsModalProps> = ({
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl bg-teal-500/15 border border-teal-500/30 text-teal-400 flex items-center justify-center relative">
               <Bell className="w-5 h-5" />
-              {pendingCount > 0 && (
+              {totalIncomingBadge > 0 && (
                 <span className="absolute -top-1 -right-1 px-1.5 min-w-[18px] h-[18px] rounded-full bg-teal-400 text-slate-950 text-[10px] font-black flex items-center justify-center">
-                  {pendingCount}
+                  {totalIncomingBadge}
                 </span>
               )}
             </div>
@@ -223,7 +242,7 @@ export const NotificationsModal: React.FC<NotificationsModalProps> = ({
             <Inbox className="w-4 h-4" />
             <span>Gelen Bildirimler</span>
             <span className="px-1.5 py-0.5 rounded-full text-[10px] bg-teal-400/20 text-teal-300 font-extrabold">
-              {pendingCount > 0 ? `${pendingCount} Yeni` : bildirimler.length}
+              {totalIncomingBadge > 0 ? `${totalIncomingBadge} Yeni` : bildirimler.length}
             </span>
           </button>
 
@@ -260,7 +279,7 @@ export const NotificationsModal: React.FC<NotificationsModalProps> = ({
               <span className="text-xs text-slate-400">Bildirimler yükleniyor...</span>
             </div>
           ) : activeTab === 'gelen' ? (
-            bildirimler.length === 0 ? (
+            bildirimler.length === 0 && !fridayDue ? (
               <div className="py-12 text-center space-y-2">
                 <Bell className="w-10 h-10 text-slate-600 mx-auto" />
                 <div className="text-sm font-bold text-slate-200">Henüz gelen bildiriminiz yok</div>
@@ -270,6 +289,54 @@ export const NotificationsModal: React.FC<NotificationsModalProps> = ({
               </div>
             ) : (
               <div className="space-y-2.5">
+                {fridayDue && (
+                  <div
+                    data-testid="notifications_friday_backup_card"
+                    className="p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/30 space-y-2.5"
+                  >
+                    <div className="flex items-start gap-3">
+                      <div className="w-9 h-9 rounded-xl bg-amber-500/20 text-amber-300 flex items-center justify-center shrink-0">
+                        <FileJson className="w-4 h-4" />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="text-xs font-extrabold text-amber-200">
+                            Cuma Haftalık Yedekleme Hatırlatıcısı
+                          </span>
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                            Haftalık
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-amber-100/80 mt-1">
+                          Verilerinizi güvende tutmak için haftalık JSON yedeğinizi almanız veya geri yükleme noktası oluşturmanız önerilir.
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex items-center justify-end gap-2 pt-1.5 border-t border-amber-500/20">
+                      <button
+                        type="button"
+                        onClick={handleDismissFriday}
+                        data-testid="notifications_friday_dismiss_btn"
+                        className="px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-slate-300 text-xs font-bold transition"
+                      >
+                        Bugün Kapat
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          onClose();
+                          onNavigateTab('yedekleme');
+                        }}
+                        data-testid="notifications_friday_backup_btn"
+                        className="px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-extrabold flex items-center gap-1.5 transition"
+                      >
+                        <Download className="w-3.5 h-3.5" />
+                        <span>Yedeklemeye Git</span>
+                      </button>
+                    </div>
+                  </div>
+                )}
+
                 {bildirimler.map((b) => (
                   <div
                     key={b.id}

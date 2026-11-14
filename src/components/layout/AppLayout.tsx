@@ -23,12 +23,19 @@ import {
   Crown,
   Wallet,
   ArrowLeftRight,
+  FileJson,
+  CalendarClock,
+  Download,
 } from 'lucide-react';
 import { SettingsModal } from '../settings/SettingsModal';
+import {
+  dismissFridayBackupReminder,
+  isFridayBackupReminderDue,
+} from '../../lib/backupService';
 
 interface AppLayoutProps {
-  workspaceMode: 'tahsilat' | 'kasa';
-  onChangeWorkspaceMode: () => void;
+  workspaceMode?: 'tahsilat' | 'kasa';
+  onChangeWorkspaceMode?: () => void;
   currentTab: string;
   onSelectTab: (tab: string) => void;
   onOpenNotifications: () => void;
@@ -37,7 +44,7 @@ interface AppLayoutProps {
 }
 
 export const AppLayout: React.FC<AppLayoutProps> = ({
-  workspaceMode,
+  workspaceMode = 'tahsilat',
   onChangeWorkspaceMode,
   currentTab,
   onSelectTab,
@@ -50,6 +57,7 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
   const [pendingNotificationCount, setPendingNotificationCount] = useState(0);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [settingsInitialTab, setSettingsInitialTab] = useState<'firma' | 'plasiyer'>('plasiyer');
+  const [fridayReminderDue, setFridayReminderDue] = useState(false);
 
   const handleConfirmSignOut = () => {
     if (window.confirm('Güvenli çıkış yapmak istediğinize emin misiniz?')) {
@@ -57,6 +65,28 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
       signOut();
     }
   };
+
+  // Cuma haftalık yedekleme hatırlatıcısını kontrol et
+  useEffect(() => {
+    const uid = profile?.id || user?.id;
+    const fid = firma?.id || profile?.firma_id;
+    const due = isFridayBackupReminderDue(fid, uid);
+    setFridayReminderDue(due);
+
+    if (due && typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
+      const notifShownKey = `tahsilatim_web_notif_shown_${new Date().toISOString().slice(0, 10)}`;
+      try {
+        if (!localStorage.getItem(notifShownKey)) {
+          localStorage.setItem(notifShownKey, '1');
+          new Notification('Tahsilatım — Cuma Yedekleme Hatırlatıcısı', {
+            body: 'Haftalık yedekleme gününüz geldi. Uygulama verilerinizi JSON olarak yedekleyebilirsiniz.',
+          });
+        }
+      } catch {
+        // ignore
+      }
+    }
+  }, [firma?.id, profile?.firma_id, profile?.id, user?.id, notificationRefreshKey, currentTab]);
 
   // Bekleyen bildirim sayısını dinle
   useEffect(() => {
@@ -93,6 +123,7 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
     islemler: 'İşlem Listesi',
     kasa: 'Kasa & Gelir-Gider',
     performans: 'Plasiyer Performans Raporu',
+    yedekleme: 'Yedekleme & Geri Yükleme',
     paketler: 'Abonelik & Paketler',
     superadmin: 'Süper Admin Paneli',
   };
@@ -131,20 +162,22 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
         </div>
 
         {/* MOD DEĞİŞTİR BUTONU */}
-        <div className="px-3 pt-3">
-          <button
-            type="button"
-            onClick={onChangeWorkspaceMode}
-            data-testid="sidebar_switch_mode_btn"
-            className="w-full flex items-center justify-between px-3 py-2 rounded-xl bg-slate-800/70 hover:bg-slate-700/80 border border-slate-600/50 text-xs font-bold text-slate-200 transition"
-          >
-            <span className="flex items-center gap-2">
-              <ArrowLeftRight className="w-3.5 h-3.5 text-teal-400" />
-              <span>{workspaceMode === 'kasa' ? 'Mod: Gelir / Gider' : 'Mod: Tahsilat'}</span>
-            </span>
-            <span className="text-[10px] text-teal-400 font-extrabold">Değiştir</span>
-          </button>
-        </div>
+        {onChangeWorkspaceMode && (
+          <div className="px-3 pt-3">
+            <button
+              type="button"
+              onClick={onChangeWorkspaceMode}
+              data-testid="sidebar_switch_mode_btn"
+              className="w-full flex items-center justify-between px-3 py-2 rounded-xl bg-slate-800/70 hover:bg-slate-700/80 border border-slate-600/50 text-xs font-bold text-slate-200 transition"
+            >
+              <span className="flex items-center gap-2">
+                <ArrowLeftRight className="w-3.5 h-3.5 text-teal-400" />
+                <span>{workspaceMode === 'kasa' ? 'Mod: Gelir / Gider' : 'Mod: Tahsilat'}</span>
+              </span>
+              <span className="text-[10px] text-teal-400 font-extrabold">Değiştir</span>
+            </button>
+          </div>
+        )}
 
         {/* MENÜ LİSTESİ */}
         <div className="flex-1 py-4 px-3 space-y-6 overflow-y-auto">
@@ -231,6 +264,21 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
                     <TrendingUp className="w-4 h-4 text-emerald-400" />
                     <span>{profile?.rol === 'plasiyer' ? 'Performans Raporum' : 'Plasiyer Raporları'}</span>
                   </button>
+
+                  {!onChangeWorkspaceMode && profile?.rol !== 'plasiyer' && (
+                    <button
+                      onClick={() => onSelectTab('kasa')}
+                      data-testid="nav_kasa_desktop"
+                      className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl text-sm font-medium transition-all ${
+                        currentTab === 'kasa'
+                          ? 'bg-emerald-400 text-[#0a0e13] font-semibold shadow-sm'
+                          : 'text-emerald-300/90 hover:text-emerald-200 hover:bg-emerald-500/10'
+                      }`}
+                    >
+                      <Wallet className="w-4 h-4 text-emerald-400" />
+                      <span>Kasa &amp; Gelir-Gider</span>
+                    </button>
+                  )}
                 </>
               ) : (
                 <button
@@ -274,6 +322,27 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
                 ) : (
                   <span className="text-[10px] bg-white/10 text-gray-300 px-1.5 py-0.5 rounded">
                     Abonelik
+                  </span>
+                )}
+              </button>
+
+              {/* Tüm Kullanıcılar İçin JSON Yedekleme & Geri Yükleme */}
+              <button
+                onClick={() => onSelectTab('yedekleme')}
+                data-testid="nav_yedekleme_desktop"
+                className={`w-full flex items-center justify-between px-3 py-2 rounded-xl text-sm font-medium transition-all ${
+                  currentTab === 'yedekleme'
+                    ? 'bg-teal-400 text-[#0a0e13] font-semibold shadow-sm'
+                    : 'text-gray-300 hover:text-white hover:bg-white/[0.05]'
+                }`}
+              >
+                <div className="flex items-center gap-3">
+                  <FileJson className="w-4 h-4" />
+                  <span>JSON Yedekleme</span>
+                </div>
+                {fridayReminderDue && (
+                  <span className="text-[10px] bg-amber-400 text-slate-950 px-1.5 py-0.5 rounded font-extrabold">
+                    Cuma
                   </span>
                 )}
               </button>
@@ -415,16 +484,18 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
           </div>
 
           <div className="flex items-center gap-1.5 sm:gap-2.5 shrink-0">
-            <button
-              type="button"
-              onClick={onChangeWorkspaceMode}
-              data-testid="header_switch_mode_btn"
-              title="Mod Değiştir (Tahsilat / Gelir-Gider)"
-              className="h-10 sm:min-h-[44px] px-2.5 sm:px-3 rounded-xl bg-slate-800/90 hover:bg-slate-700 text-slate-200 border border-slate-600/60 text-xs font-bold flex items-center gap-1.5 transition"
-            >
-              <ArrowLeftRight className="w-4 h-4 text-teal-400 shrink-0" />
-              <span className="hidden sm:inline">Mod Değiştir</span>
-            </button>
+            {onChangeWorkspaceMode && (
+              <button
+                type="button"
+                onClick={onChangeWorkspaceMode}
+                data-testid="header_switch_mode_btn"
+                title="Mod Değiştir (Tahsilat / Gelir-Gider)"
+                className="h-10 sm:min-h-[44px] px-2.5 sm:px-3 rounded-xl bg-slate-800/90 hover:bg-slate-700 text-slate-200 border border-slate-600/60 text-xs font-bold flex items-center gap-1.5 transition"
+              >
+                <ArrowLeftRight className="w-4 h-4 text-teal-400 shrink-0" />
+                <span className="hidden sm:inline">Mod Değiştir</span>
+              </button>
+            )}
 
             {isSuperAdmin && (
               <button
@@ -468,9 +539,9 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
               aria-label="Bildirimler"
             >
               <Bell className="w-5 h-5" />
-              {pendingNotificationCount > 0 && (
+              {pendingNotificationCount + (fridayReminderDue ? 1 : 0) > 0 && (
                 <span className="absolute -top-1 -right-1 min-w-[18px] h-[18px] px-1 rounded-full bg-teal-400 text-slate-950 text-[10px] font-black flex items-center justify-center shadow-[0_0_8px_rgba(45,212,191,0.9)]">
-                  {pendingNotificationCount}
+                  {pendingNotificationCount + (fridayReminderDue ? 1 : 0)}
                 </span>
               )}
             </button>
@@ -528,19 +599,21 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
                 </div>
 
                 <div className="space-y-1">
-                  <button
-                    onClick={() => {
-                      setMobileMenuOpen(false);
-                      onChangeWorkspaceMode();
-                    }}
-                    data-testid="mobile_switch_mode_btn"
-                    className="w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-sm font-bold bg-slate-800/80 text-teal-300 border border-slate-600/60 mb-2"
-                  >
-                    <span className="flex items-center gap-2.5">
-                      <ArrowLeftRight className="w-4 h-4" />
-                      <span>Mod Seçimi (Tahsilat / Gelir-Gider)</span>
-                    </span>
-                  </button>
+                  {onChangeWorkspaceMode && (
+                    <button
+                      onClick={() => {
+                        setMobileMenuOpen(false);
+                        onChangeWorkspaceMode();
+                      }}
+                      data-testid="mobile_switch_mode_btn"
+                      className="w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-sm font-bold bg-slate-800/80 text-teal-300 border border-slate-600/60 mb-2"
+                    >
+                      <span className="flex items-center gap-2.5">
+                        <ArrowLeftRight className="w-4 h-4" />
+                        <span>Mod Seçimi (Tahsilat / Gelir-Gider)</span>
+                      </span>
+                    </button>
+                  )}
 
                   {workspaceMode === 'tahsilat' ? (
                     <>
@@ -605,6 +678,20 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
                         <TrendingUp className="w-4 h-4 text-emerald-400" />
                         <span>{profile?.rol === 'plasiyer' ? 'Performans Raporum' : 'Plasiyer Raporları'}</span>
                       </button>
+
+                      {!onChangeWorkspaceMode && profile?.rol !== 'plasiyer' && (
+                        <button
+                          onClick={() => {
+                            onSelectTab('kasa');
+                            setMobileMenuOpen(false);
+                          }}
+                          data-testid="nav_kasa_mobile"
+                          className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-emerald-300 hover:bg-emerald-500/10"
+                        >
+                          <Wallet className="w-4 h-4 text-emerald-400" />
+                          <span>Kasa &amp; Gelir-Gider</span>
+                        </button>
+                      )}
                     </>
                   ) : (
                     <button
@@ -629,6 +716,29 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
                   >
                     <CreditCard className="w-4 h-4 text-teal-400" />
                     <span>Paket Satın Al</span>
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      onSelectTab('yedekleme');
+                      setMobileMenuOpen(false);
+                    }}
+                    data-testid="nav_yedekleme_mobile"
+                    className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-sm font-medium ${
+                      currentTab === 'yedekleme'
+                        ? 'bg-teal-400 text-slate-950 font-bold'
+                        : 'text-gray-200 hover:bg-white/5'
+                    }`}
+                  >
+                    <span className="flex items-center gap-3">
+                      <FileJson className={`w-4 h-4 ${currentTab === 'yedekleme' ? 'text-slate-950' : 'text-teal-400'}`} />
+                      <span>JSON Yedekleme &amp; Geri Yükle</span>
+                    </span>
+                    {fridayReminderDue && (
+                      <span className="text-[10px] bg-amber-400 text-slate-950 px-1.5 py-0.5 rounded font-extrabold">
+                        Cuma
+                      </span>
+                    )}
                   </button>
 
                   {(profile?.rol === 'ana' || isSuperAdmin) && (
@@ -690,6 +800,50 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
 
         {/* ANA İÇERİK ALANI */}
         <main className="flex-1 p-4 lg:p-8 max-w-7xl w-full mx-auto pb-nav-safe lg:pb-8">
+          {fridayReminderDue && currentTab !== 'yedekleme' && (
+            <div
+              data-testid="friday_backup_reminder_banner"
+              className="mb-5 p-3.5 sm:p-4 rounded-2xl bg-gradient-to-r from-amber-500/15 via-teal-500/10 to-[#111c2e] border border-amber-400/40 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-lg"
+            >
+              <div className="flex items-start gap-3">
+                <div className="w-9 h-9 rounded-xl bg-amber-400/20 border border-amber-400/40 text-amber-300 flex items-center justify-center shrink-0">
+                  <CalendarClock className="w-5 h-5" />
+                </div>
+                <div>
+                  <div className="text-xs sm:text-sm font-extrabold text-white">
+                    Cuma Haftalık Yedekleme Hatırlatıcısı
+                  </div>
+                  <p className="text-[11px] text-slate-300 mt-0.5">
+                    Verilerinizi güvende tutmak için haftalık JSON yedeğinizi ve geri yükleme noktanızı şimdi alabilirsiniz.
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => onSelectTab('yedekleme')}
+                  data-testid="friday_reminder_backup_btn"
+                  className="min-h-[40px] px-3.5 py-2 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 font-extrabold text-xs flex items-center gap-1.5 transition"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  <span>Şimdi Yedek Al</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    dismissFridayBackupReminder(
+                      firma?.id || profile?.firma_id,
+                      profile?.id || user?.id
+                    );
+                    setFridayReminderDue(false);
+                  }}
+                  className="min-h-[40px] px-3 py-2 rounded-xl bg-white/5 hover:bg-white/10 text-slate-300 text-xs font-semibold transition"
+                >
+                  Bugün Kapat
+                </button>
+              </div>
+            </div>
+          )}
           {children}
         </main>
 
@@ -763,13 +917,15 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
                 <span>Kasa &amp; Gelir-Gider</span>
               </button>
 
-              <button
-                onClick={onChangeWorkspaceMode}
-                className="flex flex-col items-center gap-1 py-1.5 px-6 rounded-xl text-[10px] font-semibold text-teal-300 hover:bg-white/5 transition"
-              >
-                <ArrowLeftRight className="w-5 h-5" />
-                <span>Mod Seçimi</span>
-              </button>
+              {onChangeWorkspaceMode && (
+                <button
+                  onClick={onChangeWorkspaceMode}
+                  className="flex flex-col items-center gap-1 py-1.5 px-6 rounded-xl text-[10px] font-semibold text-teal-300 hover:bg-white/5 transition"
+                >
+                  <ArrowLeftRight className="w-5 h-5" />
+                  <span>Mod Seçimi</span>
+                </button>
+              )}
             </div>
           )}
         </nav>

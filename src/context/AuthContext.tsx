@@ -168,12 +168,36 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           throw profileErr;
         }
 
+        // Auth metadata'yı çek (plasiyer kurtarma / süperadmin kontrolü için)
+        const { data: authUserData } = await supabase.auth.getUser();
+        const authUserMeta = authUserData?.user?.user_metadata;
+        const authEmail = (authUserData?.user?.email || '').trim().toLowerCase();
+
         if (!profileData) {
-          setProfile(null);
-          setFirma(null);
-          setCachedData('tahsilatim_profile', null);
-          setCachedData('tahsilatim_firma', null);
-          return;
+          if (authUserMeta?.firma_id) {
+            const recoveredPayload: Partial<Profile> = {
+              id: userId,
+              firma_id: authUserMeta.firma_id,
+              ana_hesap_id: authUserMeta.ana_hesap_id || null,
+              rol: authUserMeta.rol || 'plasiyer',
+              ad_soyad: authUserMeta.ad_soyad || authEmail || 'Plasiyer',
+              telefon: authUserMeta.telefon || null,
+              email: authEmail,
+              aktif: true,
+            };
+            const { data: createdProf } = await supabase
+              .from('profiles')
+              .upsert(recoveredPayload, { onConflict: 'id' })
+              .select('*')
+              .maybeSingle();
+            profileData = (createdProf as Profile) || (recoveredPayload as Profile);
+          } else {
+            setProfile(null);
+            setFirma(null);
+            setCachedData('tahsilatim_profile', null);
+            setCachedData('tahsilatim_firma', null);
+            return;
+          }
         }
 
         // Kural: profiles.aktif === false olan kullanıcıyı çıkış yaptır, "Hesabınız pasif" göster.
@@ -190,16 +214,22 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           return;
         }
 
-        // Plasiyer profilinde firma_id eksikse veya yeni hesap açıldığında Supabase Auth metadata'dan firma_id'yi kurtar
-        const { data: authUserData } = await supabase.auth.getUser();
-        const authUserMeta = authUserData?.user?.user_metadata;
+        // Plasiyer profilinde firma_id/rol eksikse veya trigger yanlış firmaya 'ana' açtıysa metadata'dan kurtar
+        const metaFirmaId = authUserMeta?.firma_id as string | undefined;
+        const metaRol = authUserMeta?.rol;
+        const metaAnaHesapId = authUserMeta?.ana_hesap_id as string | undefined;
+        const metaAdSoyad = authUserMeta?.ad_soyad as string | undefined;
+        const metaTelefon = authUserMeta?.telefon as string | undefined;
 
-        if (profileData && (!profileData.firma_id || profileData.rol === 'plasiyer')) {
-          const metaFirmaId = authUserMeta?.firma_id;
-          const metaRol = authUserMeta?.rol;
-          const metaAnaHesapId = authUserMeta?.ana_hesap_id;
-          const metaAdSoyad = authUserMeta?.ad_soyad;
+        const isPlasiyerMetaMismatch =
+          metaRol === 'plasiyer' &&
+          !!metaFirmaId &&
+          (profileData.firma_id !== metaFirmaId || profileData.rol !== 'plasiyer');
 
+        if (
+          profileData &&
+          (!profileData.firma_id || profileData.rol === 'plasiyer' || isPlasiyerMetaMismatch)
+        ) {
           let needsUpdate = false;
           const updates: Partial<Profile> = {};
 
@@ -208,7 +238,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             profileData.firma_id = metaFirmaId;
             needsUpdate = true;
           }
-          if (metaRol && profileData.rol !== metaRol) {
+          if (
+            metaRol &&
+            profileData.rol !== metaRol &&
+            (!profileData.rol || isPlasiyerMetaMismatch)
+          ) {
             updates.rol = metaRol;
             profileData.rol = metaRol;
             needsUpdate = true;
@@ -223,14 +257,24 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             profileData.ad_soyad = metaAdSoyad;
             needsUpdate = true;
           }
+          if (metaTelefon && !profileData.telefon) {
+            updates.telefon = metaTelefon;
+            profileData.telefon = metaTelefon;
+            needsUpdate = true;
+          }
 
           if (needsUpdate) {
-            await supabase.from('profiles').update(updates).eq('id', profileData.id);
+            const { error: healErr } = await supabase
+              .from('profiles')
+              .update(updates)
+              .eq('id', profileData.id);
+            if (healErr) {
+              console.warn('Profile self-heal warning:', healErr);
+            }
           }
         }
 
         // Süper Admin kontrolü: yalnızca conqueror58@gmail.com otomatik süper admin olur (veya DB'de rol='superadmin' atanmış hesaplar)
-        const authEmail = (authUserData?.user?.email || '').trim().toLowerCase();
         const profileEmail = (profileData.email || '').trim().toLowerCase();
         const isDesignatedSuperAdmin =
           authEmail === SUPER_ADMIN_EMAIL || profileEmail === SUPER_ADMIN_EMAIL;
@@ -249,6 +293,22 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         setCachedData('tahsilatim_profile', profileData);
 
         // 2. Firma çek (firmalar tablosu)
+        const fallbackAnaId = profileData.ana_hesap_id || (authUserMeta?.ana_hesap_id as string | undefined);
+        if (!profileData.firma_id && fallbackAnaId) {
+          const { data: anaProfile } = await supabase
+            .from('profiles')
+            .select('firma_id')
+            .eq('id', fallbackAnaId)
+            .maybeSingle();
+
+          if (anaProfile?.firma_id) {
+            profileData.firma_id = anaProfile.firma_id;
+            await supabase.from('profiles').update({ firma_id: anaProfile.firma_id }).eq('id', profileData.id);
+            setProfile({ ...profileData });
+            setCachedData('tahsilatim_profile', { ...profileData });
+          }
+        }
+
         if (profileData.firma_id) {
           let { data: firmaData, error: firmaErr } = await supabase
             .from('firmalar')
@@ -256,17 +316,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             .eq('id', profileData.firma_id)
             .maybeSingle();
 
-          // Eğer firma kaydı yoksa veya adı boş/geçersizse ana hesabın firmasından veya metadata'dan düzelt
-          if (!firmaData && authUserMeta?.ana_hesap_id) {
+          // Eğer firma kaydı yoksa veya RLS yüzünden gelmediyse ana hesabın firmasından kurtar
+          if (!firmaData && fallbackAnaId) {
             const { data: anaProfile } = await supabase
               .from('profiles')
               .select('firma_id')
-              .eq('id', authUserMeta.ana_hesap_id)
+              .eq('id', fallbackAnaId)
               .maybeSingle();
 
-            if (anaProfile?.firma_id) {
+            if (anaProfile?.firma_id && anaProfile.firma_id !== profileData.firma_id) {
               profileData.firma_id = anaProfile.firma_id;
               await supabase.from('profiles').update({ firma_id: anaProfile.firma_id }).eq('id', profileData.id);
+              setProfile({ ...profileData });
+              setCachedData('tahsilatim_profile', { ...profileData });
               const { data: refirma } = await supabase
                 .from('firmalar')
                 .select('*')
@@ -277,10 +339,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           }
 
           if (firmaErr) {
-            throw firmaErr;
+            console.warn('Firma fetch warning:', firmaErr);
           }
 
           let f = (firmaData as Firma) || null;
+          if (!f && profileData.firma_id) {
+            // firmalar tablosu RLS plasiyer okumasını kısıtlasa bile firma.id korunmalı ki cariler/işlemler çalışsın
+            f = {
+              id: profileData.firma_id,
+              unvan: (authUserMeta?.firma_unvan as string) || 'Firma Hesabı',
+              vergi_no: '',
+            } as Firma;
+          }
+
           if (f && isDesignatedSuperAdmin) {
             if (!f.sinirsiz || !f.paket_bitis) {
               // Veritabanında güncellemeyi dene; yalnızca DB gerçekten onaylarsa state'e yansıt
@@ -416,6 +487,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
 
       if (data.user) {
+        setCachedData('tahsilatim_profile', null);
+        setCachedData('tahsilatim_firma', null);
         if (email.trim()) {
           try {
             localStorage.setItem('tahsilatim_remembered_email', email.trim());

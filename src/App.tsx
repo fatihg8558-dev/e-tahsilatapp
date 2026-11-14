@@ -10,6 +10,7 @@ import { IslemlerPage } from './pages/IslemlerPage';
 import { PlasiyerPerformansPage } from './pages/PlasiyerPerformansPage';
 import { SuperAdminPage } from './pages/SuperAdminPage';
 import { KasaGelirGiderPage } from './pages/KasaGelirGiderPage';
+import { YedeklemePage } from './pages/YedeklemePage';
 import { MakbuzModal } from './components/makbuz/MakbuzModal';
 import { NotificationsModal } from './components/notifications/NotificationsModal';
 import { Islem } from './types/database';
@@ -119,6 +120,19 @@ export const App: React.FC = () => {
       window.visualViewport?.removeEventListener('resize', handleViewportResize);
       document.body.classList.remove('keyboard-open');
     };
+  }, []);
+
+  // Android bildiriminden belirli sekmeye yönlendirme desteği
+  useEffect(() => {
+    const handleAndroidOpenTab = (e: Event) => {
+      const tab = (e as CustomEvent<string>).detail;
+      if (typeof tab === 'string' && tab.trim()) {
+        setEditingIslem(null);
+        setCurrentTab(tab.trim());
+      }
+    };
+    window.addEventListener('androidOpenTab', handleAndroidOpenTab);
+    return () => window.removeEventListener('androidOpenTab', handleAndroidOpenTab);
   }, []);
 
   // Oturum kontrolü yüklenirken
@@ -254,6 +268,13 @@ export const App: React.FC = () => {
             onOpenMakbuz={(islem) => setActiveMakbuz(islem)}
             onNavigate={handleNavigate}
             refreshKey={receiptRefreshKey}
+          />
+        )}
+
+        {currentTab === 'yedekleme' && (
+          <YedeklemePage
+            onBackupChanged={() => setNotificationRefreshKey((k) => k + 1)}
+            onRestored={() => setReceiptRefreshKey((k) => k + 1)}
           />
         )}
 

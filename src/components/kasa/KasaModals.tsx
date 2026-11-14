@@ -150,7 +150,7 @@ export const GelirGiderFormModal: React.FC<GelirGiderFormModalProps> = ({
       setTip(editingItem.tip);
       setKasaId(editingItem.kasa_id);
       setHedefKasaId(editingItem.hedef_kasa_id || '');
-      setKategori(editingItem.kategori);
+      setKategori(editingItem.kategori || '');
       setTutar(String(editingItem.tutar));
       setTarih(editingItem.tarih);
       setBelgeNo(editingItem.belge_no || '');

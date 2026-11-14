@@ -3,6 +3,7 @@
     xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <!-- Android 11+ (API 30+) Paket Görünürlüğü (WhatsApp, Mail, Telefon ve Tarayıcı) -->
     <queries>
@@ -34,6 +35,10 @@
         <intent>
             <action android:name="android.intent.action.SEND" />
             <data android:mimeType="application/pdf" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.SEND" />
+            <data android:mimeType="application/json" />
         </intent>
         <intent>
             <action android:name="android.intent.action.DIAL" />
@@ -73,5 +78,9 @@
                 android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/file_paths" />
         </provider>
+
+        <receiver
+            android:name=".FridayBackupReceiver"
+            android:exported="false" />
     </application>
 </manifest>

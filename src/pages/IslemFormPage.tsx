@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { supabase, handleSupabaseError } from '../lib/supabase';
-import { Cari, IslemTip, IslemTur, Islem } from '../types/database';
+import { Cari, IslemTip, IslemTur, Islem, Kasa } from '../types/database';
 import { formatCurrency, formatDate } from '../lib/formatters';
 import { getExchangeRates, ExchangeRates } from '../lib/currencyService';
 import { getPosConfig, generatePaymentLink, PosConfig, PaymentLinkResult } from '../lib/posService';
@@ -29,9 +29,16 @@ import {
   Plus,
   Trash2,
   Pencil,
+  Wallet,
 } from 'lucide-react';
 import { openWhatsApp } from '../lib/linkHelper';
 import { KarmaPaymentSection } from '../components/islem/KarmaPaymentSection';
+import {
+  pickBestKasaForTur,
+  removeIslemsFromKasa,
+  syncIslemToKasa,
+  syncTekSatirKarmaToKasa,
+} from '../lib/kasaSyncService';
 import {
   CekRowItem as KarmaCekRowItem,
   KarmaNakitState,
@@ -337,8 +344,44 @@ export const IslemFormPage: React.FC<IslemFormPageProps> = ({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Kasa Senkronizasyonu (Ana Hesap / Muhasebeci için nakit ve kart makbuzları otomatik kasaya yansır)
+  const isCentralAccount = profile?.rol !== 'plasiyer';
+  const [kasalar, setKasalar] = useState<Kasa[]>([]);
+  const [kasaTableMissing, setKasaTableMissing] = useState(false);
+  const [selectedKasaId, setSelectedKasaId] = useState<string>('');
+  const [selectedKartKasaId, setSelectedKartKasaId] = useState<string>('');
+
   // Kural: isCekSenet değişkeni bileşen içinde tanımlanmalı
   const isCekSenet = !isKarma && (tur === 'cek' || tur === 'senet');
+
+  // Aktif Kasaları Yükle
+  useEffect(() => {
+    if (!firma?.id || !isCentralAccount) return;
+    let cancelled = false;
+    supabase
+      .from('kasalar')
+      .select('*')
+      .eq('firma_id', firma.id)
+      .eq('aktif', true)
+      .order('created_at', { ascending: true })
+      .then(({ data, error: kErr }) => {
+        if (cancelled) return;
+        if (kErr) {
+          setKasaTableMissing(true);
+          return;
+        }
+        const list = (data ?? []) as Kasa[];
+        setKasalar(list);
+        setKasaTableMissing(false);
+        const bestNakit = pickBestKasaForTur(list, 'nakit');
+        const bestKart = pickBestKasaForTur(list, 'kredi_karti');
+        if (bestNakit) setSelectedKasaId((prev) => prev || bestNakit.id);
+        if (bestKart) setSelectedKartKasaId((prev) => prev || bestKart.id);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [firma?.id, isCentralAccount]);
 
   // Canlı Döviz Kurlarını Çek
   useEffect(() => {
@@ -1113,6 +1156,19 @@ export const IslemFormPage: React.FC<IslemFormPageProps> = ({
               .select('*, cariler:cari_id(unvan, vergi_tc_no, telefon, email, bakiye), profiles:yapan_user_id(ad_soyad)')
               .single();
             if (insertErr) throw insertErr;
+            if (isCentralAccount && !kasaTableMissing) {
+              await syncTekSatirKarmaToKasa({
+                islem: insertedData as Islem,
+                firmaId: effectiveFirmaId,
+                userId: profile?.id,
+                nakitTutar: karmaNakitTL,
+                kartTutar: karmaKartTL,
+                nakitKasaIdOverride: selectedKasaId || null,
+                kartKasaIdOverride: selectedKartKasaId || null,
+                knownKasalar: kasalar,
+                skipIfPlasiyerde: true,
+              });
+            }
             onSuccess(insertedData as Islem);
             return;
           } else if (editingIslem) {
@@ -1124,6 +1180,19 @@ export const IslemFormPage: React.FC<IslemFormPageProps> = ({
               .select('*, cariler:cari_id(unvan, vergi_tc_no, telefon, email, bakiye), profiles:yapan_user_id(ad_soyad)')
               .single();
             if (updateErr) throw updateErr;
+            if (isCentralAccount && !kasaTableMissing) {
+              await syncTekSatirKarmaToKasa({
+                islem: updatedData as Islem,
+                firmaId: effectiveFirmaId,
+                userId: profile?.id,
+                nakitTutar: karmaNakitTL,
+                kartTutar: karmaKartTL,
+                nakitKasaIdOverride: selectedKasaId || null,
+                kartKasaIdOverride: selectedKartKasaId || null,
+                knownKasalar: kasalar,
+                skipIfPlasiyerde: true,
+              });
+            }
             onSuccess(updatedData as Islem);
             return;
           }
@@ -1236,12 +1305,27 @@ export const IslemFormPage: React.FC<IslemFormPageProps> = ({
 
             if (insertErr) throw insertErr;
             if (insertedRows && insertedRows.length > 0) {
+              if (isCentralAccount && !kasaTableMissing) {
+                for (const row of insertedRows as Islem[]) {
+                  if (row.tur === 'nakit' || row.tur === 'kredi_karti') {
+                    await syncIslemToKasa({
+                      islem: row,
+                      firmaId: effectiveFirmaId,
+                      userId: profile?.id,
+                      kasaIdOverride: row.tur === 'kredi_karti' ? selectedKartKasaId || null : selectedKasaId || null,
+                      knownKasalar: kasalar,
+                      skipIfPlasiyerde: true,
+                    });
+                  }
+                }
+              }
               onSuccess(insertedRows[0] as Islem);
               return;
             }
           } else if (editingIslem) {
             const sourceSiblings = editingKarmaSiblings.length > 0 ? editingKarmaSiblings : [editingIslem];
             const keptIds = new Set<string>();
+            const savedRowsForKasa: Islem[] = [];
             let firstSaved: Islem | null = null;
 
             for (const entry of entries) {
@@ -1255,7 +1339,10 @@ export const IslemFormPage: React.FC<IslemFormPageProps> = ({
                   .select('*, cariler:cari_id(unvan, vergi_tc_no, telefon, email, bakiye), profiles:yapan_user_id(ad_soyad)')
                   .single();
                 if (uErr) throw uErr;
-                if (!firstSaved && upd) firstSaved = upd as Islem;
+                if (upd) {
+                  savedRowsForKasa.push(upd as Islem);
+                  if (!firstSaved) firstSaved = upd as Islem;
+                }
               } else {
                 const { data: ins, error: iErr } = await supabase
                   .from('islemler')
@@ -1263,13 +1350,18 @@ export const IslemFormPage: React.FC<IslemFormPageProps> = ({
                   .select('*, cariler:cari_id(unvan, vergi_tc_no, telefon, email, bakiye), profiles:yapan_user_id(ad_soyad)')
                   .single();
                 if (iErr) throw iErr;
-                if (!firstSaved && ins) firstSaved = ins as Islem;
+                if (ins) {
+                  savedRowsForKasa.push(ins as Islem);
+                  if (!firstSaved) firstSaved = ins as Islem;
+                }
               }
             }
 
             // Düzenleme sırasında kaldırılan eski kalemleri temizle
+            const removedIds: string[] = [];
             for (const oldRow of sourceSiblings) {
               if (!keptIds.has(oldRow.id)) {
+                removedIds.push(oldRow.id);
                 const { error: delErr } = await supabase
                   .from('islemler')
                   .delete()
@@ -1282,6 +1374,22 @@ export const IslemFormPage: React.FC<IslemFormPageProps> = ({
                     .eq('id', oldRow.id)
                     .eq('firma_id', effectiveFirmaId);
                 }
+              }
+            }
+
+            if (isCentralAccount && !kasaTableMissing) {
+              if (removedIds.length > 0) {
+                await removeIslemsFromKasa(removedIds, effectiveFirmaId);
+              }
+              for (const row of savedRowsForKasa) {
+                await syncIslemToKasa({
+                  islem: row,
+                  firmaId: effectiveFirmaId,
+                  userId: profile?.id,
+                  kasaIdOverride: row.tur === 'kredi_karti' ? selectedKartKasaId || null : selectedKasaId || null,
+                  knownKasalar: kasalar,
+                  skipIfPlasiyerde: true,
+                });
               }
             }
 
@@ -1472,6 +1580,17 @@ export const IslemFormPage: React.FC<IslemFormPageProps> = ({
       }
 
       if (savedRecord) {
+        if (isCentralAccount && !kasaTableMissing) {
+          await syncIslemToKasa({
+            islem: savedRecord,
+            firmaId: effectiveFirmaId,
+            userId: profile?.id,
+            kasaIdOverride:
+              savedRecord.tur === 'kredi_karti' ? selectedKartKasaId || null : selectedKasaId || null,
+            knownKasalar: kasalar,
+            skipIfPlasiyerde: true,
+          });
+        }
         onSuccess(savedRecord);
       }
     } catch (err: unknown) {
@@ -2604,6 +2723,78 @@ export const IslemFormPage: React.FC<IslemFormPageProps> = ({
             )}
           </div>
         )}
+
+        {/* KASA / HESAP OTOMATİK YANSITMA SEÇİMİ (Ana Hesap için) */}
+        {isCentralAccount &&
+          !kasaTableMissing &&
+          !isCapraz &&
+          (tur === 'nakit' || tur === 'kredi_karti' || (isKarma && (karmaNakitTL > 0 || karmaKartTL > 0))) && (
+            <div className="p-3.5 rounded-xl bg-teal-500/[0.05] border border-teal-500/20 space-y-2.5">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs font-bold text-teal-300 flex items-center gap-1.5">
+                  <Wallet className="w-4 h-4 text-teal-400" />
+                  <span>Kasa / Hesap Yansıtması</span>
+                </span>
+                <span className="text-[10px] font-semibold text-teal-400 bg-teal-500/10 border border-teal-500/20 px-2 py-0.5 rounded-full">
+                  Otomatik Aktarım
+                </span>
+              </div>
+
+              {kasalar.length === 0 ? (
+                <p className="text-[11px] text-gray-400">
+                  Henüz tanımlı kasa yoksa işlem kaydedildiğinde{' '}
+                  <strong className="text-gray-200">
+                    {tur === 'kredi_karti' ? 'POS / Banka Hesabı' : 'Merkez Nakit Kasa'}
+                  </strong>{' '}
+                  otomatik oluşturulup bakiyesine yansıtılacaktır.
+                </p>
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  {((!isKarma && tur === 'nakit') || (isKarma && karmaNakitTL > 0)) && (
+                    <div>
+                      <label className="block text-[11px] font-semibold text-gray-300 mb-1">
+                        Nakit İşlem Kasası
+                      </label>
+                      <select
+                        value={selectedKasaId}
+                        onChange={(e) => setSelectedKasaId(e.target.value)}
+                        data-testid="islem_nakit_kasa_select"
+                        className="w-full min-h-[40px] bg-[#0a0e13] border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-teal-400"
+                      >
+                        {kasalar.map((k) => (
+                          <option key={k.id} value={k.id}>
+                            {k.ad} ({formatCurrency(Number(k.guncel_bakiye))})
+                          </option>
+                        ))}
+                        <option value="__none__">Kasaya Yansıtma (Sadece Cari)</option>
+                      </select>
+                    </div>
+                  )}
+
+                  {((!isKarma && tur === 'kredi_karti') || (isKarma && karmaKartTL > 0)) && (
+                    <div>
+                      <label className="block text-[11px] font-semibold text-gray-300 mb-1">
+                        Kart / POS Hesabı
+                      </label>
+                      <select
+                        value={selectedKartKasaId}
+                        onChange={(e) => setSelectedKartKasaId(e.target.value)}
+                        data-testid="islem_kart_kasa_select"
+                        className="w-full min-h-[40px] bg-[#0a0e13] border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-teal-400"
+                      >
+                        {kasalar.map((k) => (
+                          <option key={k.id} value={k.id}>
+                            {k.ad} ({formatCurrency(Number(k.guncel_bakiye))})
+                          </option>
+                        ))}
+                        <option value="__none__">Kasaya Yansıtma (Sadece Cari)</option>
+                      </select>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
 
         {/* AÇIKLAMA */}
         <div>

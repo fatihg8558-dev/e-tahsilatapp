@@ -1,13 +1,37 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
-import { supabase, handleSupabaseError } from '../lib/supabase';
-import { ShieldAlert, CheckCircle2, Copy, CreditCard, Sparkles, Crown } from 'lucide-react';
+import { supabase } from '../lib/supabase';
+import {
+  ShieldAlert,
+  CheckCircle2,
+  Copy,
+  CreditCard,
+  Sparkles,
+  Crown,
+  ArrowLeft,
+  Upload,
+  FileText,
+  Landmark,
+  AlertCircle,
+  X,
+} from 'lucide-react';
 import { formatCurrency, formatDate } from '../lib/formatters';
 import { Paket } from '../types/database';
 
 interface SubscriptionLockScreenProps {
   isLockMode?: boolean;
 }
+
+const PAKET_OZELLIKLERI = [
+  'Sınırsız Tahsilat ve Tediye Makbuzu',
+  'Cari Hesap Takibi, Bakiyeler ve Ekstreler',
+  'Çek / Senet Vade & Ciro Takibi',
+  'Kasa & Gelir-Gider Yönetimi',
+  'PDF Makbuz & WhatsApp / E-posta Paylaşımı',
+  'UBL / XML Fatura İçe Aktarma',
+  'Çoklu Kullanıcı / Saha Plasiyer Desteği',
+  'Bulut Yedekleme & Mobil/Masaüstü Erişim',
+];
 
 export const SubscriptionLockScreen: React.FC<SubscriptionLockScreenProps> = ({ isLockMode = true }) => {
   const { firma, profile, periodInfo, refreshProfileAndFirma, signOut } = useAuth();
@@ -34,6 +58,7 @@ export const SubscriptionLockScreen: React.FC<SubscriptionLockScreenProps> = ({ 
       .limit(5);
     setBildirimler(data ?? []);
   };
+
   useEffect(() => {
     yukleBildirimler();
   }, [firma?.id]);
@@ -42,7 +67,6 @@ export const SubscriptionLockScreen: React.FC<SubscriptionLockScreenProps> = ({ 
     const fetchPackagesAndSettings = async () => {
       try {
         setLoading(true);
-        // Paketler
         const { data: pData } = await supabase
           .from('paketler')
           .select('*')
@@ -51,7 +75,6 @@ export const SubscriptionLockScreen: React.FC<SubscriptionLockScreenProps> = ({ 
 
         if (pData) setPaketler(pData as Paket[]);
 
-        // Ayarlar: IBAN ve Hesap Sahibi
         const { data: sData } = await supabase.from('ayarlar').select('*');
         if (sData) {
           sData.forEach((setting: { anahtar: string; deger: string }) => {
@@ -79,10 +102,17 @@ export const SubscriptionLockScreen: React.FC<SubscriptionLockScreenProps> = ({ 
   const handlePaketSecimi = (p: Paket) => {
     setSecili(p);
     setDosya(null);
+    setAciklama('');
     setHata('');
-    setActionMessage(
-      `"${p.ad}" paketi seçildi (${formatCurrency(p.fiyat)}). Aşağıdaki IBAN'a havale/EFT yapın, sonra dekontu yükleyip bildirimi gönderin. Onaylanınca süreniz uzatılır.`
-    );
+    setActionMessage(null);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const handlePaketlereDon = () => {
+    setSecili(null);
+    setDosya(null);
+    setHata('');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   const bildirimGonder = async () => {
@@ -90,7 +120,9 @@ export const SubscriptionLockScreen: React.FC<SubscriptionLockScreenProps> = ({ 
     if (profile?.rol !== 'ana') return setHata('Ödeme bildirimi yalnızca ana hesap tarafından yapılabilir.');
     if (!dosya) return setHata('Lütfen dekont dosyasını seçin.');
     if (dosya.size > 5 * 1024 * 1024) return setHata('Dosya 5 MB’tan küçük olmalı.');
-    if (!['image/jpeg', 'image/png', 'application/pdf'].includes(dosya.type)) return setHata('Yalnızca JPG, PNG veya PDF yükleyebilirsiniz.');
+    if (!['image/jpeg', 'image/png', 'application/pdf'].includes(dosya.type)) {
+      return setHata('Yalnızca JPG, PNG veya PDF yükleyebilirsiniz.');
+    }
     setGonderiyor(true);
     setHata('');
     const ext = dosya.type === 'application/pdf' ? 'pdf' : dosya.type === 'image/png' ? 'png' : 'jpg';
@@ -107,15 +139,236 @@ export const SubscriptionLockScreen: React.FC<SubscriptionLockScreenProps> = ({ 
       dekont_url: yol,
       durum: 'bekliyor',
       tarih: new Date().toISOString(),
-      'not': aciklama.trim() || null,
+      not: aciklama.trim() || null,
     });
     setGonderiyor(false);
     if (ins.error) return setHata('Bildirim kaydedilemedi: ' + ins.error.message);
     setSecili(null);
+    setDosya(null);
     setAciklama('');
     setActionMessage('Ödeme bildiriminiz alındı. Kontrol edilip onaylandığında süreniz uzatılacak.');
     yukleBildirimler();
+    window.scrollTo({ top: 0, behavior: 'smooth' });
   };
+
+  const formatFileSize = (bytes: number) => {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+  };
+
+  // SEÇİLİ PAKET DETAY VE DEKONT YÜKLEME SAYFASI
+  if (secili) {
+    return (
+      <div className={isLockMode ? 'min-h-screen bg-[#0a0e13] text-gray-100 flex flex-col p-4 sm:p-8 fintech-glow' : 'text-gray-100 pb-10'}>
+        <div className={isLockMode ? 'max-w-3xl mx-auto w-full pt-2 sm:pt-4 space-y-5' : 'max-w-3xl mx-auto w-full space-y-5'}>
+          {/* Üst Geri Dönüş Çubuğu */}
+          <div className="flex items-center justify-between gap-3">
+            <button
+              type="button"
+              onClick={handlePaketlereDon}
+              data-testid="paket_back_btn"
+              className="min-h-[44px] inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-xs font-bold text-gray-200 transition"
+            >
+              <ArrowLeft className="w-4 h-4 text-teal-400" />
+              <span>Paketlere Dön</span>
+            </button>
+
+            <span className="px-3 py-1 rounded-full bg-teal-400/10 border border-teal-400/25 text-teal-300 text-[11px] font-bold uppercase tracking-wider">
+              {secili.sure_gun} Günlük Paket
+            </span>
+          </div>
+
+          {/* 1. PAKET ÖZELLİKLERİ KARTI */}
+          <div className="bg-[#111820] border border-teal-400/30 rounded-2xl p-5 sm:p-6 shadow-[0_0_30px_rgba(45,212,191,0.08)]">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-5 border-b border-white/[0.07]">
+              <div>
+                <div className="inline-flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wider text-teal-400 mb-1">
+                  <Sparkles className="w-3.5 h-3.5" />
+                  <span>Seçilen Paket Özeti</span>
+                </div>
+                <h1 className="text-xl sm:text-2xl font-black text-white">{secili.ad}</h1>
+                <p className="text-xs text-gray-400 mt-1">
+                  {secili.sure_gun} gün kesintisiz tam erişim
+                  {secili.ek_plasiyer_ucreti > 0
+                    ? ` • Ek Plasiyer Ücreti: ${formatCurrency(secili.ek_plasiyer_ucreti)}`
+                    : ' • Ek Plasiyer Ücreti Yok'}
+                </p>
+              </div>
+
+              <div className="sm:text-right bg-black/30 border border-white/[0.06] rounded-xl px-4 py-3 shrink-0">
+                <div className="text-[10px] uppercase tracking-wider text-gray-400 font-semibold">Ödenecek Tutar</div>
+                <div className="text-2xl sm:text-3xl font-black text-teal-300 mt-0.5">
+                  {formatCurrency(secili.fiyat)}
+                </div>
+              </div>
+            </div>
+
+            <div className="pt-5">
+              <h2 className="text-xs font-bold uppercase tracking-wider text-gray-300 mb-3">
+                Paket Özellikleri
+              </h2>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                {PAKET_OZELLIKLERI.map((ozellik) => (
+                  <div
+                    key={ozellik}
+                    className="flex items-start gap-2.5 p-2.5 rounded-xl bg-black/25 border border-white/[0.05] text-xs text-gray-200"
+                  >
+                    <CheckCircle2 className="w-4 h-4 text-teal-400 shrink-0 mt-0.5" />
+                    <span>{ozellik}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* 2. BANKA HAVALE / EFT BİLGİLERİ */}
+          <div className="bg-[#111820] border border-white/[0.08] rounded-2xl p-5 sm:p-6">
+            <div className="flex items-center gap-2 mb-2">
+              <Landmark className="w-4 h-4 text-teal-400" />
+              <h3 className="font-bold text-sm text-white">1. Adım: Banka Havale / EFT Yapın</h3>
+            </div>
+            <p className="text-xs text-gray-400 mb-4 leading-relaxed">
+              Havale/EFT açıklama kısmına firma ünvanınız{' '}
+              <strong className="text-teal-300">{firma?.unvan}</strong>
+              {firma?.vergi_no ? (
+                <>
+                  {' '}ve Vergi No <strong className="text-teal-300">{firma.vergi_no}</strong>
+                </>
+              ) : null}{' '}
+              bilgisini yazmayı unutmayınız.
+            </p>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+              <div className="p-3.5 rounded-xl bg-black/40 border border-white/[0.06]">
+                <div className="text-[10px] text-gray-400 uppercase font-semibold">Hesap Sahibi</div>
+                <div className="text-sm font-bold text-white mt-1">{hesapSahibi || 'Tahsilatım Yazılım A.Ş.'}</div>
+              </div>
+
+              <div className="p-3.5 rounded-xl bg-black/40 border border-white/[0.06] flex items-center justify-between gap-2">
+                <div className="min-w-0">
+                  <div className="text-[10px] text-gray-400 uppercase font-semibold">IBAN Numarası</div>
+                  <div className="text-xs sm:text-sm font-mono font-bold text-teal-400 mt-1 tracking-wider break-all">
+                    {iban || 'TR00 0000 0000 0000 0000 0000 00'}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleCopyIban}
+                  title="IBAN Kopyala"
+                  data-testid="copy_iban_btn"
+                  className="min-h-[44px] min-w-[44px] flex items-center justify-center text-gray-300 hover:text-teal-400 hover:bg-teal-500/10 rounded-xl transition shrink-0"
+                >
+                  {copied ? <CheckCircle2 className="w-5 h-5 text-teal-400" /> : <Copy className="w-5 h-5" />}
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* 3. DEKONT YÜKLEME VE ÖDEME BİLDİRİMİ */}
+          <div className="bg-[#111820] border border-white/[0.08] rounded-2xl p-5 sm:p-6 space-y-4">
+            <div className="flex items-center gap-2">
+              <Upload className="w-4 h-4 text-teal-400" />
+              <h3 className="font-bold text-sm text-white">2. Adım: Dekont Yükle & Bildirimi Gönder</h3>
+            </div>
+
+            {profile?.rol !== 'ana' && (
+              <div className="p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/25 text-amber-300 text-xs flex items-start gap-2.5">
+                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                <span>Ödeme bildirimi yalnızca firmanın Ana Hesabı tarafından yapılabilir.</span>
+              </div>
+            )}
+
+            <label className="block cursor-pointer">
+              <input
+                type="file"
+                accept="image/jpeg,image/png,application/pdf"
+                data-testid="dekont_file_input"
+                onChange={(e) => {
+                  setDosya(e.target.files?.[0] ?? null);
+                  setHata('');
+                }}
+                className="sr-only"
+              />
+              <div className="min-h-[96px] rounded-2xl border-2 border-dashed border-teal-400/30 hover:border-teal-400/60 bg-teal-400/[0.03] hover:bg-teal-400/[0.06] p-4 flex flex-col items-center justify-center text-center transition">
+                {dosya ? (
+                  <div className="flex items-center gap-3 text-left w-full max-w-md justify-between bg-black/40 border border-white/10 rounded-xl px-3.5 py-2.5">
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <FileText className="w-5 h-5 text-teal-400 shrink-0" />
+                      <div className="min-w-0">
+                        <div className="text-xs font-bold text-white truncate">{dosya.name}</div>
+                        <div className="text-[11px] text-gray-400">{formatFileSize(dosya.size)}</div>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        setDosya(null);
+                      }}
+                      aria-label="Seçili dosyayı kaldır"
+                      className="min-h-[36px] min-w-[36px] flex items-center justify-center rounded-lg bg-white/5 hover:bg-red-500/20 text-gray-400 hover:text-red-300 transition"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+                ) : (
+                  <>
+                    <Upload className="w-6 h-6 text-teal-400 mb-1.5" />
+                    <span className="text-xs font-bold text-white">Dekont Dosyası Seçin</span>
+                    <span className="text-[11px] text-gray-400 mt-0.5">
+                      JPG, PNG veya PDF formatında (en fazla 5 MB)
+                    </span>
+                  </>
+                )}
+              </div>
+            </label>
+
+            <div>
+              <label className="block text-xs font-semibold text-gray-300 mb-1.5">
+                Açıklama / Not (İsteğe Bağlı)
+              </label>
+              <input
+                type="text"
+                data-testid="dekont_note_input"
+                value={aciklama}
+                onChange={(e) => setAciklama(e.target.value)}
+                placeholder="Örn: Havale gönderen adı veya işlem saati"
+                className="w-full min-h-[44px] rounded-xl bg-[#0a0e13] border border-white/10 px-3.5 py-2.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-teal-400"
+              />
+            </div>
+
+            {hata && (
+              <div className="p-3 rounded-xl bg-red-500/10 border border-red-500/25 text-red-300 text-xs flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 shrink-0" />
+                <span>{hata}</span>
+              </div>
+            )}
+
+            <div className="flex flex-col sm:flex-row gap-2.5 pt-1">
+              <button
+                type="button"
+                onClick={bildirimGonder}
+                disabled={gonderiyor}
+                data-testid="dekont_submit_btn"
+                className="flex-1 min-h-[48px] px-5 py-3 rounded-xl bg-teal-400 hover:bg-teal-300 text-[#0a0e13] text-xs font-extrabold disabled:opacity-60 transition shadow-lg flex items-center justify-center gap-2"
+              >
+                <CheckCircle2 className="w-4 h-4" />
+                <span>{gonderiyor ? 'Gönderiliyor…' : 'Ödeme Bildirimini Gönder'}</span>
+              </button>
+              <button
+                type="button"
+                onClick={handlePaketlereDon}
+                className="min-h-[48px] px-5 py-3 rounded-xl bg-white/5 hover:bg-white/10 text-gray-300 text-xs font-semibold transition"
+              >
+                Vazgeç
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className={isLockMode ? 'min-h-screen bg-[#0a0e13] text-gray-100 flex flex-col justify-between p-4 sm:p-8 fintech-glow' : 'text-gray-100 pb-8'}>
@@ -182,7 +435,7 @@ export const SubscriptionLockScreen: React.FC<SubscriptionLockScreenProps> = ({ 
             İşletmenize Uygun Paketi Seçin
           </h1>
           <p className="text-xs text-gray-400 mt-2">
-            Tüm paketlerde sınırsız tahsilat & tediye makbuzu, cari ekstreleri ve bulut yedekleme dahildir.
+            Paket seçtiğinizde tüm paket özellikleri ve dekont yükleme ekranı açılır.
           </p>
         </div>
 
@@ -193,42 +446,8 @@ export const SubscriptionLockScreen: React.FC<SubscriptionLockScreenProps> = ({ 
           </div>
         )}
 
-        {secili && (
-          <div className="mb-8 rounded-2xl border border-teal-400/30 bg-teal-400/[0.04] p-5">
-            <h3 className="text-sm font-bold text-white">
-              Ödeme bildirimi · {secili.ad} ({formatCurrency(secili.fiyat)})
-            </h3>
-            <p className="text-xs text-gray-400 mt-1">Havale/EFT dekontunun fotoğrafını veya PDF'ini yükleyin (en çok 5 MB).</p>
-            <input
-              type="file"
-              accept="image/jpeg,image/png,application/pdf"
-              onChange={(e) => setDosya(e.target.files?.[0] ?? null)}
-              className="mt-3 block w-full text-xs text-gray-300"
-            />
-            <input
-              value={aciklama}
-              onChange={(e) => setAciklama(e.target.value)}
-              placeholder="Not (isteğe bağlı)"
-              className="mt-3 w-full rounded-xl bg-white/5 border border-white/10 px-3 py-2 text-sm text-white"
-            />
-            {hata && <p className="mt-2 text-xs text-red-400">{hata}</p>}
-            <div className="mt-3 flex gap-2">
-              <button
-                onClick={bildirimGonder}
-                disabled={gonderiyor}
-                className="px-4 py-2.5 rounded-xl bg-teal-400 text-[#0a0e13] text-xs font-bold disabled:opacity-60"
-              >
-                {gonderiyor ? 'Gönderiliyor…' : 'Ödeme bildirimini gönder'}
-              </button>
-              <button onClick={() => setSecili(null)} className="px-4 py-2.5 rounded-xl bg-white/5 text-gray-300 text-xs font-semibold">
-                Vazgeç
-              </button>
-            </div>
-          </div>
-        )}
-
         {bildirimler.length > 0 && (
-          <div className="mb-8 rounded-2xl border border-white/10 p-4 text-xs text-gray-300">
+          <div className="mb-8 rounded-2xl border border-white/10 bg-[#111820]/70 p-4 text-xs text-gray-300">
             <p className="font-bold text-white mb-2">Son ödeme bildirimleriniz</p>
             {bildirimler.map((b) => (
               <div key={b.id} className="flex justify-between py-1.5 border-b border-white/5 last:border-0">
@@ -289,8 +508,10 @@ export const SubscriptionLockScreen: React.FC<SubscriptionLockScreenProps> = ({ 
                 </div>
 
                 <button
+                  type="button"
                   onClick={() => handlePaketSecimi(p)}
-                  className="w-full bg-teal-400 hover:bg-teal-300 text-[#0a0e13] font-bold py-2.5 px-4 rounded-xl text-xs transition duration-200 shadow-md flex items-center justify-center gap-2"
+                  data-testid={`select_paket_${p.id}`}
+                  className="w-full min-h-[44px] bg-teal-400 hover:bg-teal-300 text-[#0a0e13] font-bold py-2.5 px-4 rounded-xl text-xs transition duration-200 shadow-md flex items-center justify-center gap-2"
                 >
                   <CreditCard className="w-4 h-4" />
                   <span>Paketi Seç</span>
@@ -322,6 +543,7 @@ export const SubscriptionLockScreen: React.FC<SubscriptionLockScreenProps> = ({ 
                 </div>
               </div>
               <button
+                type="button"
                 onClick={handleCopyIban}
                 title="IBAN Kopyala"
                 className="p-2 text-gray-400 hover:text-teal-400 hover:bg-teal-500/10 rounded-lg transition"
@@ -334,6 +556,7 @@ export const SubscriptionLockScreen: React.FC<SubscriptionLockScreenProps> = ({ 
           <div className="mt-4 pt-4 border-t border-white/[0.05] flex justify-between items-center text-xs">
             <span className="text-gray-400">Ödemeniz yapıldıktan sonra onay süreci başlatılır.</span>
             <button
+              type="button"
               onClick={() => refreshProfileAndFirma()}
               className="text-teal-400 hover:text-teal-300 font-semibold underline"
             >
