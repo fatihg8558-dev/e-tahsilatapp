@@ -156,6 +156,13 @@ export function resolvePackageEntitlements(params: {
   };
 }
 
+export const STANDALONE_EK_PLASIYER_TAG = 'Sadece Ek Plasiyer Ekleme';
+
+export interface PaymentRequestMeta {
+  isStandaloneEkPlasiyer: boolean;
+  ekPlasiyerAdet: number | null;
+}
+
 export function calculatePackageTotalAmount(
   basePrice: number,
   ekPlasiyerAdet: number,
@@ -168,6 +175,18 @@ export function calculatePackageTotalAmount(
       ? ekPlasiyerUnitPrice
       : EK_PLASIYER_FIYAT;
   return safeBase + safeCount * safeUnit;
+}
+
+export function calculateStandaloneEkPlasiyerAmount(
+  ekPlasiyerAdet: number,
+  ekPlasiyerUnitPrice: number = EK_PLASIYER_FIYAT
+): number {
+  const safeCount = sanitizeEkPlasiyerCount(ekPlasiyerAdet);
+  const safeUnit =
+    Number.isFinite(ekPlasiyerUnitPrice) && ekPlasiyerUnitPrice > 0
+      ? ekPlasiyerUnitPrice
+      : EK_PLASIYER_FIYAT;
+  return safeCount * safeUnit;
 }
 
 export function formatOdemeNoteWithEkPlasiyer(
@@ -194,11 +213,48 @@ export function formatOdemeNoteWithEkPlasiyer(
   return headerLine;
 }
 
+export function formatStandaloneEkPlasiyerNote(
+  ekPlasiyerAdet: number,
+  userNote?: string | null,
+  currentPackageLabel?: string | null
+): string {
+  const safeCount = Math.max(1, sanitizeEkPlasiyerCount(ekPlasiyerAdet));
+  const totalAmount = calculateStandaloneEkPlasiyerAmount(safeCount);
+  const cleanNote = (userNote || '').trim();
+  const parts: string[] = [
+    `Talep: ${STANDALONE_EK_PLASIYER_TAG}`,
+    `Ek Plasiyer: +${safeCount} Adet`,
+    `Tutar: ${totalAmount} TL`,
+  ];
+  if (currentPackageLabel) {
+    parts.push(`Mevcut Paket: ${currentPackageLabel.trim()}`);
+  }
+
+  const headerLine = parts.join(' | ');
+  if (cleanNote) {
+    return `${headerLine}\n${cleanNote}`;
+  }
+  return headerLine;
+}
+
 export function parseEkPlasiyerFromNote(note: string | null | undefined): number | null {
   if (!note || typeof note !== 'string') return null;
-  const match = note.match(/Ek\s*Plasiyer\s*:\s*(\d+)/i);
+  const match = note.match(/Ek\s*Plasiyer\s*:\s*\+?(\d+)/i);
   if (!match) return null;
   return sanitizeEkPlasiyerCount(parseInt(match[1], 10));
+}
+
+export function parsePaymentRequestMeta(note: string | null | undefined): PaymentRequestMeta {
+  if (!note || typeof note !== 'string') {
+    return { isStandaloneEkPlasiyer: false, ekPlasiyerAdet: null };
+  }
+  const isStandaloneEkPlasiyer =
+    /Sadece\s*Ek\s*Plasiyer/i.test(note) || /standalone_ek_plasiyer/i.test(note);
+  const ekPlasiyerAdet = parseEkPlasiyerFromNote(note);
+  return {
+    isStandaloneEkPlasiyer,
+    ekPlasiyerAdet,
+  };
 }
 
 export function isMissingEkPlasiyerColumnError(err: unknown): boolean {

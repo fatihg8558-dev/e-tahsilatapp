@@ -52,6 +52,7 @@ import {
   Smartphone,
 } from 'lucide-react';
 import { openWhatsApp } from '../../lib/linkHelper';
+import { StandaloneEkPlasiyerPanel } from '../paketler/StandaloneEkPlasiyerPanel';
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -100,6 +101,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [formWarning, setFormWarning] = useState<string | null>(null);
   const [showRlsSqlHelp, setShowRlsSqlHelp] = useState(false);
   const [copiedSql, setCopiedSql] = useState(false);
+  const [showEkPlasiyerPurchase, setShowEkPlasiyerPurchase] = useState(false);
 
   // Firma Bilgileri Düzenleme Durumu
   const [firmaUnvan, setFirmaUnvan] = useState(firma?.unvan || '');
@@ -123,6 +125,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   useEffect(() => {
     if (isOpen) {
       setActiveTab(initialTab);
+      setShowEkPlasiyerPurchase(false);
     }
     if (firma?.id) {
       setPosConfig(getPosConfig(firma.id));
@@ -634,12 +637,20 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       {isPlasiyerLimitReached ? (
                         <button
                           type="button"
-                          onClick={handleGoToPackages}
+                          onClick={() => {
+                            setShowEkPlasiyerPurchase(true);
+                            setTimeout(() => {
+                              document.getElementById('standalone_ek_plasiyer_section')?.scrollIntoView({
+                                behavior: 'smooth',
+                                block: 'nearest',
+                              });
+                            }, 50);
+                          }}
                           data-testid="plasiyer_limit_upgrade_btn"
                           className="px-3.5 py-2 rounded-xl bg-amber-400 hover:bg-amber-300 text-[#0a0e13] font-extrabold text-xs flex items-center gap-1.5 shadow-lg transition"
                         >
-                          <Lock className="w-3.5 h-3.5" />
-                          <span>Ek Plasiyer Al / Yükselt</span>
+                          <UserPlus className="w-3.5 h-3.5" />
+                          <span>Ek Plasiyer Satın Al (100 TL)</span>
                         </button>
                       ) : (
                         <button
@@ -666,18 +677,24 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       <div className="flex items-start gap-2.5">
                         <Lock className="w-4 h-4 text-amber-300 shrink-0 mt-0.5" />
                         <span>
-                          Mevcut paketinizdeki aktif plasiyer sınırına ulaştınız ({aktifPlasiyerCount}/{entitlements.totalPlasiyerLimit}). Yeni plasiyer tanımlamak için paketiniz içine ek plasiyer (+100 TL) ekleyebilir veya üst pakete geçebilirsiniz.
+                          Mevcut paketinizdeki aktif plasiyer sınırına ulaştınız ({aktifPlasiyerCount}/{entitlements.totalPlasiyerLimit}). Aşağıdan adet başı <strong className="text-white">100 TL</strong> (2 plasiyer 200 TL) ödeyerek paket süreniz değişmeden ek plasiyer satın alabilir veya üst pakete geçebilirsiniz.
                         </span>
                       </div>
                       <button
                         type="button"
                         onClick={handleGoToPackages}
-                        className="px-3.5 py-2 rounded-xl bg-amber-400 hover:bg-amber-300 text-[#0a0e13] font-extrabold text-[11px] whitespace-nowrap shrink-0 transition"
+                        className="px-3.5 py-2 rounded-xl bg-white/10 hover:bg-white/20 text-white font-bold text-[11px] whitespace-nowrap shrink-0 transition"
                       >
-                        Paketler / Ek Plasiyer
+                        Paketleri İncele
                       </button>
                     </div>
                   )}
+
+                  {/* MEVCUT PAKETE SADECE EK PLASİYER SATIN ALMA PANELİ */}
+                  <StandaloneEkPlasiyerPanel
+                    compact
+                    initialExpanded={showEkPlasiyerPurchase}
+                  />
 
                   {!showAddForm && formError && (
                     <div className="p-3 rounded-xl bg-red-500/10 border border-red-500/20 text-red-400 text-xs flex items-start gap-2">

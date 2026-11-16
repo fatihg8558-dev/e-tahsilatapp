@@ -45,9 +45,11 @@ import {
   calculatePackageTotalAmount,
   formatOdemeNoteWithEkPlasiyer,
   parseEkPlasiyerFromNote,
+  parsePaymentRequestMeta,
   sanitizeEkPlasiyerCount,
 } from '../lib/packageEntitlements';
 import { PaketKarsilastirmaTablosu } from '../components/paketler/PaketKarsilastirmaTablosu';
+import { StandaloneEkPlasiyerPanel } from '../components/paketler/StandaloneEkPlasiyerPanel';
 
 interface SubscriptionLockScreenProps {
   isLockMode?: boolean;
@@ -79,6 +81,7 @@ export const SubscriptionLockScreen: React.FC<SubscriptionLockScreenProps> = ({ 
   const [seciliPeriodKey, setSeciliPeriodKey] = useState<BillingPeriodKey>('aylik');
   const [seciliDisplayPrice, setSeciliDisplayPrice] = useState<number | null>(null);
   const [seciliEkPlasiyer, setSeciliEkPlasiyer] = useState<number>(0);
+  const [expandStandaloneEk, setExpandStandaloneEk] = useState(false);
   const [dosya, setDosya] = useState<File | null>(null);
   const [aciklama, setAciklama] = useState('');
   const [gonderiyor, setGonderiyor] = useState(false);
@@ -193,12 +196,13 @@ export const SubscriptionLockScreen: React.FC<SubscriptionLockScreenProps> = ({ 
   };
 
   const handleQuickEkPlasiyerCheckout = () => {
-    const targetTier: PackageTierKey = entitlements.tierKey || 'baslangic';
-    const targetPeriod: BillingPeriodKey = activePaket
-      ? detectPeriodKey(activePaket)
-      : selectedPeriod;
-    const suggestedEk = Math.max(1, entitlements.ekPlasiyerSayisi + 1);
-    handleTierSecimi(targetTier, targetPeriod, suggestedEk);
+    setExpandStandaloneEk(true);
+    setTimeout(() => {
+      document.getElementById('standalone_ek_plasiyer_section')?.scrollIntoView({
+        behavior: 'smooth',
+        block: 'start',
+      });
+    }, 50);
   };
 
   const handlePaketlereDon = () => {
@@ -675,7 +679,7 @@ export const SubscriptionLockScreen: React.FC<SubscriptionLockScreenProps> = ({ 
                   className="px-4 py-2 rounded-xl text-xs font-extrabold bg-teal-400 hover:bg-teal-300 text-[#0a0e13] flex items-center gap-1.5 transition shadow"
                 >
                   <UserPlus className="w-3.5 h-3.5" />
-                  <span>Ek Plasiyer Ekle (+{EK_PLASIYER_FIYAT} TL)</span>
+                  <span>Ek Plasiyer Satın Al (+{EK_PLASIYER_FIYAT} TL)</span>
                 </button>
               )}
               <button
@@ -689,6 +693,16 @@ export const SubscriptionLockScreen: React.FC<SubscriptionLockScreenProps> = ({ 
           </div>
         )}
 
+        {/* MEVCUT PAKETE SADECE EK PLASİYER SATIN ALMA (SÜRE DEĞİŞMEZ, +100 TL/ADET) */}
+        {!isLockMode && (
+          <StandaloneEkPlasiyerPanel
+            initialExpanded={expandStandaloneEk}
+            ibanProp={iban}
+            hesapSahibiProp={hesapSahibi}
+            onSubmitted={yukleBildirimler}
+          />
+        )}
+
         {/* BAŞLIK & PAKETLER */}
         <div className="text-center mb-8">
           <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-teal-400/10 border border-teal-400/20 text-teal-400 text-xs font-semibold uppercase tracking-wider mb-2">
@@ -699,7 +713,7 @@ export const SubscriptionLockScreen: React.FC<SubscriptionLockScreenProps> = ({ 
             İşletmenize Uygun Paketi Seçin
           </h1>
           <p className="text-xs text-gray-400 mt-2">
-            Paket seçtiğinizde aynı ekrandan ek plasiyer (+{EK_PLASIYER_FIYAT} TL) ekleyip dekont yükleyebilirsiniz.
+            Yeni paket veya paket yükseltme seçerken de aynı ekrandan ek plasiyer (+{EK_PLASIYER_FIYAT} TL) ekleyebilirsiniz.
           </p>
         </div>
 
@@ -714,12 +728,17 @@ export const SubscriptionLockScreen: React.FC<SubscriptionLockScreenProps> = ({ 
           <div className="mb-8 rounded-2xl border border-white/10 bg-[#111820]/70 p-4 text-xs text-gray-300">
             <p className="font-bold text-white mb-2">Son ödeme bildirimleriniz</p>
             {bildirimler.map((b) => {
-              const requestedEk = parseEkPlasiyerFromNote(b.not);
+              const meta = parsePaymentRequestMeta(b.not);
+              const requestedEk = meta.ekPlasiyerAdet ?? parseEkPlasiyerFromNote(b.not);
               return (
-                <div key={b.id} className="flex justify-between py-1.5 border-b border-white/5 last:border-0">
+                <div key={b.id} className="flex justify-between gap-2 py-1.5 border-b border-white/5 last:border-0">
                   <span>
                     {formatDate(b.tarih)} · {formatCurrency(b.tutar)}
-                    {requestedEk !== null && requestedEk > 0 ? ` · +${requestedEk} Ek Plasiyer` : ''}
+                    {meta.isStandaloneEkPlasiyer && requestedEk
+                      ? ` · Sadece Ek Plasiyer (+${requestedEk} Adet)`
+                      : requestedEk !== null && requestedEk > 0
+                      ? ` · +${requestedEk} Ek Plasiyer`
+                      : ''}
                   </span>
                   <span className={b.durum === 'onaylandi' ? 'text-teal-300' : b.durum === 'red' ? 'text-red-400' : 'text-amber-300'}>
                     {b.durum === 'onaylandi' ? 'Onaylandı' : b.durum === 'red' ? 'Reddedildi' : 'Onay bekliyor'}

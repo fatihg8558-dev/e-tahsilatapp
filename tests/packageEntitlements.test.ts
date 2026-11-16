@@ -4,11 +4,14 @@ import {
   EK_PLASIYER_FIYAT,
   FIRMA_EK_PLASIYER_AYAR_KEY,
   calculatePackageTotalAmount,
+  calculateStandaloneEkPlasiyerAmount,
   formatOdemeNoteWithEkPlasiyer,
+  formatStandaloneEkPlasiyerNote,
   getEffectiveEkPlasiyer,
   isMissingEkPlasiyerColumnError,
   parseEkPlasiyerFromNote,
   parseFirmaEkPlasiyerMapFromAyarlar,
+  parsePaymentRequestMeta,
   resolvePackageEntitlements,
 } from '../src/lib/packageEntitlements';
 import type { Ayar, Firma, Paket } from '../src/types/database';
@@ -132,12 +135,32 @@ test('Ek plasiyer ücreti tüm dönemlerde sabit +100 TL olarak toplam tutara ek
   assert.equal(calculatePackageTotalAmount(400, 0), 400);
 });
 
-test('Ödeme bildirimi notunda ek plasiyer adedi doğru formatlanır ve geri okunur', () => {
+test('Sadece ek plasiyer satın alma tutarı 1 plasiyer için 100 TL, 2 plasiyer için 200 TL hesaplanır', () => {
+  assert.equal(calculateStandaloneEkPlasiyerAmount(1), 100);
+  assert.equal(calculateStandaloneEkPlasiyerAmount(2), 200);
+  assert.equal(calculateStandaloneEkPlasiyerAmount(5), 500);
+  assert.equal(calculateStandaloneEkPlasiyerAmount(0), 0);
+});
+
+test('Ödeme bildirimi notunda normal paket ve sadece ek plasiyer talepleri ayrıştırılır', () => {
   const note = formatOdemeNoteWithEkPlasiyer(3, 'Havale gönderildi', 'Profesyonel (Plus) - 6 Aylık');
   assert.ok(note);
   assert.match(note, /Ek Plasiyer: 3 Adet/);
   assert.match(note, /Havale gönderildi/);
   assert.equal(parseEkPlasiyerFromNote(note), 3);
+  assert.deepEqual(parsePaymentRequestMeta(note), {
+    isStandaloneEkPlasiyer: false,
+    ekPlasiyerAdet: 3,
+  });
+
+  const standaloneNote = formatStandaloneEkPlasiyerNote(2, '2 plasiyer eklensin', 'Başlangıç (Basic) - Aylık');
+  assert.match(standaloneNote, /Sadece Ek Plasiyer Ekleme/);
+  assert.match(standaloneNote, /Ek Plasiyer: \+2 Adet/);
+  assert.match(standaloneNote, /Tutar: 200 TL/);
+  assert.deepEqual(parsePaymentRequestMeta(standaloneNote), {
+    isStandaloneEkPlasiyer: true,
+    ekPlasiyerAdet: 2,
+  });
 
   const zeroNote = formatOdemeNoteWithEkPlasiyer(0, '', 'Başlangıç (Basic) - Aylık');
   assert.equal(parseEkPlasiyerFromNote(zeroNote), 0);
