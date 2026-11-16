@@ -1,5 +1,6 @@
 import html2canvas from 'html2canvas';
 import jsPDF from 'jspdf';
+import { isIosDevice } from './platform';
 
 /**
  * Belirtilen HTML DOM elemanını (A4 oranlı Makbuz Şablonunu)
@@ -7,7 +8,7 @@ import jsPDF from 'jspdf';
  */
 export async function generateMakbuzPdfBase64(element: HTMLElement): Promise<{ base64: string; blob: Blob }> {
   const canvas = await html2canvas(element, {
-    scale: 2, // Retinal / yüksek netlik
+    scale: isIosDevice() ? 1.5 : 2, // iOS Safari Web Share zaman aşımını önlemek için optimize edilmiş netlik
     useCORS: true,
     logging: false,
     backgroundColor: '#ffffff',
@@ -64,15 +65,11 @@ export async function generateMakbuzPdfBase64(element: HTMLElement): Promise<{ b
   return { base64, blob };
 }
 
-/**
- * Makbuz PDF dosyasını cihaza doğrudan indirir.
- */
-export async function downloadMakbuzPdf(element: HTMLElement, fileName: string): Promise<void> {
-  const { blob } = await generateMakbuzPdfBase64(element);
+function triggerBlobDownload(blob: Blob, fileNameWithExt: string) {
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
   link.href = url;
-  link.download = `${fileName}.pdf`;
+  link.download = fileNameWithExt;
   document.body.appendChild(link);
   link.click();
   setTimeout(() => {
@@ -80,14 +77,56 @@ export async function downloadMakbuzPdf(element: HTMLElement, fileName: string):
       document.body.removeChild(link);
     }
     URL.revokeObjectURL(url);
-  }, 300);
+  }, 1000);
+}
+
+function openPdfBlobInIosSafari(blob: Blob) {
+  const url = URL.createObjectURL(blob);
+  const win = window.open(url, '_blank');
+  if (!win || win.closed) {
+    window.location.assign(url);
+  }
+  setTimeout(() => {
+    URL.revokeObjectURL(url);
+  }, 60000);
+}
+
+/**
+ * Makbuz PDF dosyasını cihaza doğrudan indirir.
+ * iOS Safari / PWA modunda Web Share (Dosyalara Kaydet) veya dahili PDF önizlemesi kullanılır.
+ */
+export async function downloadMakbuzPdf(element: HTMLElement, fileName: string): Promise<void> {
+  const { blob } = await generateMakbuzPdfBase64(element);
+  const validFileName = `${fileName}.pdf`;
+
+  if (isIosDevice()) {
+    const file = new File([blob], validFileName, { type: 'application/pdf' });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      try {
+        await navigator.share({
+          files: [file],
+          title: validFileName,
+        });
+        return;
+      } catch (err: unknown) {
+        if ((err as { name?: string })?.name === 'AbortError') {
+          return;
+        }
+        // NotAllowedError vb. durumda PDF önizlemesine düş
+      }
+    }
+    openPdfBlobInIosSafari(blob);
+    return;
+  }
+
+  triggerBlobDownload(blob, validFileName);
 }
 
 /**
  * Makbuz PDF'ini hedef uygulamaya (WhatsApp veya Mail) doğrudan GERÇEK PDF DOSYA EKİ olarak gönderir.
- * 1. Android Uygulamasında: AndroidBridge.sharePdfFile çağrılır -> Dosya yerel depolamada FileProvider ile oluşturulup WhatsApp veya Gmail/Outlook'a direkt PDF eki olarak iliştirilir.
- * 2. Mobil Tarayıcılarda: Web Share API (navigator.share) ile dosya doğrudan paylaşılır.
- * 3. Masaüstü Tarayıcılarda: PDF indirilir ve kullanıcıya bilgi verilir.
+ * 1. Android Uygulamasında: AndroidBridge.sharePdfFile çağrılır.
+ * 2. iOS & Mobil Tarayıcılarda: Web Share API (navigator.share) ile iOS paylaşım sayfası açılır.
+ * 3. Desteklenmiyorsa veya iOS paylaşım zaman aşımında PDF önizleme/indirme + fallback yönlendirmesi yapılır.
  */
 export async function shareMakbuzPdfTarget(
   element: HTMLElement,
@@ -120,35 +159,39 @@ export async function shareMakbuzPdfTarget(
       }
     }
 
-    // 2. Mobil Tarayıcılar (Web Share API - dosya paylaşımı)
+    // 2. iOS & Mobil Tarayıcılar (Web Share API - dosya paylaşımı)
     const file = new File([blob], validFileName, { type: 'application/pdf' });
     if (navigator.canShare && navigator.canShare({ files: [file] })) {
-      await navigator.share({
-        files: [file],
-        title: options.subject || validFileName,
-        text: options.caption || '',
-      });
-      return { success: true };
+      try {
+        await navigator.share({
+          files: [file],
+          title: options.subject || validFileName,
+          text: options.caption || '',
+        });
+        return { success: true };
+      } catch (shareErr: unknown) {
+        const errName = (shareErr as { name?: string })?.name;
+        if (errName === 'AbortError') {
+          return { success: true };
+        }
+        // Safari gesture timeout (NotAllowedError) durumunda aşağıdaki fallback'e devam et
+      }
     }
 
-    // 3. Web / Masaüstü ortamında dosya eki verilemiyorsa dosyayı indir
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = validFileName;
-    document.body.appendChild(link);
-    link.click();
-    setTimeout(() => {
-      if (document.body.contains(link)) document.body.removeChild(link);
-      URL.revokeObjectURL(url);
-    }, 300);
+    // 3. Web / Masaüstü veya iOS share fallback: Masaüstünde indir, iOS'ta PDF sekmesi/fallback'e geç
+    if (!isIosDevice()) {
+      triggerBlobDownload(blob, validFileName);
+    }
 
     return { success: false, fallbackNeeded: true };
-  } catch (err: any) {
-    if (err?.name === 'AbortError') {
+  } catch (err: unknown) {
+    if ((err as { name?: string })?.name === 'AbortError') {
       return { success: true };
     }
     console.error('PDF target share error:', err);
-    return { success: false, error: err?.message };
+    return {
+      success: false,
+      error: err instanceof Error ? err.message : 'PDF paylaşımı başarısız oldu.',
+    };
   }
 }

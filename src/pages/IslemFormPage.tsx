@@ -3223,6 +3223,20 @@ export const IslemFormPage: React.FC<IslemFormPageProps> = ({
         initialAciklama={aciklama}
         posConfig={posConfig}
         onCompletePayment={handleCompleteNfcPayment}
+        onSwitchToPaymentLink={() => {
+          setNfcModalOpen(false);
+          if (!entitlements.canUsePaymentLink) {
+            onUpgradePackage?.();
+            return;
+          }
+          setTur('kredi_karti');
+          const parsed = parseFloat(tutar.replace(',', '.'));
+          if (!isNaN(parsed) && parsed > 0) {
+            handleCreatePosLink();
+          } else {
+            setError('Ödeme linki oluşturmak için lütfen tahsilat tutarını giriniz.');
+          }
+        }}
       />
     </div>
   );

@@ -132,7 +132,7 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
   const isSubPage = currentTab !== homeTab;
 
   return (
-    <div className="min-h-screen bg-[#0b1322] text-slate-100 flex flex-col lg:flex-row relative overflow-x-hidden fintech-glow">
+    <div className="min-h-[100dvh] bg-[#0b1322] text-slate-100 flex flex-col lg:flex-row relative overflow-x-hidden fintech-glow">
       {/* MASAÜSTÜ SOL SABİT MENÜ (≥1024px, 240px) */}
       <aside className="hidden lg:flex flex-col w-60 bg-[#111c2e] border-r border-slate-700/60 min-h-screen fixed left-0 top-0 bottom-0 z-30 select-none shadow-xl">
         {/* LOGO */}
@@ -438,7 +438,7 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
       {/* MASAÜSTÜ İÇERİK ALANI (SOL MENÜNÜN YANINDA) */}
       <div className="lg:pl-60 flex-1 flex flex-col min-w-0">
         {/* ÜST ÇUBUK / HEADER */}
-        <header className="min-h-14 lg:h-16 py-2 lg:py-0 border-b border-slate-700/60 bg-[#111c2e]/98 backdrop-blur-md sticky top-0 z-20 px-2.5 sm:px-4 lg:px-8 flex items-center justify-between gap-2 shadow-md">
+        <header className="min-h-14 lg:h-16 pt-[max(env(safe-area-inset-top,0px),0.5rem)] pb-2 lg:py-0 border-b border-slate-700/60 bg-[#111c2e]/98 backdrop-blur-md sticky top-0 z-20 px-2.5 sm:px-4 lg:px-8 flex items-center justify-between gap-2 shadow-md">
           {/* SOL: Geri/Ana Sayfa Butonu, Menü & Başlık */}
           <div className="flex items-center gap-1.5 sm:gap-3 min-w-0 flex-1">
             {isSubPage ? (
@@ -584,7 +584,7 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
         {/* MOBİL SLIDE-OVER MENÜ */}
         {mobileMenuOpen && (
           <div className="lg:hidden fixed inset-0 z-40 bg-slate-950/80 backdrop-blur-sm flex">
-            <div className="w-72 bg-[#111c2e] border-r border-slate-700 h-full p-4 flex flex-col justify-between shadow-2xl overflow-y-auto">
+            <div className="w-72 bg-[#111c2e] border-r border-slate-700 h-full px-4 pb-4 pt-[max(env(safe-area-inset-top,0px),1rem)] flex flex-col justify-between shadow-2xl overflow-y-auto">
               <div>
                 <div className="flex items-center justify-between pb-4 border-b border-slate-700 mb-4">
                   <div className="flex items-center gap-2.5">

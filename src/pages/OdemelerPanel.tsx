@@ -3,6 +3,7 @@ import { Loader2 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../context/AuthContext';
 import { formatCurrency, formatDate } from '../lib/formatters';
+import { openExternalLink } from '../lib/linkHelper';
 import { Ayar } from '../types/database';
 import {
   FIRMA_EK_PLASIYER_AYAR_KEY,
@@ -126,7 +127,7 @@ export const OdemelerPanel: React.FC = () => {
   const dekont = async (yol: string) => {
     const { data, error } = await supabase.storage.from('dekontlar').createSignedUrl(yol, 300);
     if (error || !data) return setMsg('Dekont açılamadı: ' + (error?.message ?? ''));
-    window.open(data.signedUrl, '_blank');
+    openExternalLink(data.signedUrl);
   };
 
   const islem = async (b: any, onay: boolean) => {

@@ -1,4 +1,5 @@
 // Sanal POS (iyzico & PayTR), iyzico Cep POS App2App ve Android NFC Entegrasyon Servisi
+import { isIosDevice } from './platform';
 
 export type PosProvider = 'none' | 'iyzico' | 'paytr';
 export type CepPosMode = 'hybrid' | 'app2app' | 'nfc_only';
@@ -129,6 +130,37 @@ export interface PaymentLinkResult {
   message: string;
 }
 
+export interface PosPayLinkParams {
+  referenceNo: string;
+  amount: number;
+  customerName: string;
+  provider: 'iyzico' | 'paytr';
+}
+
+export function parsePosPayParams(search: string): PosPayLinkParams | null {
+  try {
+    const query = search.startsWith('?') ? search : `?${search}`;
+    const params = new URLSearchParams(query);
+    const referenceNo = (params.get('pos_pay') || '').trim();
+    if (!referenceNo) return null;
+
+    const rawAmount = Number((params.get('tut') || '0').replace(',', '.'));
+    const amount = Number.isFinite(rawAmount) && rawAmount > 0 ? Math.round(rawAmount * 100) / 100 : 0;
+    const customerName = (params.get('cari') || 'Müşteri').trim() || 'Müşteri';
+    const rawProvider = (params.get('prov') || 'iyzico').trim().toLowerCase();
+    const provider: 'iyzico' | 'paytr' = rawProvider === 'paytr' ? 'paytr' : 'iyzico';
+
+    return {
+      referenceNo,
+      amount,
+      customerName,
+      provider,
+    };
+  } catch {
+    return null;
+  }
+}
+
 export function generatePaymentLink(params: {
   amount: number;
   customerName: string;
@@ -195,9 +227,9 @@ export async function processCardPayment(params: {
   };
 }
 
-export function getAndroidNfcStatus(): 'ready' | 'disabled' | 'unsupported' | 'web' {
+export function getAndroidNfcStatus(): 'ready' | 'disabled' | 'unsupported' | 'ios' | 'web' {
   if (typeof window === 'undefined' || !window.AndroidBridge?.getNfcStatus) {
-    return 'web';
+    return isIosDevice() ? 'ios' : 'web';
   }
   const status = window.AndroidBridge.getNfcStatus();
   if (status === 'ready' || status === 'disabled' || status === 'unsupported') {

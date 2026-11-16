@@ -1649,6 +1649,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                                       ? 'NFC Hazır'
                                       : getAndroidNfcStatus() === 'disabled'
                                       ? 'NFC Kapalı'
+                                      : getAndroidNfcStatus() === 'ios'
+                                      ? 'iOS Safari / PWA (Ödeme Linki)'
                                       : getAndroidNfcStatus() === 'web'
                                       ? 'Web Önizleme'
                                       : 'NFC Yok'}

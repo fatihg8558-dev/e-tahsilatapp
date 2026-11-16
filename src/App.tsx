@@ -13,6 +13,8 @@ import { KasaGelirGiderPage } from './pages/KasaGelirGiderPage';
 import { YedeklemePage } from './pages/YedeklemePage';
 import { MakbuzModal } from './components/makbuz/MakbuzModal';
 import { NotificationsModal } from './components/notifications/NotificationsModal';
+import { PosPaymentLinkPage } from './components/pos/PosPaymentLinkPage';
+import { parsePosPayParams, PosPayLinkParams } from './lib/posService';
 import { Islem } from './types/database';
 
 const VALID_TABS = new Set([
@@ -64,6 +66,10 @@ export const App: React.FC = () => {
   const [isNotificationsOpen, setIsNotificationsOpen] = useState<boolean>(false);
   const [notificationRefreshKey, setNotificationRefreshKey] = useState<number>(0);
   const [receiptRefreshKey, setReceiptRefreshKey] = useState<number>(0);
+  const [posPayParams, setPosPayParams] = useState<PosPayLinkParams | null>(() => {
+    if (typeof window === 'undefined') return null;
+    return parsePosPayParams(window.location.search);
+  });
 
   // Klavye açıldığında odaklanılan input'u otomatik olarak klavyenin üzerine kaydır
   useEffect(() => {
@@ -138,6 +144,15 @@ export const App: React.FC = () => {
     };
 
     const handleViewportResize = () => {
+      const vv = window.visualViewport;
+      if (vv) {
+        const keyboardLikelyOpen = window.innerHeight - vv.height > 140;
+        if (keyboardLikelyOpen) {
+          document.body.classList.add('keyboard-open');
+        } else if (!isTextInput(document.activeElement)) {
+          document.body.classList.remove('keyboard-open');
+        }
+      }
       if (isTextInput(document.activeElement)) {
         scheduleScrollForActive();
       }
@@ -235,10 +250,25 @@ export const App: React.FC = () => {
     }
   }, [user, loading, currentTab, profile?.rol, isSuperAdmin, editingIslem]);
 
+  // Ödeme Linki (?pos_pay=...) doğrudan müşteri ödeme ekranını açar (giriş yapmadan da erişilebilir)
+  if (posPayParams) {
+    return (
+      <PosPaymentLinkPage
+        params={posPayParams}
+        onExit={() => {
+          setPosPayParams(null);
+          if (typeof window !== 'undefined' && window.history?.replaceState) {
+            window.history.replaceState({}, document.title, window.location.pathname);
+          }
+        }}
+      />
+    );
+  }
+
   // Oturum kontrolü yüklenirken
   if (loading) {
     return (
-      <div className="min-h-screen bg-[#0a0e13] flex flex-col items-center justify-center text-teal-400">
+      <div className="min-h-[100dvh] bg-[#0a0e13] flex flex-col items-center justify-center text-teal-400">
         <div className="w-12 h-12 rounded-2xl bg-teal-400 text-[#0a0e13] font-black flex items-center justify-center text-2xl shadow-[0_0_30px_rgba(45,212,191,0.4)] animate-pulse mb-4">
           e
         </div>

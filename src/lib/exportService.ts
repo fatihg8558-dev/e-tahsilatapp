@@ -38,17 +38,18 @@ export function printPdfReport(
   headers: string[],
   rows: (string | number | null | undefined)[][],
   summary?: { label: string; value: string }[],
-  logoUrl?: string | null
+  logoUrl?: string | null,
+  options?: { rightAlignedColumns?: number[] }
 ) {
-  const printWindow = window.open('', '_blank');
-  if (!printWindow) {
-    alert('Yazdırma penceresi açılamadı. Lütfen açılır pencerelere (pop-up) izin veriniz.');
-    return;
-  }
+  const rightAlignedSet = new Set<number>(
+    options?.rightAlignedColumns && options.rightAlignedColumns.length > 0
+      ? options.rightAlignedColumns
+      : [headers.length - 1]
+  );
 
   const summaryHtml = summary && summary.length > 0
     ? `
-      <div style="display: flex; gap: 20px; margin-bottom: 20px; background: #f8fafc; padding: 12px 16px; border-radius: 8px; border: 1px solid #e2e8f0;">
+      <div style="display: flex; flex-wrap: wrap; gap: 20px; margin-bottom: 20px; background: #f8fafc; padding: 12px 16px; border-radius: 8px; border: 1px solid #e2e8f0;">
         ${summary.map(s => `
           <div>
             <div style="font-size: 11px; color: #64748b; font-weight: 600; text-transform: uppercase;">${s.label}</div>
@@ -66,8 +67,10 @@ export function printPdfReport(
         ${row
           .map(
             (cell, cellIdx) => `
-          <td style="padding: 10px 12px; font-size: 12px; color: #1e293b; ${
-            cellIdx === row.length - 1 ? 'text-align: right; font-weight: 700; font-family: monospace;' : ''
+          <td style="padding: 9px 10px; font-size: 11px; color: #1e293b; ${
+            rightAlignedSet.has(cellIdx)
+              ? 'text-align: right; font-weight: 700; font-family: monospace; white-space: nowrap;'
+              : ''
           }">
             ${cell !== null && cell !== undefined ? cell : '-'}
           </td>
@@ -128,14 +131,11 @@ export function printPdfReport(
           th {
             background-color: #0f766e;
             color: #ffffff;
-            font-size: 11px;
+            font-size: 10.5px;
             text-transform: uppercase;
-            letter-spacing: 0.5px;
-            padding: 10px 12px;
+            letter-spacing: 0.4px;
+            padding: 9px 10px;
             font-weight: 700;
-          }
-          th:last-child {
-            text-align: right;
           }
           @media print {
             body { padding: 0; }
@@ -169,7 +169,7 @@ export function printPdfReport(
         <table>
           <thead>
             <tr>
-              ${headers.map((h, i) => `<th style="${i === headers.length - 1 ? 'text-align: right;' : ''}">${h}</th>`).join('')}
+              ${headers.map((h, i) => `<th style="${rightAlignedSet.has(i) ? 'text-align: right; white-space: nowrap;' : ''}">${h}</th>`).join('')}
             </tr>
           </thead>
           <tbody>
@@ -183,9 +183,58 @@ export function printPdfReport(
     </html>
   `;
 
-  printWindow.document.write(html);
-  printWindow.document.close();
-  setTimeout(() => {
-    printWindow.print();
-  }, 300);
+  const printWindow = window.open('', '_blank');
+  if (printWindow) {
+    printWindow.document.write(html);
+    printWindow.document.close();
+    setTimeout(() => {
+      printWindow.print();
+    }, 300);
+    return;
+  }
+
+  // iOS Safari / Ana Ekrana Ekle (PWA) modunda pop-up engellendiğinde gizli iframe ile yazdır
+  const iframe = document.createElement('iframe');
+  iframe.setAttribute('aria-hidden', 'true');
+  iframe.style.position = 'fixed';
+  iframe.style.right = '0';
+  iframe.style.bottom = '0';
+  iframe.style.width = '0';
+  iframe.style.height = '0';
+  iframe.style.border = '0';
+  iframe.style.opacity = '0';
+  iframe.style.pointerEvents = 'none';
+  document.body.appendChild(iframe);
+
+  const cleanup = () => {
+    setTimeout(() => {
+      if (document.body.contains(iframe)) {
+        document.body.removeChild(iframe);
+      }
+    }, 1500);
+  };
+
+  const iframeWin = iframe.contentWindow;
+  const iframeDoc = iframe.contentDocument || iframeWin?.document;
+  if (!iframeWin || !iframeDoc) {
+    cleanup();
+    alert('Yazdırma penceresi açılamadı. Lütfen tarayıcı ayarlarından açılır pencerelere izin veriniz.');
+    return;
+  }
+
+  iframeDoc.open();
+  iframeDoc.write(html);
+  iframeDoc.close();
+
+  const triggerIframePrint = () => {
+    try {
+      iframeWin.addEventListener('afterprint', cleanup, { once: true });
+      iframeWin.focus();
+      iframeWin.print();
+    } finally {
+      setTimeout(cleanup, 60000);
+    }
+  };
+
+  setTimeout(triggerIframePrint, 350);
 }

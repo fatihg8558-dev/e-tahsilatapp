@@ -46,6 +46,7 @@ interface NfcTahsilatModalProps {
   initialAciklama: string;
   posConfig: PosConfig;
   onCompletePayment: (payload: NfcPaymentCompletePayload) => Promise<void>;
+  onSwitchToPaymentLink?: () => void;
 }
 
 const parseAmount = (raw: string): number => {
@@ -76,6 +77,7 @@ export const NfcTahsilatModal: React.FC<NfcTahsilatModalProps> = ({
   initialAciklama,
   posConfig,
   onCompletePayment,
+  onSwitchToPaymentLink,
 }) => {
   const [selectedCariId, setSelectedCariId] = useState(initialCariId);
   const [cariQuery, setCariQuery] = useState('');
@@ -86,7 +88,7 @@ export const NfcTahsilatModal: React.FC<NfcTahsilatModalProps> = ({
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [detectedCard, setDetectedCard] = useState<NfcCardReadDetail | null>(null);
-  const [nfcStatus, setNfcStatus] = useState<'ready' | 'disabled' | 'unsupported' | 'web'>(() =>
+  const [nfcStatus, setNfcStatus] = useState<'ready' | 'disabled' | 'unsupported' | 'ios' | 'web'>(() =>
     getAndroidNfcStatus()
   );
   const [cepPosInstalled, setCepPosInstalled] = useState<boolean>(() => isAndroidCepPosInstalled());
@@ -246,6 +248,13 @@ export const NfcTahsilatModal: React.FC<NfcTahsilatModalProps> = ({
       setErrorMessage('Telefonunuzun NFC özelliği kapalı. Ayarlardan NFC’yi açıp tekrar deneyin.');
       return;
     }
+    if (currentStatus === 'ios') {
+      setStage('error');
+      setErrorMessage(
+        'Apple iOS (iPhone / iPad Safari) üçüncü taraf web uygulamalarında temassız kart okumaya izin vermemektedir. Sanal POS Ödeme Linki veya Sandbox Test Kartı ile devam edebilirsiniz.'
+      );
+      return;
+    }
     if (currentStatus !== 'ready') {
       setStage('error');
       setErrorMessage(
@@ -383,6 +392,8 @@ export const NfcTahsilatModal: React.FC<NfcTahsilatModalProps> = ({
                     ? 'Hazır'
                     : nfcStatus === 'disabled'
                     ? 'Kapalı'
+                    : nfcStatus === 'ios'
+                    ? 'iOS Safari / PWA (Ödeme Linki Önerilir)'
                     : nfcStatus === 'web'
                     ? 'Tarayıcı Önizleme'
                     : 'Desteklenmiyor'}
@@ -404,7 +415,7 @@ export const NfcTahsilatModal: React.FC<NfcTahsilatModalProps> = ({
             <span className="text-gray-400">
               Cep POS:{' '}
               <strong className={cepPosInstalled ? 'text-emerald-400' : 'text-gray-400'}>
-                {cepPosInstalled ? 'Yüklü' : 'Başvuru / Test'}
+                {nfcStatus === 'ios' ? 'Ödeme Linki Modu' : cepPosInstalled ? 'Yüklü' : 'Başvuru / Test'}
               </strong>
             </span>
           </div>
@@ -590,31 +601,52 @@ export const NfcTahsilatModal: React.FC<NfcTahsilatModalProps> = ({
           {/* AKSİYON BUTONLARI */}
           {stage !== 'scanning' && stage !== 'detected' && stage !== 'authorizing' && stage !== 'waiting_ceppost' && (
             <div className="space-y-2.5">
-              {showAndroidNfcBtn && (
-                <button
-                  type="button"
-                  data-testid="nfc_start_reader_btn"
-                  onClick={handleStartAndroidNfcScan}
-                  className="w-full py-3.5 px-4 rounded-xl bg-teal-400 hover:bg-teal-300 text-[#0a0e13] font-black text-sm flex items-center justify-center gap-2 shadow-[0_0_20px_rgba(45,212,191,0.3)] transition"
-                >
-                  <Wifi className="w-4 h-4 rotate-90" />
-                  <span>Android NFC ile Kart Okut ({formatCurrency(numericAmount)})</span>
-                </button>
+              {nfcStatus === 'ios' ? (
+                <div className="space-y-2.5">
+                  <div className="p-3 rounded-xl bg-sky-500/10 border border-sky-400/25 text-[11px] text-sky-200 leading-relaxed">
+                    <strong>iPhone / iPad Safari Notu:</strong> Apple güvenlik politikaları gereği tarayıcı ve PWA üzerinden temassız kart okutma donanımına erişilemez. Uzaktan/yüz yüze tahsilat için <strong>Sanal POS Ödeme Linki (iyzico / PayTR)</strong> oluşturup müşterinize gönderebilirsiniz.
+                  </div>
+                  {onSwitchToPaymentLink && (
+                    <button
+                      type="button"
+                      data-testid="nfc_ios_payment_link_btn"
+                      onClick={onSwitchToPaymentLink}
+                      className="w-full py-3 px-4 rounded-xl bg-teal-400 hover:bg-teal-300 text-[#0a0e13] font-black text-xs sm:text-sm flex items-center justify-center gap-2 shadow-[0_0_20px_rgba(45,212,191,0.25)] transition"
+                    >
+                      <ExternalLink className="w-4 h-4" />
+                      <span>Sanal POS Ödeme Linki ile Devam Et</span>
+                    </button>
+                  )}
+                </div>
+              ) : (
+                <>
+                  {showAndroidNfcBtn && (
+                    <button
+                      type="button"
+                      data-testid="nfc_start_reader_btn"
+                      onClick={handleStartAndroidNfcScan}
+                      className="w-full py-3.5 px-4 rounded-xl bg-teal-400 hover:bg-teal-300 text-[#0a0e13] font-black text-sm flex items-center justify-center gap-2 shadow-[0_0_20px_rgba(45,212,191,0.3)] transition"
+                    >
+                      <Wifi className="w-4 h-4 rotate-90" />
+                      <span>Android NFC ile Kart Okut ({formatCurrency(numericAmount)})</span>
+                    </button>
+                  )}
+
+                  {showCepPosBtn && (
+                    <button
+                      type="button"
+                      data-testid="nfc_launch_ceppost_btn"
+                      onClick={handleLaunchCepPos}
+                      className="w-full py-3 px-4 rounded-xl bg-[#111820] hover:bg-white/10 text-teal-300 border border-teal-500/30 font-bold text-xs flex items-center justify-center gap-2 transition"
+                    >
+                      <ShieldCheck className="w-4 h-4" />
+                      <span>iyzico Cep POS Uygulamasını Aç (App2App)</span>
+                    </button>
+                  )}
+                </>
               )}
 
-              {showCepPosBtn && (
-                <button
-                  type="button"
-                  data-testid="nfc_launch_ceppost_btn"
-                  onClick={handleLaunchCepPos}
-                  className="w-full py-3 px-4 rounded-xl bg-[#111820] hover:bg-white/10 text-teal-300 border border-teal-500/30 font-bold text-xs flex items-center justify-center gap-2 transition"
-                >
-                  <ShieldCheck className="w-4 h-4" />
-                  <span>iyzico Cep POS Uygulamasını Aç (App2App)</span>
-                </button>
-              )}
-
-              {(nfcStatus === 'web' || nfcStatus === 'unsupported' || posConfig.testMode) && (
+              {(nfcStatus === 'web' || nfcStatus === 'ios' || nfcStatus === 'unsupported' || posConfig.testMode) && (
                 <button
                   type="button"
                   data-testid="nfc_sandbox_test_btn"

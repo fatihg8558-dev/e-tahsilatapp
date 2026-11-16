@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { supabase, handleSupabaseError } from '../lib/supabase';
 import { Cari, CariTur, Islem, Fatura } from '../types/database';
@@ -24,8 +24,14 @@ import {
   Download,
   Upload,
   Lock,
+  Calendar,
 } from 'lucide-react';
 import { exportToExcel, printPdfReport } from '../lib/exportService';
+import {
+  buildCariEkstre,
+  formatEkstreBakiye,
+  RawEkstreMovement,
+} from '../lib/cariEkstreHelper';
 import { UblImportModal } from '../components/cari/UblImportModal';
 
 interface CarilerPageProps {
@@ -54,8 +60,10 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
   const [isUblModalOpen, setIsUblModalOpen] = useState(false);
   const [editingCari, setEditingCari] = useState<Cari | null>(null);
   const [selectedCariForDetail, setSelectedCariForDetail] = useState<Cari | null>(null);
-  const [detailMovements, setDetailMovements] = useState<Array<Islem | (Fatura & { tip: string })>>([]);
+  const [detailMovements, setDetailMovements] = useState<RawEkstreMovement[]>([]);
   const [loadingDetail, setLoadingDetail] = useState(false);
+  const [detailStartDate, setDetailStartDate] = useState('');
+  const [detailEndDate, setDetailEndDate] = useState('');
 
   // Form Fields
   const [formUnvan, setFormUnvan] = useState('');
@@ -192,7 +200,12 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
 
   // Cari Detay ve Hareketleri Yükle
   const openDetail = async (cari: Cari) => {
+    const isDifferentCari = selectedCariForDetail?.id !== cari.id;
     setSelectedCariForDetail(cari);
+    if (isDifferentCari) {
+      setDetailStartDate('');
+      setDetailEndDate('');
+    }
     setLoadingDetail(true);
 
     try {
@@ -210,14 +223,14 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
         .from('islemler')
         .select('*, profiles:yapan_user_id(ad_soyad)')
         .eq('cari_id', cari.id)
-        .order('tarih', { ascending: false });
+        .order('tarih', { ascending: true });
 
       if (islemlerErr) {
         const fallback = await supabase
           .from('islemler')
           .select('*')
           .eq('cari_id', cari.id)
-          .order('tarih', { ascending: false });
+          .order('tarih', { ascending: true });
         islemlerData = fallback.data;
       }
 
@@ -226,10 +239,10 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
         .from('faturalar')
         .select('*')
         .eq('cari_id', cari.id)
-        .order('tarih', { ascending: false });
+        .order('tarih', { ascending: true });
 
-      // Birleştir ve tarihe göre sırala
-      const combined: Array<Islem | (Fatura & { tip: string })> = [
+      // Birleştir (kronolojik ve aynı tarihte fatura üstte sıralaması buildCariEkstre içinde yapılır)
+      const combined: RawEkstreMovement[] = [
         ...((islemlerData as Islem[]) || []),
         ...(((faturalarData as Fatura[]) || []).map((f) => ({
           ...f,
@@ -237,7 +250,6 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
         }))),
       ];
 
-      combined.sort((a, b) => new Date(b.tarih).getTime() - new Date(a.tarih).getTime());
       setDetailMovements(combined);
     } catch (err) {
       console.error(err);
@@ -246,56 +258,141 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
     }
   };
 
+  const toLocalDateInputValue = (d: Date): string => {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+  };
+
+  const applyEkstreQuickRange = (preset: 'all' | 'this_month' | 'last_30' | 'this_year') => {
+    const now = new Date();
+    const todayStr = toLocalDateInputValue(now);
+    if (preset === 'all') {
+      setDetailStartDate('');
+      setDetailEndDate('');
+      return;
+    }
+    if (preset === 'this_month') {
+      const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+      setDetailStartDate(toLocalDateInputValue(startOfMonth));
+      setDetailEndDate(todayStr);
+      return;
+    }
+    if (preset === 'last_30') {
+      const thirtyAgo = new Date(now);
+      thirtyAgo.setDate(thirtyAgo.getDate() - 30);
+      setDetailStartDate(toLocalDateInputValue(thirtyAgo));
+      setDetailEndDate(todayStr);
+      return;
+    }
+    const startOfYear = new Date(now.getFullYear(), 0, 1);
+    setDetailStartDate(toLocalDateInputValue(startOfYear));
+    setDetailEndDate(todayStr);
+  };
+
+  const isDateRangeInvalid = Boolean(
+    detailStartDate && detailEndDate && detailStartDate > detailEndDate
+  );
+
+  const ekstreResult = useMemo(
+    () =>
+      buildCariEkstre({
+        movements: detailMovements,
+        startDate: isDateRangeInvalid ? '' : detailStartDate,
+        endDate: isDateRangeInvalid ? '' : detailEndDate,
+        currentCariBakiye: selectedCariForDetail?.bakiye,
+      }),
+    [detailMovements, detailStartDate, detailEndDate, isDateRangeInvalid, selectedCariForDetail?.bakiye]
+  );
+
+  const ekstrePeriodLabel = useMemo(() => {
+    if (detailStartDate && detailEndDate) {
+      return `${formatDate(detailStartDate)} - ${formatDate(detailEndDate)}`;
+    }
+    if (detailStartDate) {
+      return `${formatDate(detailStartDate)} sonrası`;
+    }
+    if (detailEndDate) {
+      return `${formatDate(detailEndDate)} tarihine kadar`;
+    }
+    return 'Tüm Tarihler';
+  }, [detailStartDate, detailEndDate]);
+
   const handleExportCariEkstresiExcel = () => {
     if (!selectedCariForDetail) return;
-    const headers = ['Tarih', 'Belge No / Makbuz', 'İşlem Tipi', 'Açıklama', 'İşlemi Yapan', 'Durum', 'Tutar (TL)'];
-    const rows = detailMovements.map((m: any) => [
-      formatDate(m.tarih),
-      m.makbuz_no || m.fatura_no || m.belge_no || '-',
-      (m.tip || '').toUpperCase(),
-      m.aciklama || '-',
-      m.profiles?.ad_soyad || 'Yönetici',
-      m.iptal ? 'İPTAL' : 'AKTİF',
-      Number(m.tutar) || 0,
+    const headers = [
+      'Tarih',
+      'Belge No / Makbuz',
+      'İşlem Tipi',
+      'Açıklama',
+      'İşlemi Yapan',
+      'Durum',
+      'Borç (TL)',
+      'Alacak (TL)',
+      'Bakiye (TL)',
+    ];
+    const rows = ekstreResult.rows.map((r) => [
+      r.formattedDate,
+      r.belgeNo,
+      r.tipLabel,
+      r.aciklama,
+      r.yapan,
+      r.isCancelled ? 'İPTAL' : r.isOpeningRow ? 'DEVİR' : 'AKTİF',
+      r.borc,
+      r.alacak,
+      r.bakiye,
     ]);
     const cleanName = selectedCariForDetail.unvan.toLowerCase().replace(/[^a-z0-9]/g, '_');
-    exportToExcel(`cari_ekstre_${cleanName}`, headers, rows);
+    const rangeSuffix =
+      detailStartDate || detailEndDate
+        ? `_${detailStartDate || 'bas'}_${detailEndDate || 'son'}`
+        : '';
+    exportToExcel(`cari_ekstre_${cleanName}${rangeSuffix}`, headers, rows);
   };
 
   const handleExportCariEkstresiPdf = () => {
     if (!selectedCariForDetail) return;
-    const headers = ['Tarih', 'Belge No / Makbuz', 'İşlem Tipi', 'Açıklama', 'İşlemi Yapan', 'Tutar'];
-    let totalTahsilat = 0;
-    let totalTediye = 0;
-    const rows = detailMovements.map((m: any) => {
-      const tutar = Number(m.tutar) || 0;
-      if (!m.iptal) {
-        if (m.tip === 'tahsilat') totalTahsilat += tutar;
-        else if (m.tip === 'tediye') totalTediye += tutar;
-      }
-      return [
-        formatDate(m.tarih),
-        m.makbuz_no || m.fatura_no || m.belge_no || '-',
-        m.iptal ? `${(m.tip || '').toUpperCase()} (İPTAL)` : (m.tip || '').toUpperCase(),
-        m.aciklama || '-',
-        m.profiles?.ad_soyad || 'Yönetici',
-        formatCurrency(tutar),
-      ];
-    });
+    const headers = [
+      'Tarih',
+      'Belge No / Makbuz',
+      'İşlem Tipi',
+      'Açıklama',
+      'İşlemi Yapan',
+      'Borç',
+      'Alacak',
+      'Bakiye',
+    ];
+    const rows = ekstreResult.rows.map((r) => [
+      r.formattedDate,
+      r.belgeNo,
+      r.tipLabel,
+      r.aciklama,
+      r.yapan,
+      r.borc > 0 ? formatCurrency(r.borc) : '-',
+      r.alacak > 0 ? formatCurrency(r.alacak) : '-',
+      formatEkstreBakiye(r.bakiye),
+    ]);
 
     const summary = [
       { label: 'Cari Türü', value: selectedCariForDetail.tur === 'alici' ? 'Alıcı (Müşteri)' : 'Tedarikçi' },
-      { label: 'Toplam Tahsilat', value: formatCurrency(totalTahsilat) },
-      { label: 'Toplam Tediye', value: formatCurrency(totalTediye) },
-      { label: 'Net Bakiye', value: formatCurrency(Number(selectedCariForDetail.bakiye) || 0) },
+      { label: 'Tarih Aralığı', value: ekstrePeriodLabel },
+      { label: 'Toplam Borç', value: formatCurrency(ekstreResult.summary.totalBorc) },
+      { label: 'Toplam Alacak', value: formatCurrency(ekstreResult.summary.totalAlacak) },
+      {
+        label: detailStartDate || detailEndDate ? 'Dönem Sonu Bakiye' : 'Net Bakiye',
+        value: formatEkstreBakiye(ekstreResult.summary.closingBalance),
+      },
     ];
 
     printPdfReport(
       `CARİ HESAP EKSTRESİ: ${selectedCariForDetail.unvan}`,
-      `VKN/TCKN: ${selectedCariForDetail.vergi_tc_no || '-'} | Tel: ${selectedCariForDetail.telefon || '-'}`,
+      `VKN/TCKN: ${selectedCariForDetail.vergi_tc_no || '-'} | Tel: ${selectedCariForDetail.telefon || '-'} | Dönem: ${ekstrePeriodLabel}`,
       headers,
       rows,
-      summary
+      summary,
+      firma?.logo_data || null,
+      { rightAlignedColumns: [5, 6, 7] }
     );
   };
 
@@ -609,30 +706,34 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
         )}
       </div>
 
-      {/* CARİ DETAY VE HAREKETLER MODALI */}
+      {/* CARİ DETAY VE EKSTRE MODALI */}
       {selectedCariForDetail && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-[#111820] border border-white/10 rounded-2xl w-full max-w-3xl max-h-[90vh] flex flex-col shadow-2xl overflow-hidden">
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-2 sm:p-4">
+          <div className="bg-[#111820] border border-white/10 rounded-2xl w-full max-w-5xl max-h-[92dvh] flex flex-col shadow-2xl overflow-hidden">
             {/* Başlık */}
-            <div className="p-5 border-b border-white/[0.07] flex items-center justify-between">
-              <div>
+            <div className="p-4 sm:p-5 border-b border-white/[0.07] flex items-center justify-between gap-3">
+              <div className="min-w-0">
                 <span className="text-[10px] font-bold uppercase tracking-wider text-teal-400">
-                  Cari Detayı & Hareketleri
+                  Cari Hesap Ekstresi &amp; Hareketler
                 </span>
-                <h3 className="text-lg font-bold text-white">{selectedCariForDetail.unvan}</h3>
+                <h3 className="text-base sm:text-lg font-bold text-white truncate">
+                  {selectedCariForDetail.unvan}
+                </h3>
               </div>
               <button
+                type="button"
                 onClick={() => setSelectedCariForDetail(null)}
-                className="p-1.5 text-gray-400 hover:text-white rounded-lg"
+                aria-label="Ekstreyi kapat"
+                className="p-2 text-gray-400 hover:text-white rounded-lg hover:bg-white/5 transition shrink-0"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
 
             {/* Özet ve Bakiye Kartı */}
-            <div className="p-5 bg-black/20 border-b border-white/[0.06] grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <div className="p-4 sm:p-5 bg-black/20 border-b border-white/[0.06] grid grid-cols-1 sm:grid-cols-3 gap-3 sm:gap-4">
               <div>
-                <div className="text-[10px] text-gray-400 uppercase font-semibold">Cari Türü & VKN</div>
+                <div className="text-[10px] text-gray-400 uppercase font-semibold">Cari Türü &amp; VKN</div>
                 <div className="text-xs font-semibold text-white mt-1 capitalize">
                   {selectedCariForDetail.tur === 'alici' ? 'Alıcı (Müşteri)' : 'Tedarikçi'}
                 </div>
@@ -644,11 +745,11 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
               <div>
                 <div className="text-[10px] text-gray-400 uppercase font-semibold">İletişim Bilgileri</div>
                 <div className="text-xs text-white mt-1">{selectedCariForDetail.telefon || '-'}</div>
-                <div className="text-xs text-gray-400 mt-0.5">{selectedCariForDetail.email || '-'}</div>
+                <div className="text-xs text-gray-400 mt-0.5 truncate">{selectedCariForDetail.email || '-'}</div>
               </div>
 
               <div className="sm:text-right">
-                <div className="text-[10px] text-gray-400 uppercase font-semibold">Güncel Bakiye</div>
+                <div className="text-[10px] text-gray-400 uppercase font-semibold">Güncel Cari Bakiye</div>
                 <div
                   className={`text-xl font-black mt-1 ${
                     Number(selectedCariForDetail.bakiye) > 0
@@ -662,18 +763,19 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
                 </div>
                 <div className="text-[10px] text-gray-500">
                   {Number(selectedCariForDetail.bakiye) > 0
-                    ? '+ Cari Bize Borçlu'
+                    ? '+ Cari Bize Borçlu (B)'
                     : Number(selectedCariForDetail.bakiye) < 0
-                    ? '- Biz Borçluyuz'
+                    ? '- Biz Borçluyuz (A)'
                     : 'Bakiye Sıfır'}
                 </div>
               </div>
             </div>
 
-            {/* Hızlı Aksiyon Butonları */}
-            <div className="px-5 py-3 border-b border-white/[0.06] flex items-center justify-between bg-black/10">
-              <div className="flex items-center gap-2">
+            {/* Hızlı Aksiyon & Dışa Aktarma Butonları */}
+            <div className="px-4 sm:px-5 py-3 border-b border-white/[0.06] flex flex-wrap items-center justify-between gap-2.5 bg-black/10">
+              <div className="flex flex-wrap items-center gap-2">
                 <button
+                  type="button"
                   onClick={() => {
                     const cid = selectedCariForDetail.id;
                     setSelectedCariForDetail(null);
@@ -685,6 +787,7 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
                   <span>Tahsilat Gir</span>
                 </button>
                 <button
+                  type="button"
                   onClick={() => {
                     const cid = selectedCariForDetail.id;
                     setSelectedCariForDetail(null);
@@ -697,117 +800,390 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
                 </button>
               </div>
 
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <button
+                  type="button"
+                  data-testid="ekstre_export_excel_btn"
                   onClick={handleExportCariEkstresiExcel}
                   className="px-3 py-1.5 rounded-lg bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 text-xs font-semibold flex items-center gap-1.5 border border-emerald-500/30 transition"
                   title="Excel (CSV) Olarak İndir"
                 >
                   <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-400" />
-                  <span>Excel'e Aktar</span>
+                  <span>Excel&apos;e Aktar</span>
                 </button>
                 <button
+                  type="button"
+                  data-testid="ekstre_export_pdf_btn"
                   onClick={handleExportCariEkstresiPdf}
                   className="px-3 py-1.5 rounded-lg bg-teal-500/15 hover:bg-teal-500/25 text-teal-300 text-xs font-semibold flex items-center gap-1.5 border border-teal-500/30 transition"
-                  title="A4 PDF Raporu Yazdır"
+                  title="A4 PDF Ekstre Yazdır / Paylaş"
                 >
                   <Printer className="w-3.5 h-3.5 text-teal-400" />
-                  <span>PDF Yazdır</span>
+                  <span>PDF Ekstre</span>
                 </button>
               </div>
             </div>
 
-            {/* Hareketler Listesi */}
-            <div className="flex-1 overflow-y-auto p-5">
-              <h4 className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-3">
-                Hesap Hareketleri (İşlemler ve Faturalar)
-              </h4>
+            {/* Tarih Aralığı Çekme & Dönem Özeti */}
+            <div className="px-4 sm:px-5 py-3 border-b border-white/[0.06] bg-[#0d141c] space-y-2.5">
+              <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-2.5">
+                <div className="grid grid-cols-2 sm:flex sm:items-center gap-2">
+                  <div className="flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-1.5">
+                    <label
+                      htmlFor="ekstre-start-date"
+                      className="text-[10px] font-bold uppercase tracking-wider text-gray-400 flex items-center gap-1"
+                    >
+                      <Calendar className="w-3 h-3 text-teal-400" />
+                      <span>Başlangıç</span>
+                    </label>
+                    <input
+                      id="ekstre-start-date"
+                      data-testid="ekstre_start_date"
+                      type="date"
+                      value={detailStartDate}
+                      onChange={(e) => setDetailStartDate(e.target.value)}
+                      className="bg-[#0a0e13] border border-white/15 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-teal-400"
+                    />
+                  </div>
+
+                  <div className="flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-1.5">
+                    <label
+                      htmlFor="ekstre-end-date"
+                      className="text-[10px] font-bold uppercase tracking-wider text-gray-400"
+                    >
+                      Bitiş
+                    </label>
+                    <input
+                      id="ekstre-end-date"
+                      data-testid="ekstre_end_date"
+                      type="date"
+                      value={detailEndDate}
+                      onChange={(e) => setDetailEndDate(e.target.value)}
+                      className="bg-[#0a0e13] border border-white/15 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-teal-400"
+                    />
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => applyEkstreQuickRange('all')}
+                    className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold border transition ${
+                      !detailStartDate && !detailEndDate
+                        ? 'bg-teal-400 text-[#0a0e13] border-teal-400'
+                        : 'bg-black/30 text-gray-300 border-white/10 hover:bg-white/5'
+                    }`}
+                  >
+                    Tümü
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => applyEkstreQuickRange('this_month')}
+                    className="px-2.5 py-1 rounded-lg text-[11px] font-semibold bg-black/30 text-gray-300 border border-white/10 hover:bg-white/5 transition"
+                  >
+                    Bu Ay
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => applyEkstreQuickRange('last_30')}
+                    className="px-2.5 py-1 rounded-lg text-[11px] font-semibold bg-black/30 text-gray-300 border border-white/10 hover:bg-white/5 transition"
+                  >
+                    Son 30 Gün
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => applyEkstreQuickRange('this_year')}
+                    className="px-2.5 py-1 rounded-lg text-[11px] font-semibold bg-black/30 text-gray-300 border border-white/10 hover:bg-white/5 transition"
+                  >
+                    Bu Yıl
+                  </button>
+                </div>
+              </div>
+
+              {isDateRangeInvalid && (
+                <div className="text-[11px] text-amber-300 bg-amber-500/10 border border-amber-500/25 rounded-lg px-2.5 py-1.5">
+                  Başlangıç tarihi bitiş tarihinden büyük olamaz. Lütfen tarih aralığını düzeltiniz.
+                </div>
+              )}
+
+              {/* Dönem Borç / Alacak / Bakiye Özeti */}
+              <div className="grid grid-cols-3 gap-2 pt-1">
+                <div className="px-2.5 py-2 rounded-xl bg-black/30 border border-white/[0.06]">
+                  <div className="text-[10px] text-gray-400 uppercase font-semibold">Dönem Borç</div>
+                  <div className="text-xs sm:text-sm font-mono font-bold text-rose-300 mt-0.5">
+                    {formatCurrency(ekstreResult.summary.totalBorc)}
+                  </div>
+                </div>
+                <div className="px-2.5 py-2 rounded-xl bg-black/30 border border-white/[0.06]">
+                  <div className="text-[10px] text-gray-400 uppercase font-semibold">Dönem Alacak</div>
+                  <div className="text-xs sm:text-sm font-mono font-bold text-emerald-300 mt-0.5">
+                    {formatCurrency(ekstreResult.summary.totalAlacak)}
+                  </div>
+                </div>
+                <div className="px-2.5 py-2 rounded-xl bg-black/30 border border-white/[0.06]">
+                  <div className="text-[10px] text-gray-400 uppercase font-semibold">
+                    {detailStartDate || detailEndDate ? 'Dönem Bakiye' : 'Net Bakiye'}
+                  </div>
+                  <div
+                    className={`text-xs sm:text-sm font-mono font-black mt-0.5 ${
+                      ekstreResult.summary.closingBalance > 0
+                        ? 'text-teal-300'
+                        : ekstreResult.summary.closingBalance < 0
+                        ? 'text-red-300'
+                        : 'text-gray-300'
+                    }`}
+                  >
+                    {formatEkstreBakiye(ekstreResult.summary.closingBalance)}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Hareketler Listesi (Kronolojik: Eski -> Yeni, Aynı Günde Fatura Üstte) */}
+            <div className="flex-1 overflow-y-auto p-4 sm:p-5">
+              <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+                <h4 className="text-xs font-bold text-gray-400 uppercase tracking-wider">
+                  Hesap Ekstresi ({ekstrePeriodLabel})
+                </h4>
+                <span className="text-[11px] text-gray-500">
+                  Tarih sıralı • Aynı günde fatura üstte, ödeme altta
+                </span>
+              </div>
 
               {loadingDetail ? (
                 <div className="py-8 text-center text-xs text-gray-400">Hareketler yükleniyor...</div>
-              ) : detailMovements.length === 0 ? (
+              ) : ekstreResult.rows.length === 0 ? (
                 <div className="py-8 text-center text-xs text-gray-500">
-                  Bu cariye ait henüz işlem veya fatura hareketi bulunmuyor.
+                  Seçili tarih aralığında bu cariye ait işlem veya fatura hareketi bulunmuyor.
                 </div>
               ) : (
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left text-xs">
-                    <thead>
-                      <tr className="border-b border-white/[0.06] text-gray-400 text-[10px] uppercase font-semibold">
-                        <th className="py-2">Tarih</th>
-                        <th className="py-2">Belge No / Makbuz</th>
-                        <th className="py-2">İşlem Türü</th>
-                        <th className="py-2">İşlemi Yapan</th>
-                        <th className="py-2 text-right">Tutar</th>
-                        <th className="py-2 text-right">İşlem</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-white/[0.04]">
-                      {detailMovements.map((m: any, idx) => {
-                        const isIslem = 'tip' in m && (m.tip === 'tahsilat' || m.tip === 'tediye');
-                        const isIptal = m.iptal;
-                        return (
-                          <tr key={idx} className="hover:bg-white/[0.02]">
-                            <td className="py-2.5 text-gray-300">{formatDate(m.tarih)}</td>
-                            <td className="py-2.5 font-mono text-teal-400">
-                              {m.makbuz_no || m.fatura_no || m.belge_no || '-'}
-                            </td>
-                            <td className="py-2.5">
-                              <span
-                                className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
-                                  m.tip === 'tahsilat'
-                                    ? 'bg-teal-500/10 text-teal-400'
-                                    : m.tip === 'tediye'
-                                    ? 'bg-orange-500/10 text-orange-400'
-                                    : 'bg-blue-500/10 text-blue-400'
+                <>
+                  {/* MASAÜSTÜ & TABLET TABLOSU */}
+                  <div className="hidden md:block overflow-x-auto">
+                    <table className="w-full text-left text-xs">
+                      <thead>
+                        <tr className="border-b border-white/[0.06] text-gray-400 text-[10px] uppercase font-semibold">
+                          <th className="py-2 pr-3">Tarih</th>
+                          <th className="py-2 pr-3">Belge No / Makbuz</th>
+                          <th className="py-2 pr-3">İşlem Türü</th>
+                          <th className="py-2 pr-3">Açıklama / Yapan</th>
+                          <th className="py-2 px-2 text-right whitespace-nowrap">Borç</th>
+                          <th className="py-2 px-2 text-right whitespace-nowrap">Alacak</th>
+                          <th className="py-2 px-2 text-right whitespace-nowrap">Bakiye</th>
+                          <th className="py-2 pl-2 text-right">İşlem</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-white/[0.04]">
+                        {ekstreResult.rows.map((r) => {
+                          const badgeClass = r.isOpeningRow
+                            ? 'bg-slate-500/20 text-slate-200 border border-slate-400/30'
+                            : r.isInvoice
+                            ? 'bg-blue-500/15 text-blue-300 border border-blue-500/25'
+                            : r.rawTip === 'tahsilat'
+                            ? 'bg-teal-500/10 text-teal-400 border border-teal-500/20'
+                            : 'bg-orange-500/10 text-orange-400 border border-orange-500/20';
+
+                          return (
+                            <tr
+                              key={r.key}
+                              className={
+                                r.isOpeningRow
+                                  ? 'bg-white/[0.03] font-semibold'
+                                  : 'hover:bg-white/[0.02]'
+                              }
+                            >
+                              <td className="py-2.5 pr-3 text-gray-300 whitespace-nowrap">
+                                {r.formattedDate}
+                              </td>
+                              <td className="py-2.5 pr-3 font-mono text-teal-400 whitespace-nowrap">
+                                {r.belgeNo}
+                              </td>
+                              <td className="py-2.5 pr-3 whitespace-nowrap">
+                                <span
+                                  className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${badgeClass}`}
+                                >
+                                  {r.tipLabel}
+                                </span>
+                              </td>
+                              <td className="py-2.5 pr-3 max-w-[220px]">
+                                <div className="text-gray-200 truncate" title={r.aciklama}>
+                                  {r.aciklama}
+                                </div>
+                                {r.yapan && r.yapan !== '-' && (
+                                  <div className="text-[10px] text-gray-500">{r.yapan}</div>
+                                )}
+                              </td>
+                              <td
+                                className={`py-2.5 px-2 text-right font-mono font-bold whitespace-nowrap ${
+                                  r.isCancelled
+                                    ? 'line-through text-gray-500'
+                                    : r.borc > 0
+                                    ? 'text-rose-300'
+                                    : 'text-gray-600'
                                 }`}
                               >
-                                {m.tip}
-                              </span>
-                              {isIptal && (
-                                <span className="ml-1.5 text-[10px] text-red-400 font-bold">(İPTAL)</span>
-                              )}
-                            </td>
-                            <td className="py-2.5 text-gray-400">
-                              {m.profiles?.ad_soyad || (isIslem ? 'Yönetici' : '-')}
-                            </td>
-                            <td
-                              className={`py-2.5 text-right font-bold ${
-                                isIptal
-                                  ? 'line-through text-gray-500'
-                                  : m.tip === 'tahsilat'
-                                  ? 'text-teal-400'
-                                  : 'text-orange-400'
-                              }`}
-                            >
-                              {formatCurrency(m.tutar)}
-                            </td>
-                            <td className="py-2.5 text-right">
-                              {isIslem && onOpenMakbuz ? (
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    onOpenMakbuz({
-                                      ...m,
-                                      cariler: selectedCariForDetail,
-                                    });
-                                  }}
-                                  className="px-2.5 py-1 rounded-lg bg-teal-500/15 hover:bg-teal-500/30 text-teal-300 border border-teal-500/30 text-[11px] font-bold inline-flex items-center gap-1 transition"
-                                  title="Makbuzu Görüntüle ve Yazdır / Paylaş"
+                                {r.borc > 0 ? formatCurrency(r.borc) : '-'}
+                              </td>
+                              <td
+                                className={`py-2.5 px-2 text-right font-mono font-bold whitespace-nowrap ${
+                                  r.isCancelled
+                                    ? 'line-through text-gray-500'
+                                    : r.alacak > 0
+                                    ? 'text-emerald-300'
+                                    : 'text-gray-600'
+                                }`}
+                              >
+                                {r.alacak > 0 ? formatCurrency(r.alacak) : '-'}
+                              </td>
+                              <td
+                                className={`py-2.5 px-2 text-right font-mono font-black whitespace-nowrap ${
+                                  r.bakiye > 0
+                                    ? 'text-teal-300'
+                                    : r.bakiye < 0
+                                    ? 'text-red-300'
+                                    : 'text-gray-400'
+                                }`}
+                              >
+                                {formatEkstreBakiye(r.bakiye)}
+                              </td>
+                              <td className="py-2.5 pl-2 text-right whitespace-nowrap">
+                                {r.isPayment && !r.isOpeningRow && r.rawMovement && onOpenMakbuz ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      onOpenMakbuz({
+                                        ...(r.rawMovement as Islem),
+                                        cariler: selectedCariForDetail,
+                                      });
+                                    }}
+                                    className="px-2.5 py-1 rounded-lg bg-teal-500/15 hover:bg-teal-500/30 text-teal-300 border border-teal-500/30 text-[11px] font-bold inline-flex items-center gap-1 transition"
+                                    title="Makbuzu Görüntüle ve Yazdır / Paylaş"
+                                  >
+                                    <ExternalLink className="w-3 h-3 text-teal-400" />
+                                    <span>Makbuz</span>
+                                  </button>
+                                ) : (
+                                  <span className="text-gray-500 text-[10px]">-</span>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  {/* MOBİL KART GÖRÜNÜMÜ */}
+                  <div className="md:hidden space-y-2.5">
+                    {ekstreResult.rows.map((r) => {
+                      const badgeClass = r.isOpeningRow
+                        ? 'bg-slate-500/20 text-slate-200 border border-slate-400/30'
+                        : r.isInvoice
+                        ? 'bg-blue-500/15 text-blue-300 border border-blue-500/25'
+                        : r.rawTip === 'tahsilat'
+                        ? 'bg-teal-500/10 text-teal-400 border border-teal-500/20'
+                        : 'bg-orange-500/10 text-orange-400 border border-orange-500/20';
+
+                      return (
+                        <div
+                          key={r.key}
+                          className={`p-3 rounded-xl border ${
+                            r.isOpeningRow
+                              ? 'bg-white/[0.04] border-white/15'
+                              : 'bg-black/25 border-white/[0.07]'
+                          } space-y-2`}
+                        >
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="min-w-0">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className="text-[11px] text-gray-300 font-semibold">
+                                  {r.formattedDate}
+                                </span>
+                                <span className="font-mono text-[11px] text-teal-400">
+                                  {r.belgeNo}
+                                </span>
+                              </div>
+                              <div className="mt-1">
+                                <span
+                                  className={`inline-block px-2 py-0.5 rounded text-[10px] font-bold uppercase ${badgeClass}`}
                                 >
-                                  <ExternalLink className="w-3 h-3 text-teal-400" />
-                                  <span>Makbuz</span>
-                                </button>
-                              ) : (
-                                <span className="text-gray-500 text-[10px]">-</span>
-                              )}
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
+                                  {r.tipLabel}
+                                </span>
+                              </div>
+                            </div>
+
+                            {r.isPayment && !r.isOpeningRow && r.rawMovement && onOpenMakbuz && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  onOpenMakbuz({
+                                    ...(r.rawMovement as Islem),
+                                    cariler: selectedCariForDetail,
+                                  });
+                                }}
+                                className="px-2.5 py-1 rounded-lg bg-teal-500/15 text-teal-300 border border-teal-500/30 text-[11px] font-bold inline-flex items-center gap-1 shrink-0"
+                              >
+                                <ExternalLink className="w-3 h-3" />
+                                <span>Makbuz</span>
+                              </button>
+                            )}
+                          </div>
+
+                          {r.aciklama && r.aciklama !== '-' && (
+                            <div className="text-[11px] text-gray-300 leading-snug break-words">
+                              {r.aciklama}
+                            </div>
+                          )}
+
+                          <div className="grid grid-cols-3 gap-2 pt-2 border-t border-white/[0.06] text-[11px]">
+                            <div>
+                              <div className="text-[9px] uppercase text-gray-500 font-semibold">Borç</div>
+                              <div
+                                className={`font-mono font-bold ${
+                                  r.isCancelled
+                                    ? 'line-through text-gray-500'
+                                    : r.borc > 0
+                                    ? 'text-rose-300'
+                                    : 'text-gray-500'
+                                }`}
+                              >
+                                {r.borc > 0 ? formatCurrency(r.borc) : '-'}
+                              </div>
+                            </div>
+                            <div>
+                              <div className="text-[9px] uppercase text-gray-500 font-semibold">Alacak</div>
+                              <div
+                                className={`font-mono font-bold ${
+                                  r.isCancelled
+                                    ? 'line-through text-gray-500'
+                                    : r.alacak > 0
+                                    ? 'text-emerald-300'
+                                    : 'text-gray-500'
+                                }`}
+                              >
+                                {r.alacak > 0 ? formatCurrency(r.alacak) : '-'}
+                              </div>
+                            </div>
+                            <div className="text-right">
+                              <div className="text-[9px] uppercase text-gray-500 font-semibold">Bakiye</div>
+                              <div
+                                className={`font-mono font-black ${
+                                  r.bakiye > 0
+                                    ? 'text-teal-300'
+                                    : r.bakiye < 0
+                                    ? 'text-red-300'
+                                    : 'text-gray-400'
+                                }`}
+                              >
+                                {formatEkstreBakiye(r.bakiye)}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </>
               )}
             </div>
           </div>

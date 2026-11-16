@@ -20,6 +20,7 @@ import {
 } from 'lucide-react';
 import { openWhatsApp, openExternalLink, formatWhatsAppPhone } from '../../lib/linkHelper';
 import { downloadMakbuzPdf, shareMakbuzPdfTarget } from '../../lib/pdfGenerator';
+import { isIosDevice } from '../../lib/platform';
 import {
   KarmaParsedLine,
   buildKarmaLinesFromSiblingIslemler,
@@ -212,8 +213,12 @@ export const MakbuzModal: React.FC<MakbuzModalProps> = ({ islem, onClose, onEdit
     try {
       setPdfLoading(true);
       await downloadMakbuzPdf(makbuzContainerRef.current, makbuzDosyaAdi);
-      setPdfSuccessMsg('Makbuz PDF olarak cihazınıza indirildi!');
-      setTimeout(() => setPdfSuccessMsg(null), 3000);
+      setPdfSuccessMsg(
+        isIosDevice()
+          ? 'Makbuz PDF önizleme/paylaşım ekranı açıldı.'
+          : 'Makbuz PDF olarak cihazınıza indirildi!'
+      );
+      setTimeout(() => setPdfSuccessMsg(null), 3500);
     } catch (err) {
       console.error(err);
       alert('PDF oluşturulurken bir hata oluştu.');
@@ -244,8 +249,12 @@ export const MakbuzModal: React.FC<MakbuzModalProps> = ({ islem, onClose, onEdit
       );
 
       if (res.fallbackNeeded) {
-        setPdfSuccessMsg('PDF indirildi! WhatsApp sohbetine ekleyebilirsiniz.');
-        setTimeout(() => setPdfSuccessMsg(null), 4000);
+        setPdfSuccessMsg(
+          isIosDevice()
+            ? 'WhatsApp mesajı hazırlandı. PDF eki için iPhone’da "PDF İndir" butonundan paylaşabilirsiniz.'
+            : 'PDF indirildi! WhatsApp sohbetine ekleyebilirsiniz.'
+        );
+        setTimeout(() => setPdfSuccessMsg(null), 4500);
         openWhatsApp(resolvedCariTelefon, caption);
       } else if (!formattedPhone) {
         setPdfSuccessMsg('Caride telefon numarası kayıtlı olmadığı için WhatsApp kişi seçimi açıldı.');
@@ -284,8 +293,12 @@ export const MakbuzModal: React.FC<MakbuzModalProps> = ({ islem, onClose, onEdit
       );
 
       if (res.fallbackNeeded) {
-        setPdfSuccessMsg('PDF indirildi! E-posta iletinize ekleyebilirsiniz.');
-        setTimeout(() => setPdfSuccessMsg(null), 4000);
+        setPdfSuccessMsg(
+          isIosDevice()
+            ? 'E-posta taslağı açıldı. PDF eki için iPhone’da "PDF İndir" butonundan paylaşabilirsiniz.'
+            : 'PDF indirildi! E-posta iletinize ekleyebilirsiniz.'
+        );
+        setTimeout(() => setPdfSuccessMsg(null), 4500);
         openExternalLink(`mailto:${email}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(caption)}`);
       } else if (!email) {
         setPdfSuccessMsg('Caride e-posta adresi kayıtlı olmadığı için alıcı alanı boş açıldı.');
