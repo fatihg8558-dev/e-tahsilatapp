@@ -326,7 +326,6 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
       'Belge No / Makbuz',
       'İşlem Tipi',
       'Açıklama',
-      'İşlemi Yapan',
       'Durum',
       'Borç (TL)',
       'Alacak (TL)',
@@ -337,7 +336,6 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
       r.belgeNo,
       r.tipLabel,
       r.aciklama,
-      r.yapan,
       r.isCancelled ? 'İPTAL' : r.isOpeningRow ? 'DEVİR' : 'AKTİF',
       r.borc,
       r.alacak,
@@ -355,10 +353,9 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
     if (!selectedCariForDetail) return;
     const headers = [
       'Tarih',
-      'Belge No / Makbuz',
+      'Belge No',
       'İşlem Tipi',
       'Açıklama',
-      'İşlemi Yapan',
       'Borç',
       'Alacak',
       'Bakiye',
@@ -368,7 +365,6 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
       r.belgeNo,
       r.tipLabel,
       r.aciklama,
-      r.yapan,
       r.borc > 0 ? formatCurrency(r.borc) : '-',
       r.alacak > 0 ? formatCurrency(r.alacak) : '-',
       formatEkstreBakiye(r.bakiye),
@@ -392,7 +388,16 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
       rows,
       summary,
       firma?.logo_data || null,
-      { rightAlignedColumns: [5, 6, 7] }
+      {
+        rightAlignedColumns: [4, 5, 6],
+        compactNumeric: true,
+        columnStyles: {
+          0: 'width: 1%; white-space: nowrap; font-size: 9.5px;',
+          1: 'width: 1%; white-space: nowrap; font-size: 9.5px; font-family: monospace;',
+          2: 'width: 1%; white-space: nowrap; font-size: 9px;',
+          3: 'width: auto; min-width: 170px; font-size: 10px; line-height: 1.35; word-break: break-word;',
+        },
+      }
     );
   };
 
@@ -963,14 +968,14 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
                     <table className="w-full text-left text-xs">
                       <thead>
                         <tr className="border-b border-white/[0.06] text-gray-400 text-[10px] uppercase font-semibold">
-                          <th className="py-2 pr-3">Tarih</th>
-                          <th className="py-2 pr-3">Belge No / Makbuz</th>
-                          <th className="py-2 pr-3">İşlem Türü</th>
-                          <th className="py-2 pr-3">Açıklama / Yapan</th>
-                          <th className="py-2 px-2 text-right whitespace-nowrap">Borç</th>
-                          <th className="py-2 px-2 text-right whitespace-nowrap">Alacak</th>
-                          <th className="py-2 px-2 text-right whitespace-nowrap">Bakiye</th>
-                          <th className="py-2 pl-2 text-right">İşlem</th>
+                          <th className="py-2 pr-2 w-[1%] whitespace-nowrap">Tarih</th>
+                          <th className="py-2 pr-2 w-[1%] whitespace-nowrap">Belge No</th>
+                          <th className="py-2 pr-2 w-[1%] whitespace-nowrap">İşlem Türü</th>
+                          <th className="py-2 pr-3">Açıklama / İşlemi Yapan</th>
+                          <th className="py-2 px-1.5 w-[1%] text-right whitespace-nowrap">Borç</th>
+                          <th className="py-2 px-1.5 w-[1%] text-right whitespace-nowrap">Alacak</th>
+                          <th className="py-2 px-1.5 w-[1%] text-right whitespace-nowrap">Bakiye</th>
+                          <th className="py-2 pl-2 w-[1%] text-right whitespace-nowrap">İşlem</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-white/[0.04]">
@@ -992,29 +997,31 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
                                   : 'hover:bg-white/[0.02]'
                               }
                             >
-                              <td className="py-2.5 pr-3 text-gray-300 whitespace-nowrap">
+                              <td className="py-2 pr-2 text-[11px] text-gray-300 whitespace-nowrap align-top">
                                 {r.formattedDate}
                               </td>
-                              <td className="py-2.5 pr-3 font-mono text-teal-400 whitespace-nowrap">
+                              <td className="py-2 pr-2 text-[11px] font-mono text-teal-400 whitespace-nowrap align-top">
                                 {r.belgeNo}
                               </td>
-                              <td className="py-2.5 pr-3 whitespace-nowrap">
+                              <td className="py-2 pr-2 whitespace-nowrap align-top">
                                 <span
-                                  className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${badgeClass}`}
+                                  className={`px-1.5 py-0.5 rounded text-[9.5px] font-bold uppercase ${badgeClass}`}
                                 >
                                   {r.tipLabel}
                                 </span>
                               </td>
-                              <td className="py-2.5 pr-3 max-w-[220px]">
-                                <div className="text-gray-200 truncate" title={r.aciklama}>
+                              <td className="py-2 pr-3 min-w-[200px] align-top">
+                                <div className="text-[11px] text-gray-200 leading-snug break-words">
                                   {r.aciklama}
                                 </div>
                                 {r.yapan && r.yapan !== '-' && (
-                                  <div className="text-[10px] text-gray-500">{r.yapan}</div>
+                                  <div className="text-[10px] text-gray-500 mt-0.5">
+                                    İşlemi Yapan: <span className="text-gray-400 font-medium">{r.yapan}</span>
+                                  </div>
                                 )}
                               </td>
                               <td
-                                className={`py-2.5 px-2 text-right font-mono font-bold whitespace-nowrap ${
+                                className={`py-2 px-1.5 text-right font-mono tabular-nums text-[10.5px] font-bold whitespace-nowrap align-top ${
                                   r.isCancelled
                                     ? 'line-through text-gray-500'
                                     : r.borc > 0
@@ -1025,7 +1032,7 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
                                 {r.borc > 0 ? formatCurrency(r.borc) : '-'}
                               </td>
                               <td
-                                className={`py-2.5 px-2 text-right font-mono font-bold whitespace-nowrap ${
+                                className={`py-2 px-1.5 text-right font-mono tabular-nums text-[10.5px] font-bold whitespace-nowrap align-top ${
                                   r.isCancelled
                                     ? 'line-through text-gray-500'
                                     : r.alacak > 0
@@ -1036,7 +1043,7 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
                                 {r.alacak > 0 ? formatCurrency(r.alacak) : '-'}
                               </td>
                               <td
-                                className={`py-2.5 px-2 text-right font-mono font-black whitespace-nowrap ${
+                                className={`py-2 px-1.5 text-right font-mono tabular-nums text-[10.5px] font-black whitespace-nowrap align-top ${
                                   r.bakiye > 0
                                     ? 'text-teal-300'
                                     : r.bakiye < 0
@@ -1046,7 +1053,7 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
                               >
                                 {formatEkstreBakiye(r.bakiye)}
                               </td>
-                              <td className="py-2.5 pl-2 text-right whitespace-nowrap">
+                              <td className="py-2 pl-2 text-right whitespace-nowrap align-top">
                                 {r.isPayment && !r.isOpeningRow && r.rawMovement && onOpenMakbuz ? (
                                   <button
                                     type="button"
@@ -1056,7 +1063,7 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
                                         cariler: selectedCariForDetail,
                                       });
                                     }}
-                                    className="px-2.5 py-1 rounded-lg bg-teal-500/15 hover:bg-teal-500/30 text-teal-300 border border-teal-500/30 text-[11px] font-bold inline-flex items-center gap-1 transition"
+                                    className="px-2 py-1 rounded-lg bg-teal-500/15 hover:bg-teal-500/30 text-teal-300 border border-teal-500/30 text-[10.5px] font-bold inline-flex items-center gap-1 transition"
                                     title="Makbuzu Görüntüle ve Yazdır / Paylaş"
                                   >
                                     <ExternalLink className="w-3 h-3 text-teal-400" />
@@ -1135,11 +1142,17 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
                             </div>
                           )}
 
-                          <div className="grid grid-cols-3 gap-2 pt-2 border-t border-white/[0.06] text-[11px]">
+                          {r.yapan && r.yapan !== '-' && (
+                            <div className="text-[10px] text-gray-500">
+                              İşlemi Yapan: <span className="text-gray-400 font-medium">{r.yapan}</span>
+                            </div>
+                          )}
+
+                          <div className="grid grid-cols-3 gap-1.5 pt-2 border-t border-white/[0.06] text-[10.5px]">
                             <div>
                               <div className="text-[9px] uppercase text-gray-500 font-semibold">Borç</div>
                               <div
-                                className={`font-mono font-bold ${
+                                className={`font-mono tabular-nums font-bold ${
                                   r.isCancelled
                                     ? 'line-through text-gray-500'
                                     : r.borc > 0
@@ -1153,7 +1166,7 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
                             <div>
                               <div className="text-[9px] uppercase text-gray-500 font-semibold">Alacak</div>
                               <div
-                                className={`font-mono font-bold ${
+                                className={`font-mono tabular-nums font-bold ${
                                   r.isCancelled
                                     ? 'line-through text-gray-500'
                                     : r.alacak > 0
@@ -1167,7 +1180,7 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
                             <div className="text-right">
                               <div className="text-[9px] uppercase text-gray-500 font-semibold">Bakiye</div>
                               <div
-                                className={`font-mono font-black ${
+                                className={`font-mono tabular-nums font-black ${
                                   r.bakiye > 0
                                     ? 'text-teal-300'
                                     : r.bakiye < 0

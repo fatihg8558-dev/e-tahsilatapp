@@ -39,21 +39,27 @@ export function printPdfReport(
   rows: (string | number | null | undefined)[][],
   summary?: { label: string; value: string }[],
   logoUrl?: string | null,
-  options?: { rightAlignedColumns?: number[] }
+  options?: {
+    rightAlignedColumns?: number[];
+    compactNumeric?: boolean;
+    columnStyles?: Record<number, string>;
+  }
 ) {
   const rightAlignedSet = new Set<number>(
     options?.rightAlignedColumns && options.rightAlignedColumns.length > 0
       ? options.rightAlignedColumns
       : [headers.length - 1]
   );
+  const compact = Boolean(options?.compactNumeric);
+  const colStyles = options?.columnStyles || {};
 
   const summaryHtml = summary && summary.length > 0
     ? `
-      <div style="display: flex; flex-wrap: wrap; gap: 20px; margin-bottom: 20px; background: #f8fafc; padding: 12px 16px; border-radius: 8px; border: 1px solid #e2e8f0;">
+      <div style="display: flex; flex-wrap: wrap; gap: 18px; margin-bottom: 16px; background: #f8fafc; padding: 10px 14px; border-radius: 8px; border: 1px solid #e2e8f0;">
         ${summary.map(s => `
           <div>
-            <div style="font-size: 11px; color: #64748b; font-weight: 600; text-transform: uppercase;">${s.label}</div>
-            <div style="font-size: 16px; color: #0f172a; font-weight: 800; font-family: monospace;">${s.value}</div>
+            <div style="font-size: 10px; color: #64748b; font-weight: 600; text-transform: uppercase;">${s.label}</div>
+            <div style="font-size: ${compact ? '13.5px' : '16px'}; color: #0f172a; font-weight: 800; font-family: monospace;">${s.value}</div>
           </div>
         `).join('')}
       </div>
@@ -65,17 +71,20 @@ export function printPdfReport(
       (row, idx) => `
       <tr style="background-color: ${idx % 2 === 0 ? '#ffffff' : '#f8fafc'}; border-bottom: 1px solid #e2e8f0;">
         ${row
-          .map(
-            (cell, cellIdx) => `
-          <td style="padding: 9px 10px; font-size: 11px; color: #1e293b; ${
-            rightAlignedSet.has(cellIdx)
-              ? 'text-align: right; font-weight: 700; font-family: monospace; white-space: nowrap;'
-              : ''
-          }">
+          .map((cell, cellIdx) => {
+            const isRight = rightAlignedSet.has(cellIdx);
+            const basePadding = compact ? '6px 5px' : '9px 10px';
+            const baseFont = compact ? (isRight ? '9.5px' : '10px') : '11px';
+            const rightCss = isRight
+              ? `text-align: right; font-weight: 700; font-family: monospace; white-space: nowrap;${compact ? ' width: 1%; letter-spacing: -0.2px;' : ''}`
+              : '';
+            const extraCss = colStyles[cellIdx] || '';
+            return `
+          <td style="padding: ${basePadding}; font-size: ${baseFont}; color: #1e293b; vertical-align: top; ${rightCss} ${extraCss}">
             ${cell !== null && cell !== undefined ? cell : '-'}
           </td>
-        `
-          )
+        `;
+          })
           .join('')}
       </tr>
     `
@@ -91,37 +100,38 @@ export function printPdfReport(
         <style>
           @page {
             size: A4;
-            margin: 15mm;
+            margin: ${compact ? '10mm' : '15mm'};
           }
           body {
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
             margin: 0;
-            padding: 20px;
+            padding: ${compact ? '12px' : '20px'};
             color: #0f172a;
           }
           .header {
             border-bottom: 2px solid #0f766e;
-            padding-bottom: 12px;
-            margin-bottom: 20px;
+            padding-bottom: 10px;
+            margin-bottom: 16px;
             display: flex;
             justify-content: space-between;
             align-items: flex-end;
           }
           .title {
-            font-size: 20px;
+            font-size: ${compact ? '18px' : '20px'};
             font-weight: 900;
             color: #0f172a;
             margin: 0;
           }
           .subtitle {
-            font-size: 12px;
-            color: #64748b;
-            margin-top: 4px;
-          }
-          .date {
             font-size: 11px;
             color: #64748b;
+            margin-top: 3px;
+          }
+          .date {
+            font-size: 10.5px;
+            color: #64748b;
             text-align: right;
+            white-space: nowrap;
           }
           table {
             width: 100%;
@@ -131,10 +141,10 @@ export function printPdfReport(
           th {
             background-color: #0f766e;
             color: #ffffff;
-            font-size: 10.5px;
+            font-size: ${compact ? '9px' : '10.5px'};
             text-transform: uppercase;
-            letter-spacing: 0.4px;
-            padding: 9px 10px;
+            letter-spacing: ${compact ? '0.25px' : '0.4px'};
+            padding: ${compact ? '7px 5px' : '9px 10px'};
             font-weight: 700;
           }
           @media print {
@@ -169,7 +179,16 @@ export function printPdfReport(
         <table>
           <thead>
             <tr>
-              ${headers.map((h, i) => `<th style="${rightAlignedSet.has(i) ? 'text-align: right; white-space: nowrap;' : ''}">${h}</th>`).join('')}
+              ${headers
+                .map((h, i) => {
+                  const isRight = rightAlignedSet.has(i);
+                  const rightStyle = isRight
+                    ? `text-align: right; white-space: nowrap;${compact ? ' width: 1%;' : ''}`
+                    : '';
+                  const extraCss = colStyles[i] || '';
+                  return `<th style="${rightStyle} ${extraCss}">${h}</th>`;
+                })
+                .join('')}
             </tr>
           </thead>
           <tbody>
