@@ -20,6 +20,7 @@ export interface Firma {
   paket_bitis?: string | null;
   deneme_bitis?: string | null;
   sinirsiz?: boolean | null;
+  ek_plasiyer_sayisi?: number | null;
 }
 
 export interface Profile {
@@ -103,6 +104,7 @@ export interface Paket {
   fiyat: number;
   ek_plasiyer_ucreti: number;
   aktif: boolean;
+  ozellikler?: string[] | string | null;
 }
 
 export interface Ayar {

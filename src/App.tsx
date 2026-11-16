@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useAuth } from './context/AuthContext';
 import { AppLayout } from './components/layout/AppLayout';
 import { AuthScreen } from './components/auth/AuthScreen';
@@ -15,8 +15,38 @@ import { MakbuzModal } from './components/makbuz/MakbuzModal';
 import { NotificationsModal } from './components/notifications/NotificationsModal';
 import { Islem } from './types/database';
 
+const VALID_TABS = new Set([
+  'dashboard',
+  'cariler',
+  'tahsilat',
+  'tediye',
+  'islem_duzenle',
+  'islemler',
+  'kasa',
+  'performans',
+  'yedekleme',
+  'paketler',
+  'superadmin',
+]);
+
+const isTabAuthorized = (
+  tab: string,
+  role: string | undefined,
+  isSuperAdmin: boolean,
+  hasEditingIslem: boolean
+): boolean => {
+  if (!VALID_TABS.has(tab)) return false;
+  if (tab === 'superadmin') return isSuperAdmin;
+  if (tab === 'kasa' && role === 'plasiyer') return false;
+  if ((tab === 'tahsilat' || tab === 'tediye' || tab === 'islem_duzenle') && role === 'muhasebeci') {
+    return false;
+  }
+  if (tab === 'islem_duzenle' && !hasEditingIslem) return false;
+  return true;
+};
+
 export const App: React.FC = () => {
-  const { user, loading, isPeriodExpired } = useAuth();
+  const { user, profile, loading, isPeriodExpired, isSuperAdmin } = useAuth();
   const [currentTab, setCurrentTab] = useState<string>(() => {
     if (typeof window !== 'undefined' && window.__ANDROID_PENDING_TAB__) {
       const initial = window.__ANDROID_PENDING_TAB__.trim();
@@ -157,6 +187,54 @@ export const App: React.FC = () => {
     return () => window.removeEventListener('androidOpenTab', handleAndroidOpenTab);
   }, []);
 
+  // Oturum değiştiğinde (giriş veya çıkış) aktif sekmeyi ve geçici durumları Genel Bakış'a sıfırla
+  const prevUserIdRef = useRef<string | null>(user?.id ?? null);
+  const initialAuthResolvedRef = useRef<boolean>(!loading);
+
+  useEffect(() => {
+    const currentUserId = user?.id ?? null;
+    const prevUserId = prevUserIdRef.current;
+
+    if (!initialAuthResolvedRef.current) {
+      if (!loading) {
+        initialAuthResolvedRef.current = true;
+        prevUserIdRef.current = currentUserId;
+        if (!currentUserId) {
+          setCurrentTab('dashboard');
+          setActiveMakbuz(null);
+          setEditingIslem(null);
+          setEditReturnTab('islemler');
+          setPreSelectedCariId(undefined);
+          setOpenNewCari(false);
+          setKasaModal(undefined);
+          setIsNotificationsOpen(false);
+        }
+      }
+      return;
+    }
+
+    if (prevUserId !== currentUserId) {
+      prevUserIdRef.current = currentUserId;
+      setCurrentTab('dashboard');
+      setActiveMakbuz(null);
+      setEditingIslem(null);
+      setEditReturnTab('islemler');
+      setPreSelectedCariId(undefined);
+      setOpenNewCari(false);
+      setKasaModal(undefined);
+      setIsNotificationsOpen(false);
+    }
+  }, [user?.id, loading]);
+
+  // Yetkisi olmayan bir sekme açık kalırsa otomatik olarak Genel Bakış'a yönlendir
+  useEffect(() => {
+    if (!user || loading) return;
+    if (!isTabAuthorized(currentTab, profile?.rol, isSuperAdmin, !!editingIslem)) {
+      setEditingIslem(null);
+      setCurrentTab('dashboard');
+    }
+  }, [user, loading, currentTab, profile?.rol, isSuperAdmin, editingIslem]);
+
   // Oturum kontrolü yüklenirken
   if (loading) {
     return (
@@ -214,17 +292,22 @@ export const App: React.FC = () => {
     const wasEditing = !!editingIslem;
     setEditingIslem(null);
     setActiveMakbuz(savedIslem);
+    setReceiptRefreshKey((k) => k + 1);
     setCurrentTab(wasEditing ? editReturnTab || 'islemler' : 'islemler');
   };
 
+  const effectiveTab = isTabAuthorized(currentTab, profile?.rol, isSuperAdmin, !!editingIslem)
+    ? currentTab
+    : 'dashboard';
+
   return (
     <AppLayout
-      currentTab={currentTab}
+      currentTab={effectiveTab}
       onSelectTab={handleSelectTab}
       onOpenNotifications={() => setIsNotificationsOpen(true)}
       notificationRefreshKey={notificationRefreshKey}
     >
-        {currentTab === 'dashboard' && (
+        {effectiveTab === 'dashboard' && (
           <DashboardPage
             onNavigate={handleNavigate}
             onOpenMakbuz={(islem) => setActiveMakbuz(islem)}
@@ -233,7 +316,7 @@ export const App: React.FC = () => {
           />
         )}
 
-        {currentTab === 'cariler' && (
+        {effectiveTab === 'cariler' && (
           <CarilerPage
             onNavigate={handleNavigate}
             openNewModalInitially={openNewCari}
@@ -242,50 +325,54 @@ export const App: React.FC = () => {
           />
         )}
 
-        {currentTab === 'tahsilat' && (
+        {effectiveTab === 'tahsilat' && (
           <IslemFormPage
             key="new-tahsilat"
             initialTip="tahsilat"
             preSelectedCariId={preSelectedCariId}
             onSuccess={handleIslemSuccess}
             onCancel={() => handleSelectTab('dashboard')}
+            onUpgradePackage={() => handleSelectTab('paketler')}
           />
         )}
 
-        {currentTab === 'tediye' && (
+        {effectiveTab === 'tediye' && (
           <IslemFormPage
             key="new-tediye"
             initialTip="tediye"
             preSelectedCariId={preSelectedCariId}
             onSuccess={handleIslemSuccess}
             onCancel={() => handleSelectTab('dashboard')}
+            onUpgradePackage={() => handleSelectTab('paketler')}
           />
         )}
 
-        {currentTab === 'islem_duzenle' && editingIslem && (
+        {effectiveTab === 'islem_duzenle' && editingIslem && (
           <IslemFormPage
             key={`edit-${editingIslem.id}`}
             initialTip={editingIslem.tip}
             editingIslem={editingIslem}
             onSuccess={handleIslemSuccess}
             onCancel={() => handleSelectTab(editReturnTab || 'islemler')}
+            onUpgradePackage={() => handleSelectTab('paketler')}
           />
         )}
 
-        {currentTab === 'islemler' && (
+        {effectiveTab === 'islemler' && (
           <IslemlerPage
             onOpenMakbuz={(islem) => setActiveMakbuz(islem)}
             onEditIslem={handleStartEditIslem}
             onNavigate={handleNavigate}
             refreshKey={receiptRefreshKey}
+            onRefreshReceipts={() => setReceiptRefreshKey((k) => k + 1)}
           />
         )}
 
-        {currentTab === 'kasa' && (
+        {effectiveTab === 'kasa' && (
           <KasaGelirGiderPage key={kasaModal ?? 'kasa'} onNavigate={handleNavigate} initialModal={kasaModal} />
         )}
 
-        {currentTab === 'performans' && (
+        {effectiveTab === 'performans' && (
           <PlasiyerPerformansPage
             onOpenMakbuz={(islem) => setActiveMakbuz(islem)}
             onNavigate={handleNavigate}
@@ -293,18 +380,18 @@ export const App: React.FC = () => {
           />
         )}
 
-        {currentTab === 'yedekleme' && (
+        {effectiveTab === 'yedekleme' && (
           <YedeklemePage
             onBackupChanged={() => setNotificationRefreshKey((k) => k + 1)}
             onRestored={() => setReceiptRefreshKey((k) => k + 1)}
           />
         )}
 
-        {currentTab === 'paketler' && (
+        {effectiveTab === 'paketler' && (
           <SubscriptionLockScreen isLockMode={false} />
         )}
 
-        {currentTab === 'superadmin' && (
+        {effectiveTab === 'superadmin' && (
           <SuperAdminPage onBackToDashboard={() => handleSelectTab('dashboard')} />
         )}
 

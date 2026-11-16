@@ -1,34 +1,34 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { useAuth } from '../context/AuthContext';
-import { supabase, handleSupabaseError } from '../lib/supabase';
 import { Islem, IslemDurum, IslemTip } from '../types/database';
 import { formatCurrency, formatDate } from '../lib/formatters';
 import {
   ReceiptText,
   Search,
-  Filter,
   Calendar,
   ArrowDownLeft,
   ArrowUpRight,
-  User,
   AlertCircle,
   Eye,
   EyeOff,
-  ChevronRight,
   FileSpreadsheet,
   Printer,
   Pencil,
   Trash2,
+  RefreshCw,
 } from 'lucide-react';
 import { exportToExcel, printPdfReport } from '../lib/exportService';
 import { extractKarmaRef, isKarmaAciklama } from '../lib/karmaReceiptHelper';
 import { DeleteReceiptConfirmModal } from '../components/makbuz/DeleteReceiptConfirmModal';
+import { useQuery } from '../hooks/useQuery';
+import { fetchIslemlerList } from '../lib/receiptQueryService';
 
 interface IslemlerPageProps {
   onOpenMakbuz: (islem: Islem) => void;
   onEditIslem?: (islem: Islem) => void;
   onNavigate: (tab: string) => void;
   refreshKey?: number;
+  onRefreshReceipts?: () => void;
 }
 
 export const IslemlerPage: React.FC<IslemlerPageProps> = ({
@@ -36,11 +36,10 @@ export const IslemlerPage: React.FC<IslemlerPageProps> = ({
   onEditIslem,
   onNavigate,
   refreshKey = 0,
+  onRefreshReceipts,
 }) => {
   const { profile, firma } = useAuth();
-  const [islemler, setIslemler] = useState<Islem[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const effectiveFirmaId = firma?.id || profile?.firma_id || '';
 
   // Filtreler
   const [tipFilter, setTipFilter] = useState<'all' | IslemTip>('all');
@@ -51,55 +50,38 @@ export const IslemlerPage: React.FC<IslemlerPageProps> = ({
   const [searchQuery, setSearchQuery] = useState('');
   const [islemToDelete, setIslemToDelete] = useState<Islem | null>(null);
 
-  const fetchIslemler = async () => {
-    if (!firma?.id) return;
-
-    try {
-      setLoading(true);
-      setError(null);
-
-      let query = supabase
-        .from('islemler')
-        .select('*, cariler:cari_id(unvan, vergi_tc_no, telefon, email), profiles:yapan_user_id(ad_soyad)')
-        .eq('firma_id', firma.id)
-        .order('tarih', { ascending: false })
-        .order('id', { ascending: false });
-
-      // Plasiyer sadece kendi işlemlerini görür
-      if (profile?.rol === 'plasiyer') {
-        query = query.eq('yapan_user_id', profile.id);
-      }
-
-      if (tipFilter !== 'all') {
-        query = query.eq('tip', tipFilter);
-      }
-
-      if (durumFilter !== 'all') {
-        query = query.eq('durum', durumFilter);
-      }
-
-      if (startDate) {
-        query = query.gte('tarih', startDate);
-      }
-
-      if (endDate) {
-        query = query.lte('tarih', endDate);
-      }
-
-      const { data, error: err } = await query;
-
-      if (err) throw err;
-      setIslemler((data as Islem[]) || []);
-    } catch (err: unknown) {
-      setError(handleSupabaseError(err, 'İşlemler yüklenirken hata oluştu.'));
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    fetchIslemler();
-  }, [firma?.id, tipFilter, durumFilter, startDate, endDate, profile?.id, refreshKey]);
+  const {
+    data: islemler,
+    isLoading: loading,
+    isFetching,
+    error,
+    refetch,
+    refetchCount,
+  } = useQuery<Islem[]>({
+    queryKey: [
+      'islemler',
+      effectiveFirmaId,
+      profile?.id || null,
+      profile?.rol || null,
+      tipFilter,
+      durumFilter,
+      startDate,
+      endDate,
+      refreshKey,
+    ],
+    enabled: Boolean(effectiveFirmaId),
+    initialData: [],
+    queryFn: () =>
+      fetchIslemlerList({
+        firmaId: effectiveFirmaId,
+        userId: profile?.id,
+        rol: profile?.rol,
+        tipFilter,
+        durumFilter,
+        startDate,
+        endDate,
+      }),
+  });
 
   // Arama ve İptal Gizleme
   const filteredIslemler = islemler.filter((islem) => {
@@ -196,7 +178,11 @@ export const IslemlerPage: React.FC<IslemlerPageProps> = ({
   };
 
   return (
-    <div className="space-y-6">
+    <div
+      className="space-y-6"
+      data-receipt-refresh-key={refreshKey}
+      data-query-refetch-count={refetchCount}
+    >
       {/* BAŞLIK & EYEBROW */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
@@ -211,6 +197,18 @@ export const IslemlerPage: React.FC<IslemlerPageProps> = ({
         </div>
 
         <div className="flex items-center gap-2 flex-wrap">
+          <button
+            type="button"
+            onClick={() => void refetch()}
+            disabled={isFetching}
+            data-testid="islemler_refresh_btn"
+            className="bg-white/5 hover:bg-white/10 text-gray-200 border border-white/10 font-bold text-xs px-3 py-2.5 rounded-xl transition flex items-center gap-1.5 disabled:opacity-60"
+            title="Makbuz listesini yenile"
+          >
+            <RefreshCw className={`w-4 h-4 text-teal-400 ${isFetching ? 'animate-spin' : ''}`} />
+            <span>Yenile</span>
+          </button>
+
           {/* DIŞA AKTAR BUTONLARI */}
           <button
             onClick={handleExportExcel}
@@ -587,7 +585,10 @@ export const IslemlerPage: React.FC<IslemlerPageProps> = ({
       <DeleteReceiptConfirmModal
         islem={islemToDelete}
         onClose={() => setIslemToDelete(null)}
-        onDeleted={fetchIslemler}
+        onDeleted={async () => {
+          await refetch();
+          onRefreshReceipts?.();
+        }}
       />
     </div>
   );

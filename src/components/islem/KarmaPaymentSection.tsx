@@ -12,6 +12,7 @@ import {
   Layers,
   CheckCircle2,
   TrendingUp,
+  Lock,
 } from 'lucide-react';
 import { ExchangeRates } from '../../lib/currencyService';
 import { formatCurrency } from '../../lib/formatters';
@@ -45,6 +46,8 @@ interface KarmaPaymentSectionProps {
   posLinkGenerated: PaymentLinkResult | null;
   onCreatePosLinkForKarma: (kartTlAmount: number) => void;
   onSendPosLinkWhatsApp: () => void;
+  canUsePaymentLink?: boolean;
+  onUpgradePackage?: () => void;
 }
 
 export const KarmaPaymentSection: React.FC<KarmaPaymentSectionProps> = ({
@@ -64,6 +67,8 @@ export const KarmaPaymentSection: React.FC<KarmaPaymentSectionProps> = ({
   posLinkGenerated,
   onCreatePosLinkForKarma,
   onSendPosLinkWhatsApp,
+  canUsePaymentLink = true,
+  onUpgradePackage,
 }) => {
   const vadeRefs = useRef<Record<string, HTMLInputElement | null>>({});
 
@@ -630,20 +635,42 @@ export const KarmaPaymentSection: React.FC<KarmaPaymentSectionProps> = ({
           </div>
         </div>
 
-        {posConfig.enabled && posConfig.provider !== 'none' && (
-          <div className="pt-2 border-t border-white/[0.05] flex flex-col sm:flex-row items-center justify-between gap-2">
-            <span className="text-[11px] text-gray-400">
-              Kart tutarı için müşteriye Sanal POS linki gönderebilirsiniz:
+        {!canUsePaymentLink ? (
+          <div className="pt-2 border-t border-white/[0.05] flex flex-col sm:flex-row items-center justify-between gap-2 bg-amber-500/[0.06] -mx-1 px-3 py-2 rounded-xl border border-amber-400/25">
+            <span className="text-[11px] text-amber-200/90 flex items-center gap-1.5">
+              <Lock className="w-3.5 h-3.5 text-amber-300 shrink-0" />
+              <span>Link ile Tahsilat özelliği Profesyonel (Plus) ve üstü paketlerde aktiftir.</span>
             </span>
             <button
               type="button"
-              onClick={() => onCreatePosLinkForKarma(kartTL)}
-              className="px-3 py-1.5 rounded-lg bg-sky-400/20 text-sky-300 hover:bg-sky-400/30 border border-sky-400/30 text-xs font-bold flex items-center gap-1.5 transition whitespace-nowrap"
+              onClick={() => onUpgradePackage?.()}
+              data-testid="karma_pos_link_locked_btn"
+              className="px-3 py-1.5 rounded-lg bg-amber-400/15 text-amber-300 hover:bg-amber-400/25 border border-amber-400/40 text-xs font-bold flex items-center gap-1.5 transition whitespace-nowrap"
             >
-              <Share2 className="w-3.5 h-3.5" />
-              <span>Kart Tutarı İçin Link Üret</span>
+              <Lock className="w-3.5 h-3.5" />
+              <span>Link Üret</span>
+              <span className="px-1.5 py-0.5 rounded bg-amber-400/25 text-[10px] font-extrabold">
+                Profesyonel+
+              </span>
             </button>
           </div>
+        ) : (
+          posConfig.enabled &&
+          posConfig.provider !== 'none' && (
+            <div className="pt-2 border-t border-white/[0.05] flex flex-col sm:flex-row items-center justify-between gap-2">
+              <span className="text-[11px] text-gray-400">
+                Kart tutarı için müşteriye Sanal POS linki gönderebilirsiniz:
+              </span>
+              <button
+                type="button"
+                onClick={() => onCreatePosLinkForKarma(kartTL)}
+                className="px-3 py-1.5 rounded-lg bg-sky-400/20 text-sky-300 hover:bg-sky-400/30 border border-sky-400/30 text-xs font-bold flex items-center gap-1.5 transition whitespace-nowrap"
+              >
+                <Share2 className="w-3.5 h-3.5" />
+                <span>Kart Tutarı İçin Link Üret</span>
+              </button>
+            </div>
+          )
         )}
 
         {posLinkGenerated && (

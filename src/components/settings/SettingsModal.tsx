@@ -57,14 +57,16 @@ interface SettingsModalProps {
   isOpen: boolean;
   onClose: () => void;
   initialTab?: 'firma' | 'plasiyer' | 'pos';
+  onNavigateToPackages?: () => void;
 }
 
 export const SettingsModal: React.FC<SettingsModalProps> = ({
   isOpen,
   onClose,
   initialTab = 'plasiyer',
+  onNavigateToPackages,
 }) => {
-  const { profile, firma, user, isSuperAdmin, periodInfo, refreshProfileAndFirma, signOut } = useAuth();
+  const { profile, firma, entitlements, user, isSuperAdmin, periodInfo, refreshProfileAndFirma, signOut } = useAuth();
   const [activeTab, setActiveTab] = useState<'firma' | 'plasiyer' | 'pos'>(initialTab);
 
   // Logo Yükleme Durumu
@@ -163,9 +165,27 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
   if (!isOpen) return null;
 
+  const aktifPlasiyerCount = plasiyerler.filter((p) => p.aktif).length;
+  const isPlasiyerLimitReached = aktifPlasiyerCount >= entitlements.totalPlasiyerLimit;
+
+  const handleGoToPackages = () => {
+    if (onNavigateToPackages) {
+      onNavigateToPackages();
+    } else {
+      onClose();
+    }
+  };
+
   const handleCreatePlasiyerSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!firma?.id || !profile?.id) return;
+
+    if (aktifPlasiyerCount >= entitlements.totalPlasiyerLimit) {
+      setFormError(
+        `Aktif plasiyer kotanız doldu (${aktifPlasiyerCount}/${entitlements.totalPlasiyerLimit}). Yeni plasiyer eklemek için Paket Satın Al ekranından ek plasiyer (+100 TL) veya üst paket seçebilirsiniz.`
+      );
+      return;
+    }
 
     try {
       setSaving(true);
@@ -217,8 +237,15 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
   const handleToggleAktif = async (p: PlasiyerItem) => {
     const yeniDurum = !p.aktif;
+    if (yeniDurum && aktifPlasiyerCount >= entitlements.totalPlasiyerLimit) {
+      setFormError(
+        `Aktif plasiyer kotanız doldu (${aktifPlasiyerCount}/${entitlements.totalPlasiyerLimit}). Bu plasiyeri yeniden aktifleştirmek için önce Paket Satın Al ekranından ek plasiyer ekleyin veya başka bir plasiyeri pasife alın.`
+      );
+      return;
+    }
     const res = await togglePlasiyerAktif(p.id, yeniDurum);
     if (res.success) {
+      setFormError(null);
       setPlasiyerler((prev) =>
         prev.map((item) => (item.id === p.id ? { ...item, aktif: yeniDurum } : item))
       );
@@ -575,18 +602,28 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   {/* BİLGİLENDİRME & HIZLI EKLE BUTONU */}
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-4 rounded-xl bg-gradient-to-r from-teal-500/10 via-transparent to-black/20 border border-teal-500/20">
                     <div>
-                      <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                      <h3 className="text-sm font-bold text-white flex items-center gap-2 flex-wrap">
                         <span>Firma Plasiyerleri</span>
-                        <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-teal-400/20 text-teal-300 border border-teal-400/30">
-                          {plasiyerler.filter((p) => p.aktif).length} Aktif / {plasiyerler.length} Toplam
+                        <span
+                          data-testid="plasiyer_quota_badge"
+                          className={`px-2 py-0.5 rounded-md text-[10px] font-bold border ${
+                            isPlasiyerLimitReached
+                              ? 'bg-amber-400/20 text-amber-300 border-amber-400/40'
+                              : 'bg-teal-400/20 text-teal-300 border-teal-400/30'
+                          }`}
+                        >
+                          Kota: {aktifPlasiyerCount} / {entitlements.totalPlasiyerLimit} Plasiyer
+                          {entitlements.ekPlasiyerSayisi > 0
+                            ? ` (${entitlements.includedPlasiyerLimit} Dahil + ${entitlements.ekPlasiyerSayisi} Ek)`
+                            : ''}
                         </span>
                       </h3>
                       <p className="text-[11px] text-gray-400 mt-0.5">
-                        Plasiyerler sahada yalnızca kendi kestikleri makbuzları görür ve yeni cari ekleyebilir.
+                        Plasiyerler ana paketin özelliklerini ve bitiş tarihini otomatik devralır. Sadece kendi kestikleri makbuzları görürler.
                       </p>
                     </div>
 
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2 shrink-0">
                       <button
                         onClick={loadPlasiyerler}
                         title="Listeyi Yenile"
@@ -594,19 +631,60 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       >
                         <RefreshCw className={`w-4 h-4 ${loadingList ? 'animate-spin' : ''}`} />
                       </button>
-                      <button
-                        onClick={() => {
-                          setShowAddForm(!showAddForm);
-                          setFormError(null);
-                          setFormSuccess(null);
-                        }}
-                        className="px-3.5 py-2 rounded-xl bg-teal-400 hover:bg-teal-300 text-[#0a0e13] font-bold text-xs flex items-center gap-1.5 shadow-[0_0_15px_rgba(45,212,191,0.25)] transition"
-                      >
-                        <UserPlus className="w-4 h-4" />
-                        <span>{showAddForm ? 'Formu Kapat' : 'Yeni Plasiyer Tanımla'}</span>
-                      </button>
+                      {isPlasiyerLimitReached ? (
+                        <button
+                          type="button"
+                          onClick={handleGoToPackages}
+                          data-testid="plasiyer_limit_upgrade_btn"
+                          className="px-3.5 py-2 rounded-xl bg-amber-400 hover:bg-amber-300 text-[#0a0e13] font-extrabold text-xs flex items-center gap-1.5 shadow-lg transition"
+                        >
+                          <Lock className="w-3.5 h-3.5" />
+                          <span>Ek Plasiyer Al / Yükselt</span>
+                        </button>
+                      ) : (
+                        <button
+                          onClick={() => {
+                            setShowAddForm(!showAddForm);
+                            setFormError(null);
+                            setFormSuccess(null);
+                          }}
+                          data-testid="plasiyer_add_toggle_btn"
+                          className="px-3.5 py-2 rounded-xl bg-teal-400 hover:bg-teal-300 text-[#0a0e13] font-bold text-xs flex items-center gap-1.5 shadow-[0_0_15px_rgba(45,212,191,0.25)] transition"
+                        >
+                          <UserPlus className="w-4 h-4" />
+                          <span>{showAddForm ? 'Formu Kapat' : 'Yeni Plasiyer Tanımla'}</span>
+                        </button>
+                      )}
                     </div>
                   </div>
+
+                  {isPlasiyerLimitReached && (
+                    <div
+                      data-testid="plasiyer_limit_banner"
+                      className="p-3.5 rounded-xl bg-amber-500/10 border border-amber-400/35 text-amber-200 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+                    >
+                      <div className="flex items-start gap-2.5">
+                        <Lock className="w-4 h-4 text-amber-300 shrink-0 mt-0.5" />
+                        <span>
+                          Mevcut paketinizdeki aktif plasiyer sınırına ulaştınız ({aktifPlasiyerCount}/{entitlements.totalPlasiyerLimit}). Yeni plasiyer tanımlamak için paketiniz içine ek plasiyer (+100 TL) ekleyebilir veya üst pakete geçebilirsiniz.
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={handleGoToPackages}
+                        className="px-3.5 py-2 rounded-xl bg-amber-400 hover:bg-amber-300 text-[#0a0e13] font-extrabold text-[11px] whitespace-nowrap shrink-0 transition"
+                      >
+                        Paketler / Ek Plasiyer
+                      </button>
+                    </div>
+                  )}
+
+                  {!showAddForm && formError && (
+                    <div className="p-3 rounded-xl bg-red-500/10 border border-red-500/20 text-red-400 text-xs flex items-start gap-2">
+                      <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                      <span>{formError}</span>
+                    </div>
+                  )}
 
                   {/* YENİ PLASİYER TANIMLAMA FORMU */}
                   {showAddForm && (
@@ -1348,6 +1426,29 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     </p>
                   </div>
 
+                  {(!entitlements.canUsePaymentLink || !entitlements.canUseNfc) && (
+                    <div className="p-4 rounded-xl bg-amber-500/10 border border-amber-400/35 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                      <div className="flex items-start gap-2.5 text-amber-200 text-xs">
+                        <Lock className="w-4 h-4 text-amber-300 shrink-0 mt-0.5" />
+                        <div>
+                          <div className="font-bold text-amber-300">
+                            Link ile Tahsilat ve NFC Özellikleri Kilitli ({entitlements.tierLabel})
+                          </div>
+                          <p className="text-[11px] text-amber-200/80 mt-0.5">
+                            POS bilgilerinizi şimdiden kaydedebilirsiniz; ancak tahsilat ekranında Sanal POS Ödeme Linki ve NFC Temassız Tahsilat kullanabilmek için Profesyonel (Plus) veya Kurumsal (Pro) pakete geçmelisiniz.
+                          </p>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={handleGoToPackages}
+                        className="px-3.5 py-2 rounded-xl bg-amber-400 hover:bg-amber-300 text-[#0a0e13] font-extrabold text-[11px] whitespace-nowrap shrink-0 transition"
+                      >
+                        Paketi Yükselt
+                      </button>
+                    </div>
+                  )}
+
                   {posMsg && (
                     <div
                       className={`p-3.5 rounded-xl text-xs flex items-center gap-2 ${
@@ -1675,14 +1776,25 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
                     <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-2">
                       {posConfig.enabled && posConfig.provider !== 'none' && (
-                        <button
-                          type="button"
-                          onClick={() => setShowPosLinkModal(true)}
-                          className="text-xs text-teal-400 hover:text-teal-300 flex items-center gap-1 font-semibold"
-                        >
-                          <Share2 className="w-3.5 h-3.5" />
-                          <span>Örnek Ödeme Linki Testi Yap</span>
-                        </button>
+                        entitlements.canUsePaymentLink ? (
+                          <button
+                            type="button"
+                            onClick={() => setShowPosLinkModal(true)}
+                            className="text-xs text-teal-400 hover:text-teal-300 flex items-center gap-1 font-semibold"
+                          >
+                            <Share2 className="w-3.5 h-3.5" />
+                            <span>Örnek Ödeme Linki Testi Yap</span>
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={handleGoToPackages}
+                            className="text-xs text-amber-300 hover:text-amber-200 flex items-center gap-1.5 font-semibold"
+                          >
+                            <Lock className="w-3.5 h-3.5" />
+                            <span>Ödeme Linki Testi (Profesyonel+ Pakette Açılır)</span>
+                          </button>
+                        )
                       )}
 
                       <button

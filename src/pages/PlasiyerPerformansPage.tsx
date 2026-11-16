@@ -1,9 +1,11 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useAuth } from '../context/AuthContext';
-import { supabase, handleSupabaseError } from '../lib/supabase';
+import { supabase } from '../lib/supabase';
 import { Islem, Profile } from '../types/database';
 import { formatCurrency, formatDate } from '../lib/formatters';
 import { exportToExcel, printPdfReport } from '../lib/exportService';
+import { useQuery } from '../hooks/useQuery';
+import { fetchIslemlerList } from '../lib/receiptQueryService';
 import {
   TrendingUp,
   ArrowDownLeft,
@@ -42,14 +44,10 @@ export const PlasiyerPerformansPage: React.FC<PlasiyerPerformansPageProps> = ({
   refreshKey = 0,
 }) => {
   const { profile, firma } = useAuth();
+  const effectiveFirmaId = firma?.id || profile?.firma_id || '';
 
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
   const [allPlasiyerler, setAllPlasiyerler] = useState<Profile[]>([]);
   const [selectedPlasiyerId, setSelectedPlasiyerId] = useState<string>('');
-
-  // Ham İşlemler
-  const [islemler, setIslemler] = useState<Islem[]>([]);
 
   // Filtreler
   const [dateFilter, setDateFilter] = useState<DateRangeFilter>('month');
@@ -63,7 +61,7 @@ export const PlasiyerPerformansPage: React.FC<PlasiyerPerformansPageProps> = ({
 
   // 1. Plasiyer Listesini Yükle (Eğer ana hesap veya süperadmin ise diğer plasiyerleri seçebilsin)
   useEffect(() => {
-    if (!firma?.id) return;
+    if (!effectiveFirmaId) return;
 
     if (isPlasiyer && profile?.id) {
       setSelectedPlasiyerId(profile.id);
@@ -72,55 +70,44 @@ export const PlasiyerPerformansPage: React.FC<PlasiyerPerformansPageProps> = ({
       supabase
         .from('profiles')
         .select('*')
-        .eq('firma_id', firma.id)
+        .eq('firma_id', effectiveFirmaId)
         .eq('rol', 'plasiyer')
         .then(({ data }) => {
           if (data && data.length > 0) {
             setAllPlasiyerler(data as Profile[]);
-            // Varsayılan ilk plasiyeri veya tümünü seç
             setSelectedPlasiyerId('all');
           } else {
             setSelectedPlasiyerId('all');
           }
         });
     }
-  }, [firma?.id, isPlasiyer, profile?.id]);
+  }, [effectiveFirmaId, isPlasiyer, profile?.id]);
 
-  // 2. İşlemleri Veritabanından Çek
-  useEffect(() => {
-    if (!firma?.id) return;
-
-    const fetchPerformansIslemleri = async () => {
-      try {
-        setLoading(true);
-        setError(null);
-
-        let query = supabase
-          .from('islemler')
-          .select('*, cariler:cari_id(unvan, vergi_tc_no, telefon, email), profiles:yapan_user_id(ad_soyad, email, rol)')
-          .eq('firma_id', firma.id)
-          .order('tarih', { ascending: false });
-
-        // Plasiyer ise ZORUNLU olarak sadece kendi kestiği işlemleri çeker
-        if (isPlasiyer && profile?.id) {
-          query = query.eq('yapan_user_id', profile.id);
-        } else if (selectedPlasiyerId && selectedPlasiyerId !== 'all') {
-          query = query.eq('yapan_user_id', selectedPlasiyerId);
-        }
-
-        const { data, error: fetchErr } = await query;
-        if (fetchErr) throw fetchErr;
-
-        setIslemler((data as Islem[]) || []);
-      } catch (err: unknown) {
-        setError(handleSupabaseError(err, 'Performans verileri yüklenirken bir hata oluştu.'));
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    fetchPerformansIslemleri();
-  }, [firma?.id, isPlasiyer, profile?.id, selectedPlasiyerId, refreshKey]);
+  // 2. İşlemleri useQuery ile Veritabanından Çek (refreshKey tetiklendiğinde otomatik güncellenir)
+  const {
+    data: islemler,
+    isLoading: loading,
+    error,
+    refetchCount,
+  } = useQuery<Islem[]>({
+    queryKey: [
+      'plasiyer-performans',
+      effectiveFirmaId,
+      isPlasiyer,
+      profile?.id || null,
+      selectedPlasiyerId,
+      refreshKey,
+    ],
+    enabled: Boolean(effectiveFirmaId),
+    initialData: [],
+    queryFn: () =>
+      fetchIslemlerList({
+        firmaId: effectiveFirmaId,
+        userId: profile?.id,
+        rol: profile?.rol,
+        filterUserId: selectedPlasiyerId,
+      }),
+  });
 
   // 3. Tarih Aralığı ve Ek Filtreleri Uygula
   const filteredIslemler = useMemo(() => {
@@ -345,7 +332,11 @@ export const PlasiyerPerformansPage: React.FC<PlasiyerPerformansPageProps> = ({
   };
 
   return (
-    <div className="space-y-6 sm:space-y-8">
+    <div
+      className="space-y-6 sm:space-y-8"
+      data-receipt-refresh-key={refreshKey}
+      data-query-refetch-count={refetchCount}
+    >
       {/* BAŞLIK & KARŞILAMA ALANI */}
       <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
         <div>

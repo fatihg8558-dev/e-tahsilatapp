@@ -1,7 +1,13 @@
 import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
 import { User, Session } from '@supabase/supabase-js';
 import { supabase, handleSupabaseError } from '../lib/supabase';
-import { Profile, Firma } from '../types/database';
+import { Profile, Firma, Paket, Ayar } from '../types/database';
+import {
+  FIRMA_EK_PLASIYER_AYAR_KEY,
+  PackageEntitlements,
+  parseFirmaEkPlasiyerMapFromAyarlar,
+  resolvePackageEntitlements,
+} from '../lib/packageEntitlements';
 
 export type PeriodStatus = 'active_trial' | 'active_package' | 'unlimited' | 'expired';
 
@@ -19,6 +25,8 @@ interface AuthContextType {
   session: Session | null;
   profile: Profile | null;
   firma: Firma | null;
+  activePaket: Paket | null;
+  entitlements: PackageEntitlements;
   loading: boolean;
   error: string | null;
   isSuperAdmin: boolean;
@@ -68,11 +76,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const cachedUser = getCachedData<User>('tahsilatim_user');
   const cachedProfile = getCachedData<Profile>('tahsilatim_profile');
   const cachedFirma = getCachedData<Firma>('tahsilatim_firma');
+  const cachedActivePaket = getCachedData<Paket>('tahsilatim_active_paket');
+  const cachedEkPlasiyer = getCachedData<{ firmaId: string; count: number }>('tahsilatim_ek_plasiyer');
 
   const [user, setUser] = useState<User | null>(cachedUser);
   const [session, setSession] = useState<Session | null>(null);
   const [profile, setProfile] = useState<Profile | null>(cachedProfile);
   const [firma, setFirma] = useState<Firma | null>(cachedFirma);
+  const [activePaket, setActivePaket] = useState<Paket | null>(cachedActivePaket);
+  const [ekPlasiyerFallback, setEkPlasiyerFallback] = useState<number>(
+    cachedFirma && cachedEkPlasiyer?.firmaId === cachedFirma.id ? cachedEkPlasiyer.count : 0
+  );
   // Önbellekte profil varsa bekleme yapmadan hemen aç
   const [loading, setLoading] = useState<boolean>(!cachedProfile && !cachedUser);
   const [error, setError] = useState<string | null>(null);
@@ -194,8 +208,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           } else {
             setProfile(null);
             setFirma(null);
+            setActivePaket(null);
+            setEkPlasiyerFallback(0);
             setCachedData('tahsilatim_profile', null);
             setCachedData('tahsilatim_firma', null);
+            setCachedData('tahsilatim_active_paket', null);
+            setCachedData('tahsilatim_ek_plasiyer', null);
             return;
           }
         }
@@ -207,9 +225,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           setSession(null);
           setProfile(null);
           setFirma(null);
+          setActivePaket(null);
+          setEkPlasiyerFallback(0);
           setCachedData('tahsilatim_user', null);
           setCachedData('tahsilatim_profile', null);
           setCachedData('tahsilatim_firma', null);
+          setCachedData('tahsilatim_active_paket', null);
+          setCachedData('tahsilatim_ek_plasiyer', null);
           setError('Hesabınız pasif durumdadır. Lütfen şirket yöneticiniz ile iletişime geçiniz.');
           return;
         }
@@ -369,6 +391,39 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           }
           setFirma(f);
           setCachedData('tahsilatim_firma', f);
+
+          // Firmanın aktif paketini ve ayarlar yedek ek plasiyer kotasını yükle
+          const [paketRes, ekQuotaRes] = await Promise.all([
+            f?.paket_id
+              ? supabase.from('paketler').select('*').eq('id', f.paket_id).maybeSingle()
+              : Promise.resolve({ data: null }),
+            supabase
+              .from('ayarlar')
+              .select('anahtar, deger')
+              .eq('anahtar', FIRMA_EK_PLASIYER_AYAR_KEY)
+              .maybeSingle(),
+          ]);
+
+          const resolvedPaket = (paketRes.data as Paket | null) || null;
+          setActivePaket(resolvedPaket);
+          setCachedData('tahsilatim_active_paket', resolvedPaket);
+
+          const ekQuotaMap = ekQuotaRes.data
+            ? parseFirmaEkPlasiyerMapFromAyarlar([ekQuotaRes.data as Ayar])
+            : {};
+          const fallbackCount = f?.id ? ekQuotaMap[f.id] ?? 0 : 0;
+          setEkPlasiyerFallback(fallbackCount);
+          setCachedData(
+            'tahsilatim_ek_plasiyer',
+            f?.id ? { firmaId: f.id, count: fallbackCount } : null
+          );
+        } else {
+          setFirma(null);
+          setActivePaket(null);
+          setEkPlasiyerFallback(0);
+          setCachedData('tahsilatim_firma', null);
+          setCachedData('tahsilatim_active_paket', null);
+          setCachedData('tahsilatim_ek_plasiyer', null);
         }
       } catch (err: unknown) {
         const msg = handleSupabaseError(err, 'Kullanıcı veya firma bilgileri alınamadı.');
@@ -421,8 +476,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             setCachedData('tahsilatim_user', null);
             setCachedData('tahsilatim_profile', null);
             setCachedData('tahsilatim_firma', null);
+            setCachedData('tahsilatim_active_paket', null);
+            setCachedData('tahsilatim_ek_plasiyer', null);
             setProfile(null);
             setFirma(null);
+            setActivePaket(null);
+            setEkPlasiyerFallback(0);
             setUser(null);
           }
           setLoading(false);
@@ -451,8 +510,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         setCachedData('tahsilatim_user', null);
         setCachedData('tahsilatim_profile', null);
         setCachedData('tahsilatim_firma', null);
+        setCachedData('tahsilatim_active_paket', null);
+        setCachedData('tahsilatim_ek_plasiyer', null);
         setProfile(null);
         setFirma(null);
+        setActivePaket(null);
+        setEkPlasiyerFallback(0);
       }
       setLoading(false);
     });
@@ -607,10 +670,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setCachedData('tahsilatim_user', null);
       setCachedData('tahsilatim_profile', null);
       setCachedData('tahsilatim_firma', null);
+      setCachedData('tahsilatim_active_paket', null);
+      setCachedData('tahsilatim_ek_plasiyer', null);
       setUser(null);
       setSession(null);
       setProfile(null);
       setFirma(null);
+      setActivePaket(null);
+      setEkPlasiyerFallback(0);
       setError(null);
     }
   };
@@ -622,6 +689,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const periodInfo = calculatePeriodInfo(firma, profile, user);
   const effectiveIsPeriodExpired = isSuperAdmin ? false : periodInfo.isExpired;
 
+  const entitlements = resolvePackageEntitlements({
+    firma,
+    activePaket,
+    periodStatus: periodInfo.status,
+    isSuperAdmin,
+    ekPlasiyerFallback,
+  });
+
   return (
     <AuthContext.Provider
       value={{
@@ -629,6 +704,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         session,
         profile,
         firma,
+        activePaket,
+        entitlements,
         loading,
         error,
         isSuperAdmin,

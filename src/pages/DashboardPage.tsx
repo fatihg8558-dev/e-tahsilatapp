@@ -1,6 +1,5 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { useAuth } from '../context/AuthContext';
-import { supabase, handleSupabaseError } from '../lib/supabase';
 import { Islem } from '../types/database';
 import { formatCurrency, formatDate, getGreeting } from '../lib/formatters';
 import {
@@ -21,14 +20,17 @@ import {
   CheckCircle2,
   TrendingUp,
   LayoutGrid,
+  RefreshCw,
 } from 'lucide-react';
+import { useQuery } from '../hooks/useQuery';
+import {
+  DashboardReceiptsSnapshot,
+  EMPTY_DASHBOARD_SNAPSHOT,
+  VadeItem,
+  fetchDashboardReceiptsSnapshot,
+} from '../lib/receiptQueryService';
 
-export interface VadeItem {
-  islem: Islem;
-  diffDays: number;
-  durumLabel: string;
-  durumClass: string;
-}
+export type { VadeItem };
 
 interface DashboardPageProps {
   onNavigate: (tab: string, state?: unknown) => void;
@@ -44,11 +46,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
   refreshKey = 0,
 }) => {
   const { profile, firma } = useAuth();
-  const [loading, setLoading] = useState(true);
-  const [toplamTahsilat, setToplamTahsilat] = useState(0);
-  const [toplamTediye, setToplamTediye] = useState(0);
-  const [bugunTahsilat, setBugunTahsilat] = useState(0);
-  const [bugunTediye, setBugunTediye] = useState(0);
+  const effectiveFirmaId = firma?.id || profile?.firma_id || '';
   const [vadeAraligiGun, setVadeAraligiGun] = useState<number>(() => {
     try {
       const saved = localStorage.getItem('tahsilatim_vade_gun_esigi');
@@ -57,12 +55,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
       return 15;
     }
   });
-  const [aktifCariSayisi, setAktifCariSayisi] = useState(0);
-  const [bekleyenBildirimSayisi, setBekleyenBildirimSayisi] = useState(0);
-  const [sonIslemler, setSonIslemler] = useState<Islem[]>([]);
-  const [vadesiYaklasanlar, setVadesiYaklasanlar] = useState<VadeItem[]>([]);
   const [vadeFilter, setVadeFilter] = useState<'all' | 'tahsilat' | 'tediye'>('all');
-  const [error, setError] = useState<string | null>(null);
   const [fabOpen, setFabOpen] = useState(false);
 
   const handleVadeAraligiChange = (gun: number) => {
@@ -74,177 +67,50 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
     }
   };
 
-  useEffect(() => {
-    if (!firma?.id) return;
+  const {
+    data: snapshot,
+    isLoading: loading,
+    isFetching,
+    error,
+    refetch,
+    refetchCount,
+  } = useQuery<DashboardReceiptsSnapshot>({
+    queryKey: [
+      'dashboard-receipts',
+      effectiveFirmaId,
+      profile?.id || null,
+      profile?.rol || null,
+      vadeAraligiGun,
+      refreshKey,
+    ],
+    enabled: Boolean(effectiveFirmaId),
+    initialData: EMPTY_DASHBOARD_SNAPSHOT,
+    queryFn: () =>
+      fetchDashboardReceiptsSnapshot({
+        firmaId: effectiveFirmaId,
+        userId: profile?.id,
+        rol: profile?.rol,
+        vadeAraligiGun,
+      }),
+  });
 
-    const loadDashboardData = async () => {
-      try {
-        setLoading(true);
-        setError(null);
-
-        // 1. İşlemleri Çek (Plasiyer ise sadece yapan_user_id = profile.id; Ana hesap ise tüm firma)
-        let query = supabase
-          .from('islemler')
-          .select('*, cariler:cari_id(unvan, vergi_tc_no, telefon, email), profiles:yapan_user_id(ad_soyad)')
-          .eq('firma_id', firma.id)
-          .order('tarih', { ascending: false })
-          .order('id', { ascending: false });
-
-        if (profile?.rol === 'plasiyer') {
-          query = query.eq('yapan_user_id', profile.id);
-        }
-
-        const { data: islemlerData, error: islemlerErr } = await query.limit(50);
-
-        if (islemlerErr) throw islemlerErr;
-
-        if (islemlerData) {
-          // Son 8 işlem
-          setSonIslemler(islemlerData.slice(0, 8) as Islem[]);
-
-          // Toplam Tahsilat, Tediye ve Bugünkü Tutarlar
-          const todayStr = new Date().toISOString().split('T')[0];
-          let tTahsilat = 0;
-          let tTediye = 0;
-          let tBugunTahsilat = 0;
-          let tBugunTediye = 0;
-
-          islemlerData.forEach((islem) => {
-            if (!islem.iptal) {
-              const tutar = Number(islem.tutar) || 0;
-              if (islem.tip === 'tahsilat') tTahsilat += tutar;
-              else if (islem.tip === 'tediye') tTediye += tutar;
-
-              if (islem.tarih && islem.tarih.startsWith(todayStr)) {
-                if (islem.tip === 'tahsilat') tBugunTahsilat += tutar;
-                else if (islem.tip === 'tediye') tBugunTediye += tutar;
-              }
-            }
-          });
-
-          setToplamTahsilat(tTahsilat);
-          setToplamTediye(tTediye);
-          setBugunTahsilat(tBugunTahsilat);
-          setBugunTediye(tBugunTediye);
-        }
-
-        // 2. Vadesi Yaklaşan Çek ve Senetleri Çek
-        const { data: cekSenetData, error: cekSenetErr } = await supabase
-          .from('islemler')
-          .select('*, cariler:cari_id(unvan, vergi_tc_no, telefon, email), profiles:yapan_user_id(ad_soyad)')
-          .eq('firma_id', firma.id)
-          .in('tur', ['cek', 'senet'])
-          .eq('iptal', false)
-          .not('vade', 'is', null)
-          .order('vade', { ascending: true });
-
-        if (!cekSenetErr && cekSenetData) {
-          const now = new Date();
-          now.setHours(0, 0, 0, 0);
-
-          const items: VadeItem[] = [];
-
-          cekSenetData.forEach((item) => {
-            // Ciro edilmiş çek ve senetleri hariç tut:
-            // 1. Müşteriden alınıp tedarikçiye ciro edilmiş tahsilat çeki ([CİRO EDİLDİ -> ...)
-            // 2. Tedarikçiye ciro olarak verilmiş tediye çeki ([CİRO EDİLDİ - Asıl Borçlu: ...)
-            // 3. Açıklamasında veya notunda 'CİRO' geçen herhangi bir işlem
-            const aciklamaUpper = (item.aciklama || '').toUpperCase();
-            if (
-              aciklamaUpper.includes('CİRO') ||
-              aciklamaUpper.includes('CIRO') ||
-              item.durum === 'ciro'
-            ) {
-              return;
-            }
-
-            if (!item.vade) return;
-            const cleanVade = item.vade.trim();
-            let vDate: Date | null = null;
-
-            if (/^\d{4}-\d{2}-\d{2}$/.test(cleanVade)) {
-              const parts = cleanVade.split('-');
-              vDate = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]));
-            } else if (/^\d{2}\.\d{2}\.\d{4}$/.test(cleanVade)) {
-              const parts = cleanVade.split('.');
-              vDate = new Date(Number(parts[2]), Number(parts[1]) - 1, Number(parts[0]));
-            }
-
-            if (!vDate || isNaN(vDate.getTime())) return;
-            vDate.setHours(0, 0, 0, 0);
-
-            const diffMs = vDate.getTime() - now.getTime();
-            const diffDays = Math.round(diffMs / (1000 * 60 * 60 * 24));
-
-            // Vadesi geçmiş veya seçilen gün eşiği içinde olanlar
-            if (diffDays <= vadeAraligiGun && diffDays >= -60) {
-              let durumLabel = '';
-              let durumClass = '';
-
-              if (diffDays < 0) {
-                durumLabel = `${Math.abs(diffDays)} GÜN GEÇTİ`;
-                durumClass = 'bg-red-500/20 text-red-300 border-red-500/40 font-bold';
-              } else if (diffDays === 0) {
-                durumLabel = 'BUGÜN VADESİ GELİYOR';
-                durumClass = 'bg-amber-500/25 text-amber-300 border-amber-500/50 font-black animate-pulse';
-              } else if (diffDays === 1) {
-                durumLabel = 'YARIN VADESİ';
-                durumClass = 'bg-amber-500/15 text-amber-300 border-amber-500/30 font-bold';
-              } else if (diffDays <= 7) {
-                durumLabel = `${diffDays} GÜN KALDI`;
-                durumClass = 'bg-teal-500/20 text-teal-300 border-teal-500/30 font-bold';
-              } else {
-                durumLabel = `${diffDays} gün kaldı`;
-                durumClass = 'bg-blue-500/10 text-blue-300 border-blue-500/20 font-medium';
-              }
-
-              items.push({
-                islem: item as Islem,
-                diffDays,
-                durumLabel,
-                durumClass,
-              });
-            }
-          });
-
-          // En acil olanlar en üstte (Vadesi geçenler -> Bugün -> Yaklaşanlar)
-          items.sort((a, b) => a.diffDays - b.diffDays);
-          setVadesiYaklasanlar(items);
-        }
-
-        // 3. Aktif Cari Sayısı
-        const { count: cariCount, error: cariErr } = await supabase
-          .from('cariler')
-          .select('*', { count: 'exact', head: true })
-          .eq('firma_id', firma.id);
-
-        if (!cariErr && cariCount !== null) {
-          setAktifCariSayisi(cariCount);
-        }
-
-        // 4. Bekleyen Bildirim Sayısı
-        const { count: notifCount, error: notifErr } = await supabase
-          .from('bildirimler')
-          .select('*', { count: 'exact', head: true })
-          .eq('alici_firma_id', firma.id)
-          .eq('durum', 'bekliyor');
-
-        if (!notifErr && notifCount !== null) {
-          setBekleyenBildirimSayisi(notifCount);
-        }
-      } catch (err: unknown) {
-        const msg = handleSupabaseError(err, 'Gösterge verileri yüklenirken bir hata oluştu.');
-        setError(msg);
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    loadDashboardData();
-  }, [firma?.id, profile?.id, profile?.rol, vadeAraligiGun, refreshKey]);
+  const {
+    toplamTahsilat,
+    toplamTediye,
+    bugunTahsilat,
+    bugunTediye,
+    sonIslemler,
+    vadesiYaklasanlar,
+    aktifCariSayisi,
+    bekleyenBildirimSayisi,
+  } = snapshot;
 
   return (
-    <div className="space-y-8">
+    <div
+      className="space-y-8"
+      data-receipt-refresh-key={refreshKey}
+      data-query-refetch-count={refetchCount}
+    >
       {/* SAYFA BAŞLIĞI & KARŞILAMA */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
@@ -669,19 +535,32 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
 
       {/* SON İŞLEMLER (8 KAYIT) */}
       <div className="bg-[#111820] border border-white/[0.07] rounded-2xl overflow-hidden shadow-xl">
-        <div className="p-5 border-b border-white/[0.07] flex items-center justify-between">
+        <div className="p-5 border-b border-white/[0.07] flex items-center justify-between gap-2">
           <div className="flex items-center gap-2">
             <ReceiptText className="w-4 h-4 text-teal-400" />
             <h3 className="font-bold text-sm text-white">Son İşlemler</h3>
             <span className="text-[11px] text-gray-400">(Son 8 Kayıt)</span>
           </div>
-          <button
-            onClick={() => onNavigate('islemler')}
-            className="text-xs text-teal-400 hover:text-teal-300 font-semibold flex items-center gap-1 transition"
-          >
-            <span>Tümünü Gör</span>
-            <ChevronRight className="w-3.5 h-3.5" />
-          </button>
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={() => void refetch()}
+              disabled={isFetching}
+              data-testid="dashboard_refresh_btn"
+              className="text-xs text-gray-300 hover:text-teal-300 font-semibold flex items-center gap-1 transition disabled:opacity-60"
+              title="Son makbuzları yenile"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${isFetching ? 'animate-spin text-teal-400' : ''}`} />
+              <span>Yenile</span>
+            </button>
+            <button
+              onClick={() => onNavigate('islemler')}
+              className="text-xs text-teal-400 hover:text-teal-300 font-semibold flex items-center gap-1 transition"
+            >
+              <span>Tümünü Gör</span>
+              <ChevronRight className="w-3.5 h-3.5" />
+            </button>
+          </div>
         </div>
 
         {loading ? (

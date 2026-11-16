@@ -936,6 +936,10 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
         isOpen={isSettingsOpen}
         onClose={() => setIsSettingsOpen(false)}
         initialTab={settingsInitialTab}
+        onNavigateToPackages={() => {
+          setIsSettingsOpen(false);
+          onSelectTab('paketler');
+        }}
       />
     </div>
   );

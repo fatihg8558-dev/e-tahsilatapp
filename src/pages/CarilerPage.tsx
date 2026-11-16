@@ -23,6 +23,7 @@ import {
   Printer,
   Download,
   Upload,
+  Lock,
 } from 'lucide-react';
 import { exportToExcel, printPdfReport } from '../lib/exportService';
 import { UblImportModal } from '../components/cari/UblImportModal';
@@ -40,7 +41,7 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
   onOpenMakbuz,
   refreshKey = 0,
 }) => {
-  const { firma, profile } = useAuth();
+  const { firma, profile, entitlements } = useAuth();
   const effectiveFirmaId = firma?.id || profile?.firma_id;
   const [cariler, setCariler] = useState<Cari[]>([]);
   const [loading, setLoading] = useState(true);
@@ -204,12 +205,21 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
         setSelectedCariForDetail(freshCari as Cari);
       }
 
-      // 1. İşlemleri getir (yapan kullanıcı profili ile)
-      const { data: islemlerData } = await supabase
+      // 1. İşlemleri getir (yapan kullanıcı profili ile, hata durumunda yedek sorgu)
+      let { data: islemlerData, error: islemlerErr } = await supabase
         .from('islemler')
         .select('*, profiles:yapan_user_id(ad_soyad)')
         .eq('cari_id', cari.id)
         .order('tarih', { ascending: false });
+
+      if (islemlerErr) {
+        const fallback = await supabase
+          .from('islemler')
+          .select('*')
+          .eq('cari_id', cari.id)
+          .order('tarih', { ascending: false });
+        islemlerData = fallback.data;
+      }
 
       // 2. Faturaları getir
       const { data: faturalarData } = await supabase
@@ -319,12 +329,39 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
         <div className="flex flex-wrap items-center gap-2 self-start sm:self-auto">
           <button
             type="button"
-            onClick={() => setIsUblModalOpen(true)}
+            onClick={() => {
+              if (!entitlements.canUseUblImport) {
+                onNavigate('paketler');
+                return;
+              }
+              setIsUblModalOpen(true);
+            }}
             data-testid="open_ubl_import_button"
-            className="bg-amber-400/15 hover:bg-amber-400/25 border border-amber-400/35 text-amber-300 font-bold text-xs px-4 py-2.5 rounded-xl transition flex items-center gap-2"
+            title={
+              entitlements.canUseUblImport
+                ? 'UBL / XML Fatura İçe Aktar'
+                : 'Kurumsal (Pro) pakette açılır — yükseltmek için tıklayın'
+            }
+            className={`font-bold text-xs px-4 py-2.5 rounded-xl transition flex items-center gap-2 border ${
+              entitlements.canUseUblImport
+                ? 'bg-amber-400/15 hover:bg-amber-400/25 border-amber-400/35 text-amber-300'
+                : 'bg-amber-500/10 hover:bg-amber-500/20 border-amber-400/40 text-amber-200'
+            }`}
           >
-            <Upload className="w-4 h-4" />
+            {entitlements.canUseUblImport ? (
+              <Upload className="w-4 h-4" />
+            ) : (
+              <Lock className="w-4 h-4 text-amber-300" />
+            )}
             <span>UBL / XML Fatura Yükle</span>
+            {!entitlements.canUseUblImport && (
+              <span
+                data-testid="ubl_lock_badge"
+                className="px-1.5 py-0.5 rounded-md bg-amber-400/20 border border-amber-400/40 text-amber-300 text-[10px] font-extrabold"
+              >
+                Kurumsal
+              </span>
+            )}
           </button>
 
           <button
@@ -919,7 +956,7 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
       )}
       {/* UBL / XML FATURA YÜKLEME MODALI */}
       <UblImportModal
-        isOpen={isUblModalOpen}
+        isOpen={isUblModalOpen && entitlements.canUseUblImport}
         onClose={() => setIsUblModalOpen(false)}
         cariler={cariler}
         onImported={fetchCariler}

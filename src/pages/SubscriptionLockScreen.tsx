@@ -4,6 +4,8 @@ import { supabase } from '../lib/supabase';
 import {
   ShieldAlert,
   CheckCircle2,
+  Check,
+  XCircle,
   Copy,
   CreditCard,
   Sparkles,
@@ -13,10 +15,39 @@ import {
   FileText,
   Landmark,
   AlertCircle,
+  Users,
   X,
+  Plus,
+  Minus,
+  UserPlus,
 } from 'lucide-react';
 import { formatCurrency, formatDate } from '../lib/formatters';
-import { Paket } from '../types/database';
+import { Ayar, Paket } from '../types/database';
+import {
+  PaketFeaturesMap,
+  getPackageFeatures,
+  parsePaketFeaturesFromAyarlar,
+} from '../lib/packageFeatures';
+import {
+  BILLING_PERIODS,
+  BillingPeriodKey,
+  PACKAGE_TIERS,
+  PackageTierDefinition,
+  PackageTierKey,
+  detectPeriodKey,
+  detectTierKeyFromName,
+  findMatchingPaket,
+  formatTlInteger,
+} from '../lib/packageCatalog';
+import {
+  EK_PLASIYER_FIYAT,
+  TIER_PLASIYER_LIMITS,
+  calculatePackageTotalAmount,
+  formatOdemeNoteWithEkPlasiyer,
+  parseEkPlasiyerFromNote,
+  sanitizeEkPlasiyerCount,
+} from '../lib/packageEntitlements';
+import { PaketKarsilastirmaTablosu } from '../components/paketler/PaketKarsilastirmaTablosu';
 
 interface SubscriptionLockScreenProps {
   isLockMode?: boolean;
@@ -34,14 +65,20 @@ const PAKET_OZELLIKLERI = [
 ];
 
 export const SubscriptionLockScreen: React.FC<SubscriptionLockScreenProps> = ({ isLockMode = true }) => {
-  const { firma, profile, periodInfo, refreshProfileAndFirma, signOut } = useAuth();
+  const { firma, profile, activePaket, entitlements, periodInfo, refreshProfileAndFirma, signOut } = useAuth();
   const [paketler, setPaketler] = useState<Paket[]>([]);
+  const [paketFeaturesMap, setPaketFeaturesMap] = useState<PaketFeaturesMap>({});
+  const [selectedPeriod, setSelectedPeriod] = useState<BillingPeriodKey>('aylik');
   const [iban, setIban] = useState<string>('');
   const [hesapSahibi, setHesapSahibi] = useState<string>('');
   const [copied, setCopied] = useState(false);
   const [loading, setLoading] = useState(true);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
   const [secili, setSecili] = useState<Paket | null>(null);
+  const [seciliTier, setSeciliTier] = useState<PackageTierDefinition | null>(null);
+  const [seciliPeriodKey, setSeciliPeriodKey] = useState<BillingPeriodKey>('aylik');
+  const [seciliDisplayPrice, setSeciliDisplayPrice] = useState<number | null>(null);
+  const [seciliEkPlasiyer, setSeciliEkPlasiyer] = useState<number>(0);
   const [dosya, setDosya] = useState<File | null>(null);
   const [aciklama, setAciklama] = useState('');
   const [gonderiyor, setGonderiyor] = useState(false);
@@ -52,7 +89,7 @@ export const SubscriptionLockScreen: React.FC<SubscriptionLockScreenProps> = ({ 
     if (!firma?.id) return;
     const { data } = await supabase
       .from('odeme_bildirimleri')
-      .select('id,tutar,durum,tarih')
+      .select('id,tutar,durum,tarih,not')
       .eq('firma_id', firma.id)
       .order('tarih', { ascending: false })
       .limit(5);
@@ -77,10 +114,12 @@ export const SubscriptionLockScreen: React.FC<SubscriptionLockScreenProps> = ({ 
 
         const { data: sData } = await supabase.from('ayarlar').select('*');
         if (sData) {
-          sData.forEach((setting: { anahtar: string; deger: string }) => {
+          const ayarlarList = sData as Ayar[];
+          ayarlarList.forEach((setting) => {
             if (setting.anahtar === 'iban') setIban(setting.deger);
             if (setting.anahtar === 'hesap_sahibi') setHesapSahibi(setting.deger);
           });
+          setPaketFeaturesMap(parsePaketFeaturesFromAyarlar(ayarlarList));
         }
       } catch (err) {
         console.error(err);
@@ -99,8 +138,16 @@ export const SubscriptionLockScreen: React.FC<SubscriptionLockScreenProps> = ({ 
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const handlePaketSecimi = (p: Paket) => {
+  const handlePaketSecimi = (p: Paket, initialEkPlasiyer?: number) => {
+    const tierKey = detectTierKeyFromName(p.ad);
+    const matchedTier = tierKey ? PACKAGE_TIERS.find((t) => t.key === tierKey) ?? null : null;
     setSecili(p);
+    setSeciliTier(matchedTier);
+    setSeciliPeriodKey(detectPeriodKey(p));
+    setSeciliDisplayPrice(p.fiyat);
+    setSeciliEkPlasiyer(
+      sanitizeEkPlasiyerCount(initialEkPlasiyer ?? entitlements.ekPlasiyerSayisi)
+    );
     setDosya(null);
     setAciklama('');
     setHata('');
@@ -108,8 +155,56 @@ export const SubscriptionLockScreen: React.FC<SubscriptionLockScreenProps> = ({ 
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
+  const handleTierSecimi = (
+    tierKey: PackageTierKey,
+    overridePeriod?: BillingPeriodKey,
+    initialEkPlasiyer?: number
+  ) => {
+    const tier = PACKAGE_TIERS.find((t) => t.key === tierKey);
+    if (!tier) return;
+    const targetPeriod = overridePeriod ?? selectedPeriod;
+    const matchedPaket = findMatchingPaket(paketler, tierKey, targetPeriod);
+
+    if (!matchedPaket) {
+      setActionMessage(
+        'Henüz sistemde aktif paket kaydı bulunmuyor. Lütfen yönetici panelinden standart paketleri oluşturunuz.'
+      );
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+      return;
+    }
+
+    const isExactMatch =
+      detectTierKeyFromName(matchedPaket.ad) === tierKey &&
+      detectPeriodKey(matchedPaket) === targetPeriod;
+    const expectedPrice = isExactMatch ? matchedPaket.fiyat : tier.prices[targetPeriod];
+
+    setSecili(matchedPaket);
+    setSeciliTier(tier);
+    setSeciliPeriodKey(targetPeriod);
+    setSeciliDisplayPrice(expectedPrice);
+    setSeciliEkPlasiyer(
+      sanitizeEkPlasiyerCount(initialEkPlasiyer ?? entitlements.ekPlasiyerSayisi)
+    );
+    setDosya(null);
+    setAciklama('');
+    setHata('');
+    setActionMessage(null);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const handleQuickEkPlasiyerCheckout = () => {
+    const targetTier: PackageTierKey = entitlements.tierKey || 'baslangic';
+    const targetPeriod: BillingPeriodKey = activePaket
+      ? detectPeriodKey(activePaket)
+      : selectedPeriod;
+    const suggestedEk = Math.max(1, entitlements.ekPlasiyerSayisi + 1);
+    handleTierSecimi(targetTier, targetPeriod, suggestedEk);
+  };
+
   const handlePaketlereDon = () => {
     setSecili(null);
+    setSeciliTier(null);
+    setSeciliDisplayPrice(null);
     setDosya(null);
     setHata('');
     window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -132,21 +227,44 @@ export const SubscriptionLockScreen: React.FC<SubscriptionLockScreenProps> = ({ 
       setGonderiyor(false);
       return setHata('Dekont yüklenemedi: ' + up.error.message);
     }
+    const baseAmount = seciliDisplayPrice ?? secili.fiyat;
+    const ekUnitPrice =
+      secili.ek_plasiyer_ucreti && secili.ek_plasiyer_ucreti > 0
+        ? secili.ek_plasiyer_ucreti
+        : EK_PLASIYER_FIYAT;
+    const gonderilecekTutar = calculatePackageTotalAmount(
+      baseAmount,
+      seciliEkPlasiyer,
+      ekUnitPrice
+    );
+    const periodOption =
+      BILLING_PERIODS.find((b) => b.key === seciliPeriodKey) ?? BILLING_PERIODS[0];
+    const displayTitle = seciliTier ? `${seciliTier.title} - ${periodOption.label}` : secili.ad;
+    const noteWithEk = formatOdemeNoteWithEkPlasiyer(
+      seciliEkPlasiyer,
+      aciklama,
+      displayTitle
+    );
+
     const ins = await supabase.from('odeme_bildirimleri').insert({
       firma_id: firma.id,
       paket_id: secili.id,
-      tutar: secili.fiyat,
+      tutar: gonderilecekTutar,
       dekont_url: yol,
       durum: 'bekliyor',
       tarih: new Date().toISOString(),
-      not: aciklama.trim() || null,
+      not: noteWithEk,
     });
     setGonderiyor(false);
     if (ins.error) return setHata('Bildirim kaydedilemedi: ' + ins.error.message);
     setSecili(null);
+    setSeciliTier(null);
+    setSeciliDisplayPrice(null);
     setDosya(null);
     setAciklama('');
-    setActionMessage('Ödeme bildiriminiz alındı. Kontrol edilip onaylandığında süreniz uzatılacak.');
+    setActionMessage(
+      'Ödeme bildiriminiz alındı. Onaylandığında seçtiğiniz paket ve ek plasiyer kontenjanı firmanıza otomatik tanımlanacaktır.'
+    );
     yukleBildirimler();
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
@@ -159,6 +277,23 @@ export const SubscriptionLockScreen: React.FC<SubscriptionLockScreenProps> = ({ 
 
   // SEÇİLİ PAKET DETAY VE DEKONT YÜKLEME SAYFASI
   if (secili) {
+    const periodOption =
+      BILLING_PERIODS.find((b) => b.key === seciliPeriodKey) ?? BILLING_PERIODS[0];
+    const displayDays = seciliTier ? periodOption.sureGun : secili.sure_gun;
+    const displayTitle = seciliTier ? `${seciliTier.title} - ${periodOption.label}` : secili.ad;
+    const baseAmount = seciliDisplayPrice ?? secili.fiyat;
+    const ekUnitPrice =
+      secili.ek_plasiyer_ucreti && secili.ek_plasiyer_ucreti > 0
+        ? secili.ek_plasiyer_ucreti
+        : EK_PLASIYER_FIYAT;
+    const ekPlasiyerTotal = seciliEkPlasiyer * ekUnitPrice;
+    const totalAmount = calculatePackageTotalAmount(baseAmount, seciliEkPlasiyer, ekUnitPrice);
+    const includedPlasiyerCount = seciliTier
+      ? seciliTier.includedPlasiyerLimit
+      : TIER_PLASIYER_LIMITS[detectTierKeyFromName(secili.ad) || 'baslangic'];
+    const totalPlasiyerCount = includedPlasiyerCount + seciliEkPlasiyer;
+    const customFeatures = getPackageFeatures(secili, paketFeaturesMap);
+
     return (
       <div className={isLockMode ? 'min-h-screen bg-[#0a0e13] text-gray-100 flex flex-col p-4 sm:p-8 fintech-glow' : 'text-gray-100 pb-10'}>
         <div className={isLockMode ? 'max-w-3xl mx-auto w-full pt-2 sm:pt-4 space-y-5' : 'max-w-3xl mx-auto w-full space-y-5'}>
@@ -175,7 +310,8 @@ export const SubscriptionLockScreen: React.FC<SubscriptionLockScreenProps> = ({ 
             </button>
 
             <span className="px-3 py-1 rounded-full bg-teal-400/10 border border-teal-400/25 text-teal-300 text-[11px] font-bold uppercase tracking-wider">
-              {secili.sure_gun} Günlük Paket
+              {displayDays} Günlük Paket
+              {seciliTier && periodOption.giftNote ? ` · ${periodOption.giftNote}` : ''}
             </span>
           </div>
 
@@ -187,20 +323,99 @@ export const SubscriptionLockScreen: React.FC<SubscriptionLockScreenProps> = ({ 
                   <Sparkles className="w-3.5 h-3.5" />
                   <span>Seçilen Paket Özeti</span>
                 </div>
-                <h1 className="text-xl sm:text-2xl font-black text-white">{secili.ad}</h1>
+                <h1 className="text-xl sm:text-2xl font-black text-white">{displayTitle}</h1>
                 <p className="text-xs text-gray-400 mt-1">
-                  {secili.sure_gun} gün kesintisiz tam erişim
-                  {secili.ek_plasiyer_ucreti > 0
-                    ? ` • Ek Plasiyer Ücreti: ${formatCurrency(secili.ek_plasiyer_ucreti)}`
-                    : ' • Ek Plasiyer Ücreti Yok'}
+                  {displayDays} gün kesintisiz erişim •{' '}
+                  <strong className="text-teal-300">
+                    1 Ana + {totalPlasiyerCount} Plasiyer
+                  </strong>
+                  {seciliEkPlasiyer > 0
+                    ? ` (${includedPlasiyerCount} Dahil + ${seciliEkPlasiyer} Ek)`
+                    : ''}
                 </p>
               </div>
 
               <div className="sm:text-right bg-black/30 border border-white/[0.06] rounded-xl px-4 py-3 shrink-0">
-                <div className="text-[10px] uppercase tracking-wider text-gray-400 font-semibold">Ödenecek Tutar</div>
-                <div className="text-2xl sm:text-3xl font-black text-teal-300 mt-0.5">
-                  {formatCurrency(secili.fiyat)}
+                <div className="text-[10px] uppercase tracking-wider text-gray-400 font-semibold">
+                  Ödenecek Toplam Tutar
                 </div>
+                <div
+                  data-testid="checkout_total_amount"
+                  className="text-2xl sm:text-3xl font-black text-teal-300 mt-0.5"
+                >
+                  {formatCurrency(totalAmount)}
+                </div>
+                {seciliEkPlasiyer > 0 && (
+                  <div className="text-[10px] text-gray-400 mt-0.5">
+                    {formatCurrency(baseAmount)} + {formatCurrency(ekPlasiyerTotal)} ({seciliEkPlasiyer} Ek Plasiyer)
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* ANA PAKETE DAHİL EK PLASİYER SEÇİCİ */}
+            <div className="mt-5 p-4 rounded-xl bg-teal-500/[0.07] border border-teal-400/25 space-y-3">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div>
+                  <div className="flex items-center gap-2 text-xs font-extrabold text-white">
+                    <UserPlus className="w-4 h-4 text-teal-400" />
+                    <span>Ek Plasiyer Ekle (Ana Pakete Dahil)</span>
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-teal-400/20 text-teal-300 border border-teal-400/30">
+                      +{formatTlInteger(ekUnitPrice)} / Adet
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-gray-300 mt-1 leading-relaxed">
+                    Eklenen her plasiyer ana paketinizin tüm özelliklerini (Link, NFC, UBL vb.) otomatik kullanır. Ana paket süresi dolduğunda veya yenilendiğinde tüm ek plasiyerler de aynı süreyle birlikte devam eder.
+                  </p>
+                </div>
+
+                <div className="flex items-center gap-2 bg-[#0a0e13] border border-white/10 rounded-xl p-1.5 shrink-0 self-start sm:self-center">
+                  <button
+                    type="button"
+                    data-testid="ek_plasiyer_minus_btn"
+                    onClick={() => setSeciliEkPlasiyer((prev) => Math.max(0, prev - 1))}
+                    disabled={seciliEkPlasiyer <= 0}
+                    aria-label="Ek plasiyer azalt"
+                    className="w-9 h-9 rounded-lg bg-white/5 hover:bg-white/15 disabled:opacity-40 text-white flex items-center justify-center transition"
+                  >
+                    <Minus className="w-4 h-4" />
+                  </button>
+                  <div className="min-w-[68px] text-center px-2">
+                    <div
+                      data-testid="ek_plasiyer_count_value"
+                      className="text-base font-black text-teal-300 leading-tight"
+                    >
+                      {seciliEkPlasiyer}
+                    </div>
+                    <div className="text-[10px] text-gray-400 font-semibold">Ek Plasiyer</div>
+                  </div>
+                  <button
+                    type="button"
+                    data-testid="ek_plasiyer_plus_btn"
+                    onClick={() => setSeciliEkPlasiyer((prev) => Math.min(50, prev + 1))}
+                    aria-label="Ek plasiyer artır"
+                    className="w-9 h-9 rounded-lg bg-teal-400 hover:bg-teal-300 text-[#0a0e13] flex items-center justify-center font-bold transition"
+                  >
+                    <Plus className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center justify-between gap-2 pt-2.5 border-t border-white/[0.06] text-[11px]">
+                <span className="text-gray-300">
+                  Toplam Plasiyer Hakkı:{' '}
+                  <strong className="text-white">
+                    {totalPlasiyerCount} Plasiyer
+                  </strong>{' '}
+                  <span className="text-gray-400">
+                    ({includedPlasiyerCount} Dahil + {seciliEkPlasiyer} Ek) + 1 Ana Hesap
+                  </span>
+                </span>
+                <span className="font-bold text-teal-300">
+                  {seciliEkPlasiyer > 0
+                    ? `Ek Plasiyer Tutarı: +${formatCurrency(ekPlasiyerTotal)}`
+                    : 'Ek plasiyer ücreti yok'}
+                </span>
               </div>
             </div>
 
@@ -209,15 +424,35 @@ export const SubscriptionLockScreen: React.FC<SubscriptionLockScreenProps> = ({ 
                 Paket Özellikleri
               </h2>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                {PAKET_OZELLIKLERI.map((ozellik) => (
-                  <div
-                    key={ozellik}
-                    className="flex items-start gap-2.5 p-2.5 rounded-xl bg-black/25 border border-white/[0.05] text-xs text-gray-200"
-                  >
-                    <CheckCircle2 className="w-4 h-4 text-teal-400 shrink-0 mt-0.5" />
-                    <span>{ozellik}</span>
-                  </div>
-                ))}
+                {seciliTier ? (
+                  seciliTier.features.map((feat, idx) => (
+                    <div
+                      key={`${seciliTier.key}-detail-${idx}`}
+                      className={`flex items-center gap-2.5 p-2.5 rounded-xl border text-xs ${
+                        feat.included
+                          ? 'bg-black/25 border-white/[0.06] text-gray-200'
+                          : 'bg-black/15 border-white/[0.03] text-gray-500'
+                      }`}
+                    >
+                      {feat.included ? (
+                        <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                      ) : (
+                        <XCircle className="w-4 h-4 text-red-400/80 shrink-0" />
+                      )}
+                      <span>{feat.label}</span>
+                    </div>
+                  ))
+                ) : (
+                  (customFeatures.length > 0 ? customFeatures : PAKET_OZELLIKLERI).map((ozellik, idx) => (
+                    <div
+                      key={`${secili.id}-detail-feat-${idx}`}
+                      className="flex items-start gap-2.5 p-2.5 rounded-xl bg-black/25 border border-white/[0.05] text-xs text-gray-200"
+                    >
+                      <CheckCircle2 className="w-4 h-4 text-teal-400 shrink-0 mt-0.5" />
+                      <span>{ozellik}</span>
+                    </div>
+                  ))
+                )}
               </div>
             </div>
           </div>
@@ -370,9 +605,13 @@ export const SubscriptionLockScreen: React.FC<SubscriptionLockScreenProps> = ({ 
     );
   }
 
+  const activePeriodOption =
+    BILLING_PERIODS.find((b) => b.key === selectedPeriod) ?? BILLING_PERIODS[0];
+  const customOnlyPaketler = paketler.filter((p) => detectTierKeyFromName(p.ad) === null);
+
   return (
     <div className={isLockMode ? 'min-h-screen bg-[#0a0e13] text-gray-100 flex flex-col justify-between p-4 sm:p-8 fintech-glow' : 'text-gray-100 pb-8'}>
-      <div className={isLockMode ? 'max-w-4xl mx-auto w-full pt-6' : 'max-w-4xl mx-auto w-full'}>
+      <div className={isLockMode ? 'max-w-5xl mx-auto w-full pt-6' : 'max-w-5xl mx-auto w-full'}>
         {/* ÜST BİLGİLENDİRME BANNERI */}
         {isLockMode ? (
           <div className="bg-red-500/10 border border-red-500/20 rounded-2xl p-6 mb-8 flex flex-col sm:flex-row items-center gap-4 text-center sm:text-left">
@@ -397,31 +636,56 @@ export const SubscriptionLockScreen: React.FC<SubscriptionLockScreenProps> = ({ 
             </button>
           </div>
         ) : (
-          <div className="bg-teal-500/10 border border-teal-500/25 rounded-2xl p-5 mb-6 flex flex-col sm:flex-row items-center justify-between gap-4 text-center sm:text-left">
-            <div className="flex items-center gap-3.5">
+          <div className="bg-teal-500/10 border border-teal-500/25 rounded-2xl p-5 mb-6 flex flex-col lg:flex-row lg:items-center justify-between gap-4 text-center lg:text-left">
+            <div className="flex flex-col sm:flex-row items-center gap-3.5">
               <div className="w-11 h-11 rounded-2xl bg-teal-400/15 text-teal-300 border border-teal-400/30 flex items-center justify-center shrink-0">
                 <Crown className="w-5 h-5" />
               </div>
               <div>
-                <h2 className="text-sm font-bold text-white">
-                  {periodInfo.status === 'unlimited'
-                    ? 'Sınırsız Tam Erişim Aktif'
-                    : periodInfo.status === 'active_package'
-                    ? `Aktif Abonelik (${periodInfo.kalanGun} Gün Kaldı)`
-                    : `Ücretsiz Deneme Süresi (${periodInfo.kalanGun} Gün Kaldı)`}
-                </h2>
-                <p className="text-xs text-gray-300 mt-0.5">
+                <div className="flex flex-wrap items-center justify-center sm:justify-start gap-2">
+                  <h2 className="text-sm font-bold text-white">
+                    {periodInfo.status === 'unlimited'
+                      ? 'Sınırsız Tam Erişim Aktif'
+                      : periodInfo.status === 'active_package'
+                      ? `${entitlements.sourceLabel} (${periodInfo.kalanGun} Gün Kaldı)`
+                      : `Ücretsiz Deneme — Kurumsal Seviye (${periodInfo.kalanGun} Gün Kaldı)`}
+                  </h2>
+                  <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-black/30 border border-teal-400/30 text-teal-300">
+                    1 Ana + {entitlements.totalPlasiyerLimit} Plasiyer
+                    {entitlements.ekPlasiyerSayisi > 0
+                      ? ` (${entitlements.includedPlasiyerLimit} Dahil + ${entitlements.ekPlasiyerSayisi} Ek)`
+                      : ''}
+                  </span>
+                </div>
+                <p className="text-xs text-gray-300 mt-1">
                   {firma?.unvan}
                   {periodInfo.bitisTarihi ? ` • Bitiş Tarihi: ${formatDate(periodInfo.bitisTarihi)}` : ''}
+                  {' • '}Link: {entitlements.canUsePaymentLink ? 'Açık' : 'Kilitli'} · NFC:{' '}
+                  {entitlements.canUseNfc ? 'Açık' : 'Kilitli'} · UBL/XML:{' '}
+                  {entitlements.canUseUblImport ? 'Açık' : 'Kilitli'}
                 </p>
               </div>
             </div>
-            <button
-              onClick={() => refreshProfileAndFirma()}
-              className="px-4 py-2 rounded-xl text-xs font-bold bg-teal-400/15 hover:bg-teal-400/25 text-teal-300 border border-teal-400/30 transition"
-            >
-              Durumu Yenile
-            </button>
+            <div className="flex flex-wrap items-center justify-center gap-2 shrink-0">
+              {profile?.rol === 'ana' && (
+                <button
+                  type="button"
+                  onClick={handleQuickEkPlasiyerCheckout}
+                  data-testid="quick_add_ek_plasiyer_btn"
+                  className="px-4 py-2 rounded-xl text-xs font-extrabold bg-teal-400 hover:bg-teal-300 text-[#0a0e13] flex items-center gap-1.5 transition shadow"
+                >
+                  <UserPlus className="w-3.5 h-3.5" />
+                  <span>Ek Plasiyer Ekle (+{EK_PLASIYER_FIYAT} TL)</span>
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => refreshProfileAndFirma()}
+                className="px-4 py-2 rounded-xl text-xs font-bold bg-teal-400/15 hover:bg-teal-400/25 text-teal-300 border border-teal-400/30 transition"
+              >
+                Durumu Yenile
+              </button>
+            </div>
           </div>
         )}
 
@@ -435,7 +699,7 @@ export const SubscriptionLockScreen: React.FC<SubscriptionLockScreenProps> = ({ 
             İşletmenize Uygun Paketi Seçin
           </h1>
           <p className="text-xs text-gray-400 mt-2">
-            Paket seçtiğinizde tüm paket özellikleri ve dekont yükleme ekranı açılır.
+            Paket seçtiğinizde aynı ekrandan ek plasiyer (+{EK_PLASIYER_FIYAT} TL) ekleyip dekont yükleyebilirsiniz.
           </p>
         </div>
 
@@ -449,75 +713,256 @@ export const SubscriptionLockScreen: React.FC<SubscriptionLockScreenProps> = ({ 
         {bildirimler.length > 0 && (
           <div className="mb-8 rounded-2xl border border-white/10 bg-[#111820]/70 p-4 text-xs text-gray-300">
             <p className="font-bold text-white mb-2">Son ödeme bildirimleriniz</p>
-            {bildirimler.map((b) => (
-              <div key={b.id} className="flex justify-between py-1.5 border-b border-white/5 last:border-0">
-                <span>{formatDate(b.tarih)} · {formatCurrency(b.tutar)}</span>
-                <span className={b.durum === 'onaylandi' ? 'text-teal-300' : b.durum === 'red' ? 'text-red-400' : 'text-amber-300'}>
-                  {b.durum === 'onaylandi' ? 'Onaylandı' : b.durum === 'red' ? 'Reddedildi' : 'Onay bekliyor'}
-                </span>
-              </div>
-            ))}
+            {bildirimler.map((b) => {
+              const requestedEk = parseEkPlasiyerFromNote(b.not);
+              return (
+                <div key={b.id} className="flex justify-between py-1.5 border-b border-white/5 last:border-0">
+                  <span>
+                    {formatDate(b.tarih)} · {formatCurrency(b.tutar)}
+                    {requestedEk !== null && requestedEk > 0 ? ` · +${requestedEk} Ek Plasiyer` : ''}
+                  </span>
+                  <span className={b.durum === 'onaylandi' ? 'text-teal-300' : b.durum === 'red' ? 'text-red-400' : 'text-amber-300'}>
+                    {b.durum === 'onaylandi' ? 'Onaylandı' : b.durum === 'red' ? 'Reddedildi' : 'Onay bekliyor'}
+                  </span>
+                </div>
+              );
+            })}
           </div>
         )}
 
-        {/* PAKET LİSTESİ */}
+        {/* DÖNEM SEÇİCİ + 3'LÜ PAKET KARTLARI */}
         {loading ? (
           <div className="flex justify-center py-12">
             <div className="w-8 h-8 border-2 border-teal-400 border-t-transparent rounded-full animate-spin" />
           </div>
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-10">
-            {paketler.map((p) => (
+          <div className="space-y-8 mb-10">
+            {/* Dönem Seçici (Aylık / 6 Aylık / Yıllık) */}
+            <div className="flex justify-center">
               <div
-                key={p.id}
-                className="bg-[#111820] border border-white/[0.08] rounded-2xl p-6 flex flex-col justify-between hover:border-teal-400/40 transition duration-300 hover:shadow-[0_0_30px_rgba(45,212,191,0.15)] group relative"
+                role="tablist"
+                aria-label="Paket fatura dönemi"
+                className="inline-flex flex-wrap items-center justify-center gap-1.5 p-1.5 rounded-2xl bg-[#111820] border border-white/[0.08]"
               >
-                <div>
-                  <div className="flex justify-between items-start mb-3">
-                    <h3 className="font-bold text-lg text-white group-hover:text-teal-300 transition">{p.ad}</h3>
-                    <span className="text-[10px] uppercase font-bold px-2 py-0.5 rounded-full bg-teal-500/10 text-teal-400 border border-teal-500/20">
-                      {p.sure_gun} Gün
-                    </span>
-                  </div>
-
-                  <div className="mb-6">
-                    <span className="text-3xl font-black text-white">{formatCurrency(p.fiyat, false)}</span>
-                    <span className="text-xs text-gray-400 ml-1.5 font-medium">₺ / dönem</span>
-                  </div>
-
-                  <ul className="space-y-2.5 text-xs text-gray-300 mb-6">
-                    <li className="flex items-center gap-2">
-                      <CheckCircle2 className="w-4 h-4 text-teal-400 shrink-0" />
-                      <span>Sınırsız Tahsilat ve Tediye Makbuzu</span>
-                    </li>
-                    <li className="flex items-center gap-2">
-                      <CheckCircle2 className="w-4 h-4 text-teal-400 shrink-0" />
-                      <span>Cari Hesap Takibi ve Ekstreler</span>
-                    </li>
-                    <li className="flex items-center gap-2">
-                      <CheckCircle2 className="w-4 h-4 text-teal-400 shrink-0" />
-                      <span>Masaüstü ve Mobil Uyum</span>
-                    </li>
-                    {p.ek_plasiyer_ucreti > 0 && (
-                      <li className="flex items-center gap-2 text-gray-400">
-                        <CheckCircle2 className="w-4 h-4 text-teal-400 shrink-0" />
-                        <span>Ek Plasiyer: {formatCurrency(p.ek_plasiyer_ucreti)}</span>
-                      </li>
-                    )}
-                  </ul>
-                </div>
-
-                <button
-                  type="button"
-                  onClick={() => handlePaketSecimi(p)}
-                  data-testid={`select_paket_${p.id}`}
-                  className="w-full min-h-[44px] bg-teal-400 hover:bg-teal-300 text-[#0a0e13] font-bold py-2.5 px-4 rounded-xl text-xs transition duration-200 shadow-md flex items-center justify-center gap-2"
-                >
-                  <CreditCard className="w-4 h-4" />
-                  <span>Paketi Seç</span>
-                </button>
+                {BILLING_PERIODS.map((period) => {
+                  const isActive = selectedPeriod === period.key;
+                  return (
+                    <button
+                      key={period.key}
+                      type="button"
+                      role="tab"
+                      aria-selected={isActive}
+                      data-testid={`period_tab_${period.key}`}
+                      onClick={() => setSelectedPeriod(period.key)}
+                      className={`min-h-[40px] px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-2 transition ${
+                        isActive
+                          ? 'bg-teal-400 text-[#0a0e13] shadow-md'
+                          : 'text-gray-300 hover:text-white hover:bg-white/[0.04]'
+                      }`}
+                    >
+                      <span>{period.label}</span>
+                      {period.giftNote && (
+                        <span
+                          className={`px-2 py-0.5 rounded-full text-[10px] font-extrabold ${
+                            isActive
+                              ? 'bg-[#0a0e13]/15 text-[#0a0e13]'
+                              : 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/25'
+                          }`}
+                        >
+                          {period.giftNote}
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
               </div>
-            ))}
+            </div>
+
+            {/* 3'LÜ PAKET KARTLARI: BAŞLANGIÇ / PROFESYONEL / KURUMSAL */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+              {PACKAGE_TIERS.map((tier) => {
+                const exactPaket = paketler.find(
+                  (p) => detectTierKeyFromName(p.ad) === tier.key && detectPeriodKey(p) === selectedPeriod
+                );
+                const displayPrice = exactPaket ? exactPaket.fiyat : tier.prices[selectedPeriod];
+                const isRecommended = tier.key === 'profesyonel';
+                const isCurrentPackage =
+                  !isLockMode &&
+                  periodInfo.status === 'active_package' &&
+                  entitlements.tierKey === tier.key;
+                const customFeatures = exactPaket ? getPackageFeatures(exactPaket, paketFeaturesMap) : [];
+
+                return (
+                  <div
+                    key={tier.key}
+                    data-testid={`tier_card_${tier.key}`}
+                    className={`bg-[#111820] rounded-2xl p-6 flex flex-col justify-between transition duration-300 relative border ${
+                      isCurrentPackage
+                        ? 'border-emerald-400/60 shadow-[0_0_25px_rgba(16,185,129,0.14)]'
+                        : isRecommended
+                        ? 'border-teal-400/50 shadow-[0_0_30px_rgba(45,212,191,0.14)]'
+                        : 'border-white/[0.08] hover:border-teal-400/35'
+                    }`}
+                  >
+                    <div>
+                      <div className="flex items-start justify-between gap-2 mb-3">
+                        <div>
+                          <h3 className="font-extrabold text-lg text-white">{tier.title}</h3>
+                          <span className="inline-flex items-center gap-1.5 text-[11px] text-teal-300 font-semibold mt-1">
+                            <Users className="w-3.5 h-3.5" />
+                            <span>{tier.includedUsers}</span>
+                          </span>
+                        </div>
+                        <div className="flex flex-col items-end gap-1">
+                          {isCurrentPackage ? (
+                            <span className="text-[10px] uppercase font-extrabold px-2.5 py-0.5 rounded-full bg-emerald-400 text-[#0a0e13]">
+                              Mevcut Paket
+                            </span>
+                          ) : (
+                            tier.badge && (
+                              <span
+                                className={`text-[10px] uppercase font-extrabold px-2.5 py-0.5 rounded-full ${
+                                  isRecommended
+                                    ? 'bg-teal-400 text-[#0a0e13]'
+                                    : 'bg-amber-400/15 text-amber-300 border border-amber-400/30'
+                                }`}
+                              >
+                                {tier.badge}
+                              </span>
+                            )
+                          )}
+                          <span className="text-[10px] uppercase font-bold px-2 py-0.5 rounded-full bg-white/5 text-gray-300 border border-white/10">
+                            {activePeriodOption.sureGun} Gün
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="mb-4 pb-4 border-b border-white/[0.07]">
+                        <div className="flex items-baseline gap-1.5">
+                          <span className="text-3xl font-black text-white">
+                            {Math.round(displayPrice).toLocaleString('tr-TR')}
+                          </span>
+                          <span className="text-xs text-gray-400 font-semibold">
+                            TL / {activePeriodOption.shortLabel}
+                          </span>
+                        </div>
+                        <div className="flex items-center justify-between gap-2 mt-2 text-[11px] text-gray-400">
+                          <span>Ek Plasiyer: {tier.ekPlasiyerLabel} / Adet</span>
+                          {activePeriodOption.giftNote && (
+                            <span className="text-emerald-300 font-bold">
+                              {activePeriodOption.giftNote}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+
+                      <ul className="space-y-2.5 text-xs mb-6">
+                        {customFeatures.length > 0
+                          ? customFeatures.map((ozellik, idx) => (
+                              <li
+                                key={`${tier.key}-custom-${idx}`}
+                                className="flex items-start gap-2.5 text-gray-200"
+                              >
+                                <span className="inline-flex items-center justify-center w-4 h-4 rounded bg-emerald-500 text-white shrink-0 mt-0.5">
+                                  <Check className="w-3 h-3 stroke-[3]" />
+                                </span>
+                                <span>{ozellik}</span>
+                              </li>
+                            ))
+                          : tier.features.map((feat, idx) => (
+                              <li
+                                key={`${tier.key}-feat-${idx}`}
+                                className={`flex items-center gap-2.5 ${
+                                  feat.included ? 'text-gray-200' : 'text-gray-500'
+                                }`}
+                              >
+                                {feat.included ? (
+                                  <span className="inline-flex items-center justify-center w-4 h-4 rounded bg-emerald-500 text-white shrink-0">
+                                    <Check className="w-3 h-3 stroke-[3]" />
+                                  </span>
+                                ) : (
+                                  <span className="inline-flex items-center justify-center w-4 h-4 text-red-500 shrink-0">
+                                    <X className="w-4 h-4 stroke-[3]" />
+                                  </span>
+                                )}
+                                <span>{feat.label}</span>
+                              </li>
+                            ))}
+                      </ul>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => handleTierSecimi(tier.key)}
+                      data-testid={`select_tier_${tier.key}`}
+                      className={`w-full min-h-[44px] font-bold py-2.5 px-4 rounded-xl text-xs transition duration-200 shadow-md flex items-center justify-center gap-2 ${
+                        isRecommended
+                          ? 'bg-teal-400 hover:bg-teal-300 text-[#0a0e13]'
+                          : 'bg-white/10 hover:bg-teal-400 text-white hover:text-[#0a0e13]'
+                      }`}
+                    >
+                      <CreditCard className="w-4 h-4" />
+                      <span>Paketi Seç</span>
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* PAKET KARŞILAŞTIRMA TABLOSU */}
+            <PaketKarsilastirmaTablosu onSelectTier={(tierKey) => handleTierSecimi(tierKey)} />
+
+            {/* YÖNETİCİNİN EKLEDİĞİ DİĞER ÖZEL PAKETLER */}
+            {customOnlyPaketler.length > 0 && (
+              <div className="space-y-3">
+                <h3 className="text-xs font-bold uppercase tracking-wider text-gray-400 px-1">
+                  Diğer Özel Paketler
+                </h3>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+                  {customOnlyPaketler.map((p) => (
+                    <div
+                      key={p.id}
+                      className="bg-[#111820] border border-white/[0.08] rounded-2xl p-5 flex flex-col justify-between hover:border-teal-400/40 transition"
+                    >
+                      <div>
+                        <div className="flex justify-between items-start mb-2">
+                          <h4 className="font-bold text-base text-white">{p.ad}</h4>
+                          <span className="text-[10px] uppercase font-bold px-2 py-0.5 rounded-full bg-teal-500/10 text-teal-400 border border-teal-500/20">
+                            {p.sure_gun} Gün
+                          </span>
+                        </div>
+                        <div className="mb-4">
+                          <span className="text-2xl font-black text-white">
+                            {formatCurrency(p.fiyat, false)}
+                          </span>
+                          <span className="text-xs text-gray-400 ml-1.5">₺ / dönem</span>
+                        </div>
+                        <ul className="space-y-2 text-xs text-gray-300 mb-5">
+                          {(getPackageFeatures(p, paketFeaturesMap).length > 0
+                            ? getPackageFeatures(p, paketFeaturesMap)
+                            : PAKET_OZELLIKLERI.slice(0, 3)
+                          ).map((ozellik, idx) => (
+                            <li key={`${p.id}-custom-card-${idx}`} className="flex items-start gap-2">
+                              <CheckCircle2 className="w-4 h-4 text-teal-400 shrink-0 mt-0.5" />
+                              <span>{ozellik}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => handlePaketSecimi(p)}
+                        data-testid={`select_paket_${p.id}`}
+                        className="w-full min-h-[44px] bg-teal-400 hover:bg-teal-300 text-[#0a0e13] font-bold py-2.5 px-4 rounded-xl text-xs transition flex items-center justify-center gap-2"
+                      >
+                        <CreditCard className="w-4 h-4" />
+                        <span>Paketi Seç</span>
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         )}
 

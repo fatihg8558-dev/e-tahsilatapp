@@ -58,6 +58,7 @@ export const MakbuzModal: React.FC<MakbuzModalProps> = ({ islem, onClose, onEdit
     email?: string | null;
   } | null>(null);
 
+  const effectiveFirmaId = islem?.firma_id || firma?.id || profile?.firma_id || '';
   const currentCariId =
     activeTab === 'linked' && linkedIslem ? linkedIslem.cari_id : islem?.cari_id;
 
@@ -68,44 +69,75 @@ export const MakbuzModal: React.FC<MakbuzModalProps> = ({ islem, onClose, onEdit
   }, [islem?.id]);
 
   useEffect(() => {
-    if (isCapraz && islem?.belge_no && firma?.id) {
-      supabase
+    if (!isCapraz || !islem?.belge_no || !effectiveFirmaId) return;
+    let cancelled = false;
+    const loadCapraz = async () => {
+      const primary = await supabase
         .from('islemler')
         .select('*, cariler:cari_id(unvan, vergi_tc_no, telefon, email), profiles:yapan_user_id(ad_soyad)')
-        .eq('firma_id', firma.id)
+        .eq('firma_id', effectiveFirmaId)
         .eq('belge_no', islem.belge_no)
         .neq('id', islem.id)
-        .maybeSingle()
-        .then(({ data }) => {
-          if (data) setLinkedIslem(data as Islem);
-        });
-    }
-  }, [islem?.id, islem?.belge_no, isCapraz, firma?.id]);
+        .maybeSingle();
+      if (cancelled) return;
+      if (!primary.error && primary.data) {
+        setLinkedIslem(primary.data as Islem);
+      } else if (primary.error) {
+        const fallback = await supabase
+          .from('islemler')
+          .select('*, cariler:cari_id(unvan, vergi_tc_no, telefon, email)')
+          .eq('firma_id', effectiveFirmaId)
+          .eq('belge_no', islem.belge_no)
+          .neq('id', islem.id)
+          .maybeSingle();
+        if (!cancelled && fallback.data) {
+          setLinkedIslem(fallback.data as Islem);
+        }
+      }
+    };
+    void loadCapraz();
+    return () => {
+      cancelled = true;
+    };
+  }, [islem?.id, islem?.belge_no, isCapraz, effectiveFirmaId]);
 
   // Karma Makbuz (aynı Ref etiketini paylaşan kardeş satırları getir)
   const islemKarmaRef = extractKarmaRef(islem?.aciklama);
   useEffect(() => {
-    if (!islemKarmaRef || !firma?.id || !islem) {
+    if (!islemKarmaRef || !effectiveFirmaId || !islem) {
       setKarmaSiblings([]);
       return;
     }
     let cancelled = false;
-    supabase
-      .from('islemler')
-      .select('*, cariler:cari_id(unvan, vergi_tc_no, telefon, email), profiles:yapan_user_id(ad_soyad)')
-      .eq('firma_id', firma.id)
-      .eq('iptal', islem.iptal)
-      .ilike('aciklama', `%${islemKarmaRef}%`)
-      .order('id', { ascending: true })
-      .then(({ data }) => {
-        if (!cancelled && data && data.length > 0) {
-          setKarmaSiblings(data as Islem[]);
+    const loadKarmaSiblings = async () => {
+      const primary = await supabase
+        .from('islemler')
+        .select('*, cariler:cari_id(unvan, vergi_tc_no, telefon, email), profiles:yapan_user_id(ad_soyad)')
+        .eq('firma_id', effectiveFirmaId)
+        .eq('iptal', islem.iptal)
+        .ilike('aciklama', `%${islemKarmaRef}%`)
+        .order('id', { ascending: true });
+      if (cancelled) return;
+      if (!primary.error && primary.data && primary.data.length > 0) {
+        setKarmaSiblings(primary.data as Islem[]);
+      } else if (primary.error) {
+        const fallback = await supabase
+          .from('islemler')
+          .select('*, cariler:cari_id(unvan, vergi_tc_no, telefon, email)')
+          .eq('firma_id', effectiveFirmaId)
+          .eq('iptal', islem.iptal)
+          .ilike('aciklama', `%${islemKarmaRef}%`)
+          .order('id', { ascending: true });
+        if (!cancelled && fallback.data && fallback.data.length > 0) {
+          setKarmaSiblings(fallback.data as Islem[]);
         }
-      });
+      }
+    };
+    void loadKarmaSiblings();
     return () => {
       cancelled = true;
     };
-  }, [islem?.id, islem?.iptal, islemKarmaRef, firma?.id]);
+  }, [islem?.id, islem?.iptal, islemKarmaRef, effectiveFirmaId]);
 
   // Carinin güncel telefon, e-posta ve VKN bilgilerini her durumda garantiye al
   useEffect(() => {

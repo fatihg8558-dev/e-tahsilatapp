@@ -43,6 +43,7 @@ import {
   Pencil,
   Wallet,
   Wifi,
+  Lock,
 } from 'lucide-react';
 import { openWhatsApp } from '../lib/linkHelper';
 import { KarmaPaymentSection } from '../components/islem/KarmaPaymentSection';
@@ -205,6 +206,7 @@ interface IslemFormPageProps {
   editingIslem?: Islem | null;
   onSuccess: (savedIslem: Islem) => void;
   onCancel: () => void;
+  onUpgradePackage?: () => void;
 }
 
 export const IslemFormPage: React.FC<IslemFormPageProps> = ({
@@ -213,8 +215,9 @@ export const IslemFormPage: React.FC<IslemFormPageProps> = ({
   editingIslem,
   onSuccess,
   onCancel,
+  onUpgradePackage,
 }) => {
-  const { firma, profile, periodInfo, refreshProfileAndFirma } = useAuth();
+  const { firma, profile, entitlements, periodInfo, refreshProfileAndFirma } = useAuth();
   const isEditing = !!editingIslem;
   const initialParsed = parseInitialEditState(editingIslem);
 
@@ -359,6 +362,7 @@ export const IslemFormPage: React.FC<IslemFormPageProps> = ({
   const [error, setError] = useState<string | null>(null);
 
   // Kasa Senkronizasyonu (Ana Hesap / Muhasebeci için nakit ve kart makbuzları otomatik kasaya yansır)
+  const effectiveFirmaId = firma?.id || profile?.firma_id || '';
   const isCentralAccount = profile?.rol !== 'plasiyer';
   const [kasalar, setKasalar] = useState<Kasa[]>([]);
   const [kasaTableMissing, setKasaTableMissing] = useState(false);
@@ -370,12 +374,12 @@ export const IslemFormPage: React.FC<IslemFormPageProps> = ({
 
   // Aktif Kasaları Yükle
   useEffect(() => {
-    if (!firma?.id || !isCentralAccount) return;
+    if (!effectiveFirmaId || !isCentralAccount) return;
     let cancelled = false;
     supabase
       .from('kasalar')
       .select('*')
-      .eq('firma_id', firma.id)
+      .eq('firma_id', effectiveFirmaId)
       .eq('aktif', true)
       .order('created_at', { ascending: true })
       .then(({ data, error: kErr }) => {
@@ -395,7 +399,7 @@ export const IslemFormPage: React.FC<IslemFormPageProps> = ({
     return () => {
       cancelled = true;
     };
-  }, [firma?.id, isCentralAccount]);
+  }, [effectiveFirmaId, isCentralAccount]);
 
   // Canlı Döviz Kurlarını Çek
   useEffect(() => {
@@ -406,7 +410,7 @@ export const IslemFormPage: React.FC<IslemFormPageProps> = ({
 
   // Bağlı Karma Makbuz düzenleniyorsa kardeş kalemleri çek ve forma yükle
   useEffect(() => {
-    if (!editingIslem || !firma?.id) return;
+    if (!editingIslem || !effectiveFirmaId) return;
     const karmaRef = extractKarmaRef(editingIslem.aciklama);
     if (!karmaRef) return;
 
@@ -414,7 +418,7 @@ export const IslemFormPage: React.FC<IslemFormPageProps> = ({
     supabase
       .from('islemler')
       .select('*')
-      .eq('firma_id', firma.id)
+      .eq('firma_id', effectiveFirmaId)
       .eq('iptal', editingIslem.iptal)
       .ilike('aciklama', `%${karmaRef}%`)
       .order('id', { ascending: true })
@@ -495,11 +499,11 @@ export const IslemFormPage: React.FC<IslemFormPageProps> = ({
     return () => {
       cancelled = true;
     };
-  }, [editingIslem?.id, firma?.id]);
+  }, [editingIslem?.id, effectiveFirmaId]);
 
   // Portföydeki (Elimizdeki) Müşteri Çek ve Senetlerini Çekme
   useEffect(() => {
-    if (!firma?.id || !isCekSenet) {
+    if (!effectiveFirmaId || !isCekSenet) {
       setPortfoyCekleri([]);
       return;
     }
@@ -508,7 +512,7 @@ export const IslemFormPage: React.FC<IslemFormPageProps> = ({
       const { data, error: err } = await supabase
         .from('islemler')
         .select('*, cariler:cari_id(unvan, vergi_tc_no, telefon)')
-        .eq('firma_id', firma.id)
+        .eq('firma_id', effectiveFirmaId)
         .eq('tip', 'tahsilat')
         .eq('tur', tur)
         .eq('iptal', false)
@@ -525,7 +529,7 @@ export const IslemFormPage: React.FC<IslemFormPageProps> = ({
     };
 
     fetchPortfoy();
-  }, [firma?.id, isCekSenet, tur]);
+  }, [effectiveFirmaId, isCekSenet, tur]);
 
   const handleSelectPortfoyCek = (item: Islem) => {
     setSelectedPortfoyCek(item);
@@ -751,13 +755,13 @@ export const IslemFormPage: React.FC<IslemFormPageProps> = ({
 
   // Carileri yükle
   useEffect(() => {
-    if (!firma?.id) return;
+    if (!effectiveFirmaId) return;
 
     const fetchCariler = async () => {
       const { data, error: err } = await supabase
         .from('cariler')
         .select('*')
-        .eq('firma_id', firma.id)
+        .eq('firma_id', effectiveFirmaId)
         .order('unvan', { ascending: true });
 
       if (!err && data) {
@@ -774,7 +778,7 @@ export const IslemFormPage: React.FC<IslemFormPageProps> = ({
     };
 
     fetchCariler();
-  }, [firma?.id, tip]);
+  }, [effectiveFirmaId, tip]);
 
   // Sıralama kuralı: Tahsilatta önce alıcılar, tediyede önce tedarikçiler
   const sortedCariler = [...cariler].sort((a, b) => {
@@ -811,6 +815,14 @@ export const IslemFormPage: React.FC<IslemFormPageProps> = ({
     );
 
   const handleCreatePosLink = () => {
+    if (!entitlements.canUsePaymentLink) {
+      if (onUpgradePackage) {
+        onUpgradePackage();
+      } else {
+        setError('Link ile Tahsilat özelliği Profesyonel (Plus) ve üstü paketlerde aktiftir.');
+      }
+      return;
+    }
     const num = parseFloat(tutar.replace(',', '.'));
     if (isNaN(num) || num <= 0) {
       setError('Lütfen önce ödenecek tutarı giriniz.');
@@ -861,6 +873,14 @@ export const IslemFormPage: React.FC<IslemFormPageProps> = ({
     Math.round((karmaNakitTL + karmaKartTL + karmaCeklerTL + karmaSenetlerTL) * 100) / 100;
 
   const handleCreatePosLinkForKarma = (kartAmountTl: number) => {
+    if (!entitlements.canUsePaymentLink) {
+      if (onUpgradePackage) {
+        onUpgradePackage();
+      } else {
+        setError('Link ile Tahsilat özelliği Profesyonel (Plus) ve üstü paketlerde aktiftir.');
+      }
+      return;
+    }
     if (isNaN(kartAmountTl) || kartAmountTl <= 0) {
       setError('Lütfen önce Kredi Kartı tutarını giriniz.');
       return;
@@ -2185,6 +2205,8 @@ export const IslemFormPage: React.FC<IslemFormPageProps> = ({
                   openWhatsApp(selectedCari?.telefon, posLinkGenerated.message);
                 }
               }}
+              canUsePaymentLink={entitlements.canUsePaymentLink}
+              onUpgradePackage={onUpgradePackage}
             />
           </>
         )}
@@ -2239,37 +2261,98 @@ export const IslemFormPage: React.FC<IslemFormPageProps> = ({
             </div>
 
             {/* NFC TEMASSIZ KART OKUTMA & SANAL POS ÖDEME LİNKİ */}
-            {!isEditing && tip === 'tahsilat' && !isCapraz && posConfig.nfcEnabled !== false && (
-              <div className="pt-2 border-t border-white/[0.05] flex flex-col sm:flex-row items-center justify-between gap-2.5 bg-teal-500/[0.06] -mx-1 px-3 py-2.5 rounded-xl border border-teal-500/20">
-                <div className="text-[11px] text-teal-200/90 leading-snug">
-                  <strong className="text-teal-300">NFC ile Temassız Tahsilat:</strong> Tutarı girip kartı telefonun arkasına okutun; cariye, kasaya ve makbuza otomatik işlensin.
+            {!isEditing && tip === 'tahsilat' && !isCapraz && (posConfig.nfcEnabled !== false || !entitlements.canUseNfc) && (
+              <div
+                className={`pt-2 border-t flex flex-col sm:flex-row items-center justify-between gap-2.5 -mx-1 px-3 py-2.5 rounded-xl border ${
+                  entitlements.canUseNfc
+                    ? 'bg-teal-500/[0.06] border-teal-500/20'
+                    : 'bg-amber-500/[0.07] border-amber-400/30'
+                }`}
+              >
+                <div className={`text-[11px] leading-snug ${entitlements.canUseNfc ? 'text-teal-200/90' : 'text-amber-200/90'}`}>
+                  {entitlements.canUseNfc ? (
+                    <>
+                      <strong className="text-teal-300">NFC ile Temassız Tahsilat:</strong> Tutarı girip kartı telefonun arkasına okutun; cariye, kasaya ve makbuza otomatik işlensin.
+                    </>
+                  ) : (
+                    <>
+                      <strong className="text-amber-300">NFC ile Temassız Tahsilat Kilitli:</strong> Bu özellik Profesyonel (Plus) ve Kurumsal (Pro) paketlerde aktiftir.
+                    </>
+                  )}
                 </div>
                 <button
                   type="button"
                   data-testid="open_nfc_tahsilat_btn"
-                  onClick={() => setNfcModalOpen(true)}
-                  className="w-full sm:w-auto px-4 py-2 rounded-xl bg-teal-400 hover:bg-teal-300 text-[#0a0e13] text-xs font-black flex items-center justify-center gap-1.5 shadow-lg transition whitespace-nowrap"
+                  onClick={() => {
+                    if (!entitlements.canUseNfc) {
+                      onUpgradePackage?.();
+                      return;
+                    }
+                    setNfcModalOpen(true);
+                  }}
+                  className={`w-full sm:w-auto px-4 py-2 rounded-xl text-xs font-black flex items-center justify-center gap-1.5 shadow-lg transition whitespace-nowrap ${
+                    entitlements.canUseNfc
+                      ? 'bg-teal-400 hover:bg-teal-300 text-[#0a0e13]'
+                      : 'bg-amber-400/15 hover:bg-amber-400/25 text-amber-300 border border-amber-400/40'
+                  }`}
                 >
-                  <Wifi className="w-3.5 h-3.5 rotate-90" />
+                  {entitlements.canUseNfc ? (
+                    <Wifi className="w-3.5 h-3.5 rotate-90" />
+                  ) : (
+                    <Lock className="w-3.5 h-3.5" />
+                  )}
                   <span>NFC ile Temassız Tahsilat Al</span>
+                  {!entitlements.canUseNfc && (
+                    <span
+                      data-testid="nfc_lock_badge"
+                      className="px-1.5 py-0.5 rounded bg-amber-400/25 text-[10px] font-extrabold"
+                    >
+                      Profesyonel+
+                    </span>
+                  )}
                 </button>
               </div>
             )}
 
-            {posConfig.enabled && posConfig.provider !== 'none' && (
-              <div className="pt-2 border-t border-white/[0.05] flex flex-col sm:flex-row items-center justify-between gap-2">
-                <span className="text-[11px] text-gray-400">
-                  Müşteriniz uzaktaysa kredi kartı ile ödemesi için güvenli link gönderebilirsiniz:
+            {!entitlements.canUsePaymentLink ? (
+              <div className="pt-2 border-t border-white/[0.05] flex flex-col sm:flex-row items-center justify-between gap-2 bg-amber-500/[0.06] -mx-1 px-3 py-2 rounded-xl border border-amber-400/25">
+                <span className="text-[11px] text-amber-200/90 flex items-center gap-1.5">
+                  <Lock className="w-3.5 h-3.5 text-amber-300 shrink-0" />
+                  <span>Link ile Tahsilat (iyzico / PayTR) Profesyonel+ paketlerde açılır.</span>
                 </span>
                 <button
                   type="button"
-                  onClick={handleCreatePosLink}
-                  className="px-3 py-1.5 rounded-lg bg-teal-400/20 text-teal-300 hover:bg-teal-400/30 border border-teal-400/30 text-xs font-bold flex items-center gap-1.5 transition whitespace-nowrap"
+                  data-testid="pos_link_locked_btn"
+                  onClick={() => onUpgradePackage?.()}
+                  className="px-3 py-1.5 rounded-lg bg-amber-400/15 text-amber-300 hover:bg-amber-400/25 border border-amber-400/40 text-xs font-bold flex items-center gap-1.5 transition whitespace-nowrap"
                 >
-                  <Share2 className="w-3.5 h-3.5" />
+                  <Lock className="w-3.5 h-3.5" />
                   <span>Sanal POS Linki Üret</span>
+                  <span
+                    data-testid="pos_link_lock_badge"
+                    className="px-1.5 py-0.5 rounded bg-amber-400/25 text-[10px] font-extrabold"
+                  >
+                    Profesyonel+
+                  </span>
                 </button>
               </div>
+            ) : (
+              posConfig.enabled &&
+              posConfig.provider !== 'none' && (
+                <div className="pt-2 border-t border-white/[0.05] flex flex-col sm:flex-row items-center justify-between gap-2">
+                  <span className="text-[11px] text-gray-400">
+                    Müşteriniz uzaktaysa kredi kartı ile ödemesi için güvenli link gönderebilirsiniz:
+                  </span>
+                  <button
+                    type="button"
+                    onClick={handleCreatePosLink}
+                    className="px-3 py-1.5 rounded-lg bg-teal-400/20 text-teal-300 hover:bg-teal-400/30 border border-teal-400/30 text-xs font-bold flex items-center gap-1.5 transition whitespace-nowrap"
+                  >
+                    <Share2 className="w-3.5 h-3.5" />
+                    <span>Sanal POS Linki Üret</span>
+                  </button>
+                </div>
+              )
             )}
 
             {/* OLUŞTURULAN LİNK GÖSTERİMİ */}
@@ -3131,7 +3214,7 @@ export const IslemFormPage: React.FC<IslemFormPageProps> = ({
 
       {/* NFC TEMASSIZ KART İLE TAHSİLAT MODALI */}
       <NfcTahsilatModal
-        isOpen={nfcModalOpen}
+        isOpen={nfcModalOpen && entitlements.canUseNfc}
         onClose={() => setNfcModalOpen(false)}
         firmaId={selectedCari?.firma_id || profile?.firma_id || firma?.id || ''}
         cariler={sortedCariler}

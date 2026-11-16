@@ -1,10 +1,12 @@
 import React, { useState } from 'react';
 import { useAuth } from '../../context/AuthContext';
-import { Building2, User, Phone, Mail, Lock, FileText, ArrowRight, AlertCircle, CheckCircle2 } from 'lucide-react';
+import { Building2, User, Phone, Mail, Lock, FileText, ArrowRight, AlertCircle, CheckCircle2, BarChart3, X } from 'lucide-react';
+import { PaketKarsilastirmaTablosu } from '../paketler/PaketKarsilastirmaTablosu';
 
 export const AuthScreen: React.FC = () => {
   const { signIn, signUp, error: authError } = useAuth();
   const [isSignUp, setIsSignUp] = useState(false);
+  const [showPackagesModal, setShowPackagesModal] = useState(false);
   const [loading, setLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
@@ -305,7 +307,46 @@ export const AuthScreen: React.FC = () => {
             </p>
           )}
         </div>
+
+        {/* WEB / MOBİL PAKET KARŞILAŞTIRMA BUTONU */}
+        <div className="mt-4 text-center">
+          <button
+            type="button"
+            onClick={() => setShowPackagesModal(true)}
+            data-testid="auth_open_packages_button"
+            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-white/[0.04] hover:bg-white/[0.08] border border-white/10 text-xs font-bold text-teal-300 transition"
+          >
+            <BarChart3 className="w-4 h-4" />
+            <span>Paketleri ve Fiyatları Karşılaştır</span>
+          </button>
+        </div>
       </div>
+
+      {/* PAKET KARŞILAŞTIRMA MODALI */}
+      {showPackagesModal && (
+        <div
+          className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-3 sm:p-6 overflow-y-auto"
+          onClick={() => setShowPackagesModal(false)}
+        >
+          <div
+            className="w-full max-w-4xl my-auto space-y-3"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex justify-end">
+              <button
+                type="button"
+                onClick={() => setShowPackagesModal(false)}
+                aria-label="Kapat"
+                className="min-h-[40px] px-3.5 py-2 rounded-xl bg-[#111820] border border-white/15 text-xs font-bold text-gray-200 hover:text-white flex items-center gap-1.5 shadow-xl"
+              >
+                <X className="w-4 h-4" />
+                <span>Kapat</span>
+              </button>
+            </div>
+            <PaketKarsilastirmaTablosu />
+          </div>
+        </div>
+      )}
     </div>
   );
 };

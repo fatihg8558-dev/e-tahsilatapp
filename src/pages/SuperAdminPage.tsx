@@ -1,9 +1,26 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { useAuth, SUPER_ADMIN_EMAIL } from '../context/AuthContext';
 import { OdemelerPanel } from './OdemelerPanel';
 import { supabase } from '../lib/supabase';
 import { deleteFirmaAndAccounts, deleteUserProfileAccount } from '../lib/accountDeleteHelper';
-import { Firma, Profile, Paket, UserRole } from '../types/database';
+import { Firma, Profile, Paket, Ayar, UserRole } from '../types/database';
+import {
+  PAKET_OZELLIKLERI_AYAR_KEY,
+  PaketFeaturesMap,
+  getPackageFeatures,
+  isMissingOzelliklerColumnError,
+  parsePaketFeaturesFromAyarlar,
+} from '../lib/packageFeatures';
+import { buildStandardPackageSeedList } from '../lib/packageCatalog';
+import {
+  FIRMA_EK_PLASIYER_AYAR_KEY,
+  FirmaEkPlasiyerMap,
+  getEffectiveEkPlasiyer,
+  isMissingEkPlasiyerColumnError,
+  parseFirmaEkPlasiyerMapFromAyarlar,
+  sanitizeEkPlasiyerCount,
+} from '../lib/packageEntitlements';
+import { PaketKarsilastirmaTablosu } from '../components/paketler/PaketKarsilastirmaTablosu';
 import { formatCurrency, formatDate } from '../lib/formatters';
 import {
   ShieldCheck,
@@ -120,6 +137,8 @@ export const SuperAdminPage: React.FC<SuperAdminPageProps> = ({ onBackToDashboar
   const [firmaFormPaketBitis, setFirmaFormPaketBitis] = useState<string>('');
   const [firmaFormDenemeBitis, setFirmaFormDenemeBitis] = useState<string>('');
   const [firmaFormSinirsiz, setFirmaFormSinirsiz] = useState<boolean>(false);
+  const [firmaFormEkPlasiyer, setFirmaFormEkPlasiyer] = useState<string>('0');
+  const [firmaEkPlasiyerMap, setFirmaEkPlasiyerMap] = useState<FirmaEkPlasiyerMap>({});
 
   // Paket ekleme/düzenleme modalı
   const [showPaketModal, setShowPaketModal] = useState(false);
@@ -127,8 +146,20 @@ export const SuperAdminPage: React.FC<SuperAdminPageProps> = ({ onBackToDashboar
   const [paketAd, setPaketAd] = useState('');
   const [paketSureGun, setPaketSureGun] = useState('30');
   const [paketFiyat, setPaketFiyat] = useState('');
-  const [paketEkPlasiyer, setPaketEkPlasiyer] = useState('0');
+  const [paketEkPlasiyer, setPaketEkPlasiyer] = useState('100');
   const [paketAktif, setPaketAktif] = useState(true);
+  const [paketOzellikler, setPaketOzellikler] = useState<string[]>(['']);
+  const [paketFeaturesMap, setPaketFeaturesMap] = useState<PaketFeaturesMap>({});
+  const ozellikInputRefs = useRef<(HTMLInputElement | null)[]>([]);
+  const shouldFocusLastOzellikRef = useRef<boolean>(false);
+
+  useEffect(() => {
+    if (shouldFocusLastOzellikRef.current) {
+      shouldFocusLastOzellikRef.current = false;
+      const lastInput = ozellikInputRefs.current[paketOzellikler.length - 1];
+      lastInput?.focus();
+    }
+  }, [paketOzellikler.length]);
 
   const loadAllData = useCallback(async () => {
     try {
@@ -152,14 +183,17 @@ export const SuperAdminPage: React.FC<SuperAdminPageProps> = ({ onBackToDashboar
       if (paketlerRes.data) setPaketler(paketlerRes.data as Paket[]);
 
       if (ayarlarRes.data) {
+        const ayarlarList = ayarlarRes.data as Ayar[];
         let foundIban = '';
         let foundHesap = '';
-        (ayarlarRes.data as { anahtar: string; deger: string }[]).forEach((row) => {
+        ayarlarList.forEach((row) => {
           if (row.anahtar === 'iban') foundIban = row.deger || '';
           if (row.anahtar === 'hesap_sahibi') foundHesap = row.deger || '';
         });
         setIban(foundIban);
         setHesapSahibi(foundHesap);
+        setPaketFeaturesMap(parsePaketFeaturesFromAyarlar(ayarlarList));
+        setFirmaEkPlasiyerMap(parseFirmaEkPlasiyerMapFromAyarlar(ayarlarList));
       }
     } catch (err) {
       const parsed = extractAdminError(err, 'Veriler yüklenirken beklenmeyen hata oluştu.');
@@ -287,8 +321,7 @@ export const SuperAdminPage: React.FC<SuperAdminPageProps> = ({ onBackToDashboar
         </div>
         <h2 className="text-lg font-extrabold text-white">Süper Admin Yetkisi Gerekli</h2>
         <p className="text-xs text-slate-300 leading-relaxed">
-          Bu yönetim ekranı yalnızca Süper Admin hesabı (
-          <strong className="text-amber-300">{SUPER_ADMIN_EMAIL}</strong>) tarafından görüntülenebilir.
+          Bu ekran yalnızca yönetici içindir.
         </p>
         {onBackToDashboard && (
           <button
@@ -366,6 +399,7 @@ export const SuperAdminPage: React.FC<SuperAdminPageProps> = ({ onBackToDashboar
     setFirmaFormPaketBitis(toDateInputValue(f.paket_bitis));
     setFirmaFormDenemeBitis(toDateInputValue(f.deneme_bitis));
     setFirmaFormSinirsiz(Boolean(f.sinirsiz));
+    setFirmaFormEkPlasiyer(String(getEffectiveEkPlasiyer(f, firmaEkPlasiyerMap)));
   };
 
   const handleApplySelectedPackageDuration = () => {
@@ -383,24 +417,72 @@ export const SuperAdminPage: React.FC<SuperAdminPageProps> = ({ onBackToDashboar
 
       const effectivePaketBitis =
         firmaFormSinirsiz && !firmaFormPaketBitis ? '2099-12-31' : firmaFormPaketBitis || null;
+      const parsedEkPlasiyer = sanitizeEkPlasiyerCount(firmaFormEkPlasiyer);
 
-      const payload = {
+      const basePayload = {
         paket_id: firmaFormPaketId || null,
         paket_bitis: effectivePaketBitis,
         deneme_bitis: firmaFormDenemeBitis || null,
         sinirsiz: firmaFormSinirsiz,
       };
 
-      const { data: updatedRow, error } = await supabase
+      let updatedRow: Firma | null = null;
+      let usedAyarlarFallback = false;
+
+      const primaryRes = await supabase
         .from('firmalar')
-        .update(payload)
+        .update({
+          ...basePayload,
+          ek_plasiyer_sayisi: parsedEkPlasiyer,
+        })
         .eq('id', editingFirma.id)
         .select('*')
         .single();
 
-      if (error) throw error;
+      if (primaryRes.error && isMissingEkPlasiyerColumnError(primaryRes.error)) {
+        usedAyarlarFallback = true;
+        const fallbackRes = await supabase
+          .from('firmalar')
+          .update(basePayload)
+          .eq('id', editingFirma.id)
+          .select('*')
+          .single();
 
-      const finalRow = (updatedRow as Firma) || { ...editingFirma, ...payload };
+        if (fallbackRes.error) throw fallbackRes.error;
+        updatedRow = (fallbackRes.data as Firma) || null;
+      } else if (primaryRes.error) {
+        throw primaryRes.error;
+      } else {
+        updatedRow = (primaryRes.data as Firma) || null;
+      }
+
+      if (usedAyarlarFallback) {
+        const nextMap: FirmaEkPlasiyerMap = {
+          ...firmaEkPlasiyerMap,
+          [editingFirma.id]: parsedEkPlasiyer,
+        };
+        const { data: existingAyar } = await supabase
+          .from('ayarlar')
+          .select('id')
+          .eq('anahtar', FIRMA_EK_PLASIYER_AYAR_KEY)
+          .maybeSingle();
+
+        if (existingAyar?.id) {
+          await supabase
+            .from('ayarlar')
+            .update({ deger: JSON.stringify(nextMap) })
+            .eq('id', existingAyar.id);
+        } else {
+          await supabase
+            .from('ayarlar')
+            .insert({ anahtar: FIRMA_EK_PLASIYER_AYAR_KEY, deger: JSON.stringify(nextMap) });
+        }
+        setFirmaEkPlasiyerMap(nextMap);
+      }
+
+      const finalRow = updatedRow
+        ? { ...updatedRow, ek_plasiyer_sayisi: parsedEkPlasiyer }
+        : { ...editingFirma, ...basePayload, ek_plasiyer_sayisi: parsedEkPlasiyer };
       setFirmalar((prev) =>
         prev.map((item) => (item.id === editingFirma.id ? finalRow : item))
       );
@@ -409,7 +491,7 @@ export const SuperAdminPage: React.FC<SuperAdminPageProps> = ({ onBackToDashboar
       }
       setFeedback({
         type: 'success',
-        text: `"${editingFirma.unvan}" firmasının paket ve abonelik yetkileri güncellendi.`,
+        text: `"${editingFirma.unvan}" firmasının paket, süre ve ek plasiyer (${parsedEkPlasiyer}) yetkileri güncellendi.`,
       });
       setEditingFirma(null);
     } catch (err) {
@@ -425,7 +507,7 @@ export const SuperAdminPage: React.FC<SuperAdminPageProps> = ({ onBackToDashboar
     if (u.email?.trim().toLowerCase() === SUPER_ADMIN_EMAIL && newRole !== 'superadmin') {
       setFeedback({
         type: 'error',
-        text: `Ana Süper Admin hesabı (${SUPER_ADMIN_EMAIL}) farklı bir role düşürülemez.`,
+        text: 'Ana Süper Admin hesabı farklı bir role düşürülemez.',
       });
       return;
     }
@@ -498,7 +580,7 @@ export const SuperAdminPage: React.FC<SuperAdminPageProps> = ({ onBackToDashboar
     if (u.email?.trim().toLowerCase() === SUPER_ADMIN_EMAIL && u.aktif) {
       setFeedback({
         type: 'error',
-        text: `Ana Süper Admin hesabı (${SUPER_ADMIN_EMAIL}) pasife alınamaz.`,
+        text: 'Ana Süper Admin hesabı pasife alınamaz.',
       });
       return;
     }
@@ -625,17 +707,33 @@ export const SuperAdminPage: React.FC<SuperAdminPageProps> = ({ onBackToDashboar
     setPaketFiyat('');
     setPaketEkPlasiyer('0');
     setPaketAktif(true);
+    setPaketOzellikler(['']);
     setShowPaketModal(true);
   };
 
   const openEditPaketModal = (p: Paket) => {
+    const existingFeatures = getPackageFeatures(p, paketFeaturesMap);
     setEditingPaket(p);
     setPaketAd(p.ad);
     setPaketSureGun(String(p.sure_gun));
     setPaketFiyat(String(p.fiyat));
     setPaketEkPlasiyer(String(p.ek_plasiyer_ucreti || 0));
     setPaketAktif(p.aktif);
+    setPaketOzellikler(existingFeatures.length > 0 ? existingFeatures : ['']);
     setShowPaketModal(true);
+  };
+
+  const handleAddOzellikRow = () => {
+    shouldFocusLastOzellikRef.current = true;
+    setPaketOzellikler((prev) => [...prev, '']);
+  };
+
+  const handleUpdateOzellikRow = (index: number, value: string) => {
+    setPaketOzellikler((prev) => prev.map((item, idx) => (idx === index ? value : item)));
+  };
+
+  const handleRemoveOzellikRow = (index: number) => {
+    setPaketOzellikler((prev) => prev.filter((_, idx) => idx !== index));
   };
 
   const handleSavePaket = async (e: React.FormEvent) => {
@@ -644,6 +742,9 @@ export const SuperAdminPage: React.FC<SuperAdminPageProps> = ({ onBackToDashboar
     const sureGun = parseInt(paketSureGun, 10);
     const fiyat = parseFloat(paketFiyat.replace(',', '.'));
     const ekPlasiyer = parseFloat((paketEkPlasiyer || '0').replace(',', '.'));
+    const cleanedFeatures = paketOzellikler
+      .map((item) => item.trim())
+      .filter((item) => item.length > 0);
 
     if (!ad) {
       setFeedback({ type: 'error', text: 'Lütfen paket adı giriniz.' });
@@ -662,41 +763,96 @@ export const SuperAdminPage: React.FC<SuperAdminPageProps> = ({ onBackToDashboar
       setSavingId(editingPaket?.id || 'new-paket');
       setFeedback(null);
 
-      const payload = {
+      const basePayload = {
         ad,
         sure_gun: sureGun,
         fiyat,
         ek_plasiyer_ucreti: isNaN(ekPlasiyer) || ekPlasiyer < 0 ? 0 : ekPlasiyer,
         aktif: paketAktif,
       };
+      const payloadWithFeatures = {
+        ...basePayload,
+        ozellikler: cleanedFeatures,
+      };
+
+      let savedPaket: Paket | null = null;
+      let usedAyarFallback = false;
 
       if (editingPaket) {
-        const { data, error } = await supabase
+        const res = await supabase
           .from('paketler')
-          .update(payload)
+          .update(payloadWithFeatures)
           .eq('id', editingPaket.id)
           .select('*')
           .single();
 
-        if (error) throw error;
-        const updated = (data as Paket) || { ...editingPaket, ...payload };
-        setPaketler((prev) =>
-          prev.map((item) => (item.id === editingPaket.id ? updated : item)).sort((a, b) => a.fiyat - b.fiyat)
-        );
-        setFeedback({ type: 'success', text: `"${ad}" paketi güncellendi.` });
+        if (res.error) {
+          if (isMissingOzelliklerColumnError(res.error)) {
+            usedAyarFallback = true;
+            const fallbackRes = await supabase
+              .from('paketler')
+              .update(basePayload)
+              .eq('id', editingPaket.id)
+              .select('*')
+              .single();
+            if (fallbackRes.error) throw fallbackRes.error;
+            savedPaket = (fallbackRes.data as Paket) || { ...editingPaket, ...basePayload };
+          } else {
+            throw res.error;
+          }
+        } else {
+          savedPaket = (res.data as Paket) || { ...editingPaket, ...payloadWithFeatures };
+        }
       } else {
-        const { data, error } = await supabase
+        const res = await supabase
           .from('paketler')
-          .insert(payload)
+          .insert(payloadWithFeatures)
           .select('*')
           .single();
 
-        if (error) throw error;
-        if (data) {
-          setPaketler((prev) => [...prev, data as Paket].sort((a, b) => a.fiyat - b.fiyat));
+        if (res.error) {
+          if (isMissingOzelliklerColumnError(res.error)) {
+            usedAyarFallback = true;
+            const fallbackRes = await supabase
+              .from('paketler')
+              .insert(basePayload)
+              .select('*')
+              .single();
+            if (fallbackRes.error) throw fallbackRes.error;
+            savedPaket = fallbackRes.data as Paket;
+          } else {
+            throw res.error;
+          }
         } else {
-          await loadAllData();
+          savedPaket = res.data as Paket;
         }
+      }
+
+      if (usedAyarFallback && savedPaket?.id) {
+        const nextMap: PaketFeaturesMap = {
+          ...paketFeaturesMap,
+          [savedPaket.id]: cleanedFeatures,
+        };
+        await upsertAyar(PAKET_OZELLIKLERI_AYAR_KEY, JSON.stringify(nextMap));
+        setPaketFeaturesMap(nextMap);
+      } else if (savedPaket?.id && paketFeaturesMap[savedPaket.id]) {
+        const nextMap: PaketFeaturesMap = { ...paketFeaturesMap };
+        delete nextMap[savedPaket.id];
+        setPaketFeaturesMap(nextMap);
+      }
+
+      if (editingPaket && savedPaket) {
+        setPaketler((prev) =>
+          prev
+            .map((item) => (item.id === editingPaket.id ? savedPaket! : item))
+            .sort((a, b) => a.fiyat - b.fiyat)
+        );
+        setFeedback({ type: 'success', text: `"${ad}" paketi güncellendi.` });
+      } else if (savedPaket) {
+        setPaketler((prev) => [...prev, savedPaket!].sort((a, b) => a.fiyat - b.fiyat));
+        setFeedback({ type: 'success', text: `"${ad}" adlı yeni paket oluşturuldu.` });
+      } else {
+        await loadAllData();
         setFeedback({ type: 'success', text: `"${ad}" adlı yeni paket oluşturuldu.` });
       }
 
@@ -747,6 +903,13 @@ export const SuperAdminPage: React.FC<SuperAdminPageProps> = ({ onBackToDashboar
       const { error } = await supabase.from('paketler').delete().eq('id', p.id);
       if (error) throw error;
 
+      if (paketFeaturesMap[p.id]) {
+        const nextMap = { ...paketFeaturesMap };
+        delete nextMap[p.id];
+        setPaketFeaturesMap(nextMap);
+        upsertAyar(PAKET_OZELLIKLERI_AYAR_KEY, JSON.stringify(nextMap)).catch(() => {});
+      }
+
       setPaketler((prev) => prev.filter((item) => item.id !== p.id));
       setFeedback({ type: 'success', text: `"${p.ad}" paketi silindi.` });
     } catch (err) {
@@ -776,6 +939,104 @@ export const SuperAdminPage: React.FC<SuperAdminPageProps> = ({ onBackToDashboar
     } else {
       const { error: insErr } = await supabase.from('ayarlar').insert({ anahtar, deger });
       if (insErr) throw insErr;
+    }
+  };
+
+  // Standart 3x3 Paket Matrisini (Başlangıç / Profesyonel / Kurumsal × Aylık / 6 Aylık / Yıllık) Kur / Güncelle
+  const handleSeedStandardPackages = async () => {
+    try {
+      setSavingId('seed-standard-packages');
+      setFeedback(null);
+
+      const seeds = buildStandardPackageSeedList();
+      const nextMap: PaketFeaturesMap = { ...paketFeaturesMap };
+      let usedAyarFallback = false;
+
+      for (const seed of seeds) {
+        const existing = paketler.find(
+          (p) => p.ad.trim().toLocaleLowerCase('tr-TR') === seed.ad.trim().toLocaleLowerCase('tr-TR')
+        );
+        const basePayload = {
+          ad: seed.ad,
+          sure_gun: seed.sure_gun,
+          fiyat: seed.fiyat,
+          ek_plasiyer_ucreti: seed.ek_plasiyer_ucreti,
+          aktif: seed.aktif,
+        };
+        const payloadWithFeatures = {
+          ...basePayload,
+          ozellikler: seed.ozellikler,
+        };
+
+        let savedId: string | null = existing?.id ?? null;
+
+        if (existing) {
+          const res = await supabase
+            .from('paketler')
+            .update(payloadWithFeatures)
+            .eq('id', existing.id)
+            .select('*')
+            .single();
+
+          if (res.error) {
+            if (isMissingOzelliklerColumnError(res.error)) {
+              usedAyarFallback = true;
+              const fallbackRes = await supabase
+                .from('paketler')
+                .update(basePayload)
+                .eq('id', existing.id)
+                .select('*')
+                .single();
+              if (fallbackRes.error) throw fallbackRes.error;
+            } else {
+              throw res.error;
+            }
+          }
+        } else {
+          const res = await supabase
+            .from('paketler')
+            .insert(payloadWithFeatures)
+            .select('*')
+            .single();
+
+          if (res.error) {
+            if (isMissingOzelliklerColumnError(res.error)) {
+              usedAyarFallback = true;
+              const fallbackRes = await supabase
+                .from('paketler')
+                .insert(basePayload)
+                .select('*')
+                .single();
+              if (fallbackRes.error) throw fallbackRes.error;
+              savedId = (fallbackRes.data as Paket | null)?.id ?? null;
+            } else {
+              throw res.error;
+            }
+          } else {
+            savedId = (res.data as Paket | null)?.id ?? null;
+          }
+        }
+
+        if (usedAyarFallback && savedId) {
+          nextMap[savedId] = seed.ozellikler;
+        }
+      }
+
+      if (usedAyarFallback) {
+        await upsertAyar(PAKET_OZELLIKLERI_AYAR_KEY, JSON.stringify(nextMap));
+        setPaketFeaturesMap(nextMap);
+      }
+
+      await loadAllData();
+      setFeedback({
+        type: 'success',
+        text: 'Başlangıç (Basic), Profesyonel (Plus) ve Kurumsal (Pro) için Aylık / 6 Aylık / Yıllık standart paketler oluşturuldu ve güncellendi.',
+      });
+    } catch (err) {
+      const parsed = extractAdminError(err, 'Standart paketler oluşturulamadı.');
+      setFeedback({ type: 'error', text: parsed.message, isRls: parsed.isRls });
+    } finally {
+      setSavingId(null);
     }
   };
 
@@ -827,7 +1088,7 @@ export const SuperAdminPage: React.FC<SuperAdminPageProps> = ({ onBackToDashboar
                 </span>
               </div>
               <p className="text-xs text-slate-300 mt-1">
-                Yetkili Hesap: <strong className="text-teal-300">{SUPER_ADMIN_EMAIL}</strong> • Paket oluşturma, firma süre uzatma ve sınırsız yetki yönetimi.
+                Paket oluşturma, firma süre uzatma ve sınırsız yetki yönetimi.
               </p>
             </div>
           </div>
@@ -1112,6 +1373,11 @@ export const SuperAdminPage: React.FC<SuperAdminPageProps> = ({ onBackToDashboar
                           {activePaket && (
                             <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-teal-500/10 text-teal-300 border border-teal-500/20">
                               Paket: {activePaket.ad}
+                            </span>
+                          )}
+                          {getEffectiveEkPlasiyer(f, firmaEkPlasiyerMap) > 0 && (
+                            <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-indigo-500/15 text-indigo-300 border border-indigo-400/30">
+                              +{getEffectiveEkPlasiyer(f, firmaEkPlasiyerMap)} Ek Plasiyer
                             </span>
                           )}
                         </div>
@@ -1401,18 +1667,35 @@ export const SuperAdminPage: React.FC<SuperAdminPageProps> = ({ onBackToDashboar
                 <span>Abonelik Paketleri Yönetimi</span>
               </h2>
               <p className="text-xs text-slate-400 mt-0.5">
-                Burada eklediğiniz ve aktifleştirdiğiniz paketler müşterilerin "Paket Satın Al" ekranında anında görünür.
+                Burada eklediğiniz ve aktifleştirdiğiniz paketler müşterilerin "Paket Satın Al" ekranında anında görünür. Ek plasiyerler ayrı süreli paket olarak değil, ana paket seçimi içinde (+100 TL/adet) sunulur; firma kotasını "Firmalar" sekmesinden de düzenleyebilirsiniz.
               </p>
             </div>
-            <button
-              type="button"
-              onClick={openNewPaketModal}
-              data-testid="add_paket_button"
-              className="px-4 py-2.5 rounded-xl bg-teal-400 hover:bg-teal-300 text-slate-950 font-extrabold text-xs flex items-center gap-2 shadow-lg transition shrink-0"
-            >
-              <Plus className="w-4 h-4" />
-              <span>Yeni Paket Ekle</span>
-            </button>
+            <div className="flex flex-wrap items-center gap-2 shrink-0">
+              <button
+                type="button"
+                disabled={savingId !== null}
+                onClick={handleSeedStandardPackages}
+                data-testid="seed_standard_packages_button"
+                className="px-4 py-2.5 rounded-xl bg-amber-400/15 hover:bg-amber-400/25 disabled:opacity-50 text-amber-300 border border-amber-400/35 font-extrabold text-xs flex items-center gap-2 transition"
+              >
+                <RefreshCw className={`w-4 h-4 ${savingId === 'seed-standard-packages' ? 'animate-spin' : ''}`} />
+                <span>
+                  {savingId === 'seed-standard-packages'
+                    ? 'Kuruluyor...'
+                    : 'Standart Paketleri Kur / Güncelle'}
+                </span>
+              </button>
+
+              <button
+                type="button"
+                onClick={openNewPaketModal}
+                data-testid="add_paket_button"
+                className="px-4 py-2.5 rounded-xl bg-teal-400 hover:bg-teal-300 text-slate-950 font-extrabold text-xs flex items-center gap-2 shadow-lg transition"
+              >
+                <Plus className="w-4 h-4" />
+                <span>Yeni Paket Ekle</span>
+              </button>
+            </div>
           </div>
 
           {paketler.length === 0 ? (
@@ -1476,6 +1759,24 @@ export const SuperAdminPage: React.FC<SuperAdminPageProps> = ({ onBackToDashboar
                           <span className="font-bold">{formatCurrency(p.ek_plasiyer_ucreti || 0)}</span>
                         </div>
                       </div>
+
+                      {(() => {
+                        const cardFeatures = getPackageFeatures(p, paketFeaturesMap);
+                        if (cardFeatures.length === 0) return null;
+                        return (
+                          <ul className="space-y-1.5 pt-2.5 border-t border-white/[0.06]">
+                            {cardFeatures.map((ozellik, idx) => (
+                              <li
+                                key={`${p.id}-feat-${idx}`}
+                                className="flex items-start gap-2 text-[11px] text-slate-300 leading-snug"
+                              >
+                                <CheckCircle2 className="w-3.5 h-3.5 text-teal-400 shrink-0 mt-0.5" />
+                                <span>{ozellik}</span>
+                              </li>
+                            ))}
+                          </ul>
+                        );
+                      })()}
                     </div>
 
                     <div className="flex items-center gap-2 pt-2 border-t border-white/[0.06]">
@@ -1519,6 +1820,9 @@ export const SuperAdminPage: React.FC<SuperAdminPageProps> = ({ onBackToDashboar
               })}
             </div>
           )}
+
+          {/* PAKET KARŞILAŞTIRMA TABLOSU ÖNİZLEMESİ */}
+          <PaketKarsilastirmaTablosu compact />
         </div>
       )}
 
@@ -1645,6 +1949,27 @@ export const SuperAdminPage: React.FC<SuperAdminPageProps> = ({ onBackToDashboar
                 </div>
               </div>
 
+              {/* Ek Plasiyer Kontenjanı */}
+              <div>
+                <label className="block font-bold text-slate-300 mb-1.5">
+                  Ek Plasiyer Kontenjanı (Adet)
+                </label>
+                <div className="flex items-center gap-3">
+                  <input
+                    type="number"
+                    min="0"
+                    max="200"
+                    data-testid="firma_ek_plasiyer_input"
+                    value={firmaFormEkPlasiyer}
+                    onChange={(e) => setFirmaFormEkPlasiyer(e.target.value)}
+                    className="w-28 bg-[#0b1322] border border-slate-700 rounded-xl px-3 py-2 text-white font-bold focus:outline-none focus:border-teal-400"
+                  />
+                  <span className="text-[11px] text-slate-400 leading-snug">
+                    Ana paketteki dahil plasiyer limitine eklenir. Firmanın aktif paket özelliklerini ve bitiş tarihini otomatik devralır.
+                  </span>
+                </div>
+              </div>
+
               {/* Hızlı Gün Ekleme Butonları */}
               <div>
                 <span className="block text-[11px] font-semibold text-slate-400 mb-1.5">
@@ -1739,8 +2064,8 @@ export const SuperAdminPage: React.FC<SuperAdminPageProps> = ({ onBackToDashboar
       {/* MODAL: PAKET EKLE / DÜZENLE */}
       {showPaketModal && (
         <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-3 sm:p-5 overflow-y-auto">
-          <div className="bg-[#111c2e] border border-slate-700 rounded-2xl w-full max-w-md shadow-2xl overflow-hidden my-auto">
-            <div className="p-4 sm:p-5 border-b border-white/[0.08] flex items-center justify-between bg-black/20">
+          <div className="bg-[#111c2e] border border-slate-700 rounded-2xl w-full max-w-lg max-h-[90vh] flex flex-col shadow-2xl overflow-hidden my-auto">
+            <div className="p-4 sm:p-5 border-b border-white/[0.08] flex items-center justify-between bg-black/20 shrink-0">
               <h3 className="text-sm sm:text-base font-extrabold text-white">
                 {editingPaket ? 'Paketi Düzenle' : 'Yeni Abonelik Paketi Ekle'}
               </h3>
@@ -1753,7 +2078,7 @@ export const SuperAdminPage: React.FC<SuperAdminPageProps> = ({ onBackToDashboar
               </button>
             </div>
 
-            <form onSubmit={handleSavePaket} className="p-4 sm:p-5 space-y-4 text-xs">
+            <form onSubmit={handleSavePaket} className="p-4 sm:p-5 space-y-4 text-xs overflow-y-auto">
               <div>
                 <label className="block font-bold text-slate-300 mb-1">Paket Adı *</label>
                 <input
@@ -1810,6 +2135,82 @@ export const SuperAdminPage: React.FC<SuperAdminPageProps> = ({ onBackToDashboar
                   placeholder="0"
                   className="w-full bg-[#0b1322] border border-slate-700 rounded-xl px-3.5 py-2.5 text-white focus:outline-none focus:border-teal-400"
                 />
+              </div>
+
+              {/* PAKET ÖZELLİKLERİ (ÇOKLU SATIR EKLEME) */}
+              <div className="p-3.5 rounded-xl bg-[#0b1322] border border-slate-700/80 space-y-2.5">
+                <div className="flex items-center justify-between gap-2">
+                  <div>
+                    <label className="block font-bold text-slate-200">Paket Özellikleri</label>
+                    <p className="text-[11px] text-slate-400 mt-0.5">
+                      Satır ekle ile paketin içerdiği özellikleri madde madde tanımlayın.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleAddOzellikRow}
+                    data-testid="paket_ozellik_satir_ekle_button"
+                    className="min-h-[36px] px-3 py-1.5 rounded-lg bg-teal-400/15 hover:bg-teal-400/25 text-teal-300 border border-teal-400/30 font-bold text-[11px] flex items-center gap-1.5 shrink-0 transition"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>Satır Ekle</span>
+                  </button>
+                </div>
+
+                {paketOzellikler.length === 0 ? (
+                  <div className="py-3 px-3 rounded-lg bg-black/25 border border-dashed border-slate-700 text-center text-[11px] text-slate-400">
+                    Henüz özellik satırı yok. Eklemek için &ldquo;Satır Ekle&rdquo; butonuna tıklayın.
+                  </div>
+                ) : (
+                  <div className="space-y-2 max-h-56 overflow-y-auto pr-0.5">
+                    {paketOzellikler.map((ozellik, idx) => (
+                      <div key={idx} className="flex items-center gap-2">
+                        <span className="w-6 h-6 rounded-md bg-teal-400/10 border border-teal-400/20 text-teal-300 text-[11px] font-bold flex items-center justify-center shrink-0">
+                          {idx + 1}
+                        </span>
+                        <input
+                          ref={(el) => {
+                            ozellikInputRefs.current[idx] = el;
+                          }}
+                          type="text"
+                          value={ozellik}
+                          onChange={(e) => handleUpdateOzellikRow(idx, e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault();
+                              handleAddOzellikRow();
+                            }
+                          }}
+                          data-testid={`paket_ozellik_input_${idx}`}
+                          placeholder="Örn: Sınırsız Tahsilat ve Tediye Makbuzu"
+                          className="flex-1 min-w-0 bg-[#111c2e] border border-slate-700 rounded-xl px-3 py-2 text-white placeholder-slate-500 focus:outline-none focus:border-teal-400"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => handleRemoveOzellikRow(idx)}
+                          data-testid={`paket_ozellik_sil_button_${idx}`}
+                          aria-label={`${idx + 1}. özellik satırını sil`}
+                          title="Satırı Sil"
+                          className="min-h-[38px] min-w-[38px] rounded-xl bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/20 flex items-center justify-center shrink-0 transition"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {paketOzellikler.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={handleAddOzellikRow}
+                    data-testid="paket_ozellik_alt_satir_ekle_button"
+                    className="w-full min-h-[36px] py-1.5 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] text-teal-300 border border-dashed border-teal-400/30 font-bold text-[11px] flex items-center justify-center gap-1.5 transition"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>Yeni Özellik Satırı Ekle</span>
+                  </button>
+                )}
               </div>
 
               <label className="flex items-center justify-between p-3 rounded-xl bg-[#0b1322] border border-slate-700/70 cursor-pointer">

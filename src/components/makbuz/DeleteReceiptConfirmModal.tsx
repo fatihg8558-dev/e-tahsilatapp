@@ -32,6 +32,7 @@ export const DeleteReceiptConfirmModal: React.FC<DeleteReceiptConfirmModalProps>
   onDeleted,
 }) => {
   const { firma, profile } = useAuth();
+  const effectiveFirmaId = islem?.firma_id || firma?.id || profile?.firma_id || '';
   const [inspecting, setInspecting] = useState(false);
   const [inspection, setInspection] = useState<ReceiptDeletionInspection | null>(null);
   const [deleteLinkedCapraz, setDeleteLinkedCapraz] = useState(true);
@@ -41,7 +42,7 @@ export const DeleteReceiptConfirmModal: React.FC<DeleteReceiptConfirmModalProps>
   const [copiedSql, setCopiedSql] = useState(false);
 
   useEffect(() => {
-    if (!islem || !firma?.id) {
+    if (!islem || !effectiveFirmaId) {
       setInspection(null);
       setErrorText(null);
       setShowRlsSql(false);
@@ -54,7 +55,7 @@ export const DeleteReceiptConfirmModal: React.FC<DeleteReceiptConfirmModalProps>
     setShowRlsSql(false);
     setDeleteLinkedCapraz(true);
 
-    inspectReceiptDeletionTargets(islem, firma.id)
+    inspectReceiptDeletionTargets(islem, effectiveFirmaId)
       .then((res) => {
         if (!cancelled) setInspection(res);
       })
@@ -65,7 +66,7 @@ export const DeleteReceiptConfirmModal: React.FC<DeleteReceiptConfirmModalProps>
     return () => {
       cancelled = true;
     };
-  }, [islem?.id, firma?.id]);
+  }, [islem?.id, effectiveFirmaId]);
 
   if (!islem) return null;
 
@@ -83,14 +84,14 @@ export const DeleteReceiptConfirmModal: React.FC<DeleteReceiptConfirmModalProps>
   };
 
   const handleConfirmDelete = async () => {
-    if (!firma?.id) return;
+    if (!effectiveFirmaId) return;
     setDeleting(true);
     setErrorText(null);
 
     try {
       const res = await deleteReceiptRows({
         rowsToDelete: getRowsToProcess(),
-        firmaId: firma.id,
+        firmaId: effectiveFirmaId,
         isFirmaUnlimited: Boolean(firma?.sinirsiz),
       });
 
@@ -110,14 +111,14 @@ export const DeleteReceiptConfirmModal: React.FC<DeleteReceiptConfirmModalProps>
   };
 
   const handleFallbackCancel = async () => {
-    if (!firma?.id) return;
+    if (!effectiveFirmaId) return;
     setDeleting(true);
     setErrorText(null);
 
     try {
       const res = await cancelReceiptRowsFallback({
         rowsToCancel: getRowsToProcess(),
-        firmaId: firma.id,
+        firmaId: effectiveFirmaId,
         userId: profile?.id,
       });
 

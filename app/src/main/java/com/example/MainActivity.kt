@@ -90,12 +90,26 @@ class MainActivity : ComponentActivity() {
     super.onCreate(savedInstanceState)
 
     // Tam ekran sürükleyici mod: Sistem navigasyon ve durum çubuğu otomatik saklanır
-    WindowCompat.setDecorFitsSystemWindows(window, false)
-    hideSystemBars()
+    try {
+      WindowCompat.setDecorFitsSystemWindows(window, false)
+      hideSystemBars()
+    } catch (e: Exception) {
+      Log.w("MainActivity", "System bars setup warning", e)
+    }
 
-    nfcAdapter = NfcAdapter.getDefaultAdapter(this)
+    try {
+      nfcAdapter = NfcAdapter.getDefaultAdapter(this)
+    } catch (e: Exception) {
+      Log.w("MainActivity", "NFC adapter unavailable", e)
+      nfcAdapter = null
+    }
     pendingOpenTab = intent?.getStringExtra("open_tab")
-    pendingCepPosCallbackJson = extractCepPosCallbackJson(intent)
+    pendingCepPosCallbackJson = try {
+      extractCepPosCallbackJson(intent)
+    } catch (e: Exception) {
+      Log.w("MainActivity", "CepPOS intent parse warning", e)
+      null
+    }
 
     try {
       WebView.setWebContentsDebuggingEnabled(true)
@@ -640,13 +654,18 @@ class MainActivity : ComponentActivity() {
 
     @JavascriptInterface
     fun getNfcStatus(): String {
-      val adapter = nfcAdapter ?: NfcAdapter.getDefaultAdapter(this@MainActivity).also {
-        nfcAdapter = it
-      }
-      return when {
-        adapter == null -> "unsupported"
-        !adapter.isEnabled -> "disabled"
-        else -> "ready"
+      return try {
+        val adapter = nfcAdapter ?: NfcAdapter.getDefaultAdapter(this@MainActivity).also {
+          nfcAdapter = it
+        }
+        when {
+          adapter == null -> "unsupported"
+          !adapter.isEnabled -> "disabled"
+          else -> "ready"
+        }
+      } catch (e: Exception) {
+        Log.w("AndroidBridge", "getNfcStatus warning", e)
+        "unsupported"
       }
     }
 
@@ -668,16 +687,21 @@ class MainActivity : ComponentActivity() {
 
     @JavascriptInterface
     fun startNfcReader(): String {
-      val adapter = nfcAdapter ?: NfcAdapter.getDefaultAdapter(this@MainActivity).also {
-        nfcAdapter = it
+      return try {
+        val adapter = nfcAdapter ?: NfcAdapter.getDefaultAdapter(this@MainActivity).also {
+          nfcAdapter = it
+        }
+        if (adapter == null) return "unsupported"
+        if (!adapter.isEnabled) return "disabled"
+        nfcReaderActive = true
+        runOnUiThread {
+          enableNfcReaderModeInternal()
+        }
+        "started"
+      } catch (e: Exception) {
+        Log.w("AndroidBridge", "startNfcReader warning", e)
+        "unsupported"
       }
-      if (adapter == null) return "unsupported"
-      if (!adapter.isEnabled) return "disabled"
-      nfcReaderActive = true
-      runOnUiThread {
-        enableNfcReaderModeInternal()
-      }
-      return "started"
     }
 
     @JavascriptInterface
