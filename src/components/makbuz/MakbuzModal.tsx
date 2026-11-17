@@ -574,8 +574,11 @@ export const MakbuzModal: React.FC<MakbuzModalProps> = ({ islem, onClose, onEdit
   );
 
   return (
-    <div className="fixed inset-0 z-50 bg-slate-950/90 backdrop-blur-md flex items-center justify-center p-2 sm:p-4 overflow-y-auto">
-      <div className="bg-slate-900 border border-slate-700/80 rounded-2xl w-full max-w-4xl max-h-[96vh] flex flex-col shadow-2xl overflow-hidden my-auto print:max-h-none print:shadow-none print:border-none print:w-full print:m-0 print:rounded-none">
+    <div
+      data-makbuz-print-root="true"
+      className="fixed inset-0 z-50 bg-slate-950/90 backdrop-blur-md flex items-center justify-center p-2 sm:p-4 overflow-y-auto print:static print:flex print:items-start print:justify-center print:bg-white print:backdrop-blur-none print:p-0 print:overflow-visible"
+    >
+      <div className="bg-slate-900 border border-slate-700/80 rounded-2xl w-full max-w-4xl max-h-[96vh] flex flex-col shadow-2xl overflow-hidden my-auto print:bg-white print:max-h-none print:shadow-none print:border-none print:w-full print:max-w-none print:my-0 print:m-0 print:rounded-none print:overflow-visible">
         {/* ÜST EYLEM ÇUBUĞU (Yazıcıda gizlenir) */}
         <div className="no-print p-3.5 sm:p-4 border-b border-slate-800 flex flex-wrap items-center justify-between gap-3 bg-slate-900/95 sticky top-0 z-30 shadow-md">
           <div className="flex items-center gap-2.5">
@@ -761,8 +764,8 @@ export const MakbuzModal: React.FC<MakbuzModalProps> = ({ islem, onClose, onEdit
         )}
 
         {/* KAĞIT ÖNİZLEME ALANI (BEYAZ A4 ORANLI - Telefon ekranına sıkıştırılmaz, yatay kaydırmalı ve tam yazdırılabilir) */}
-        <div className="flex-1 overflow-auto p-3 sm:p-8 bg-slate-950/80 flex justify-start md:justify-center print:p-0 print:bg-white print:overflow-visible">
-          <div ref={makbuzContainerRef} className="w-[680px] min-w-[680px] space-y-6 print:space-y-4 print:w-full print:min-w-0 bg-white p-5 rounded-xl">
+        <div className="flex-1 overflow-auto p-3 sm:p-8 bg-slate-950/80 flex justify-start md:justify-center print:p-0 print:bg-white print:overflow-visible print:items-start print:justify-center">
+          <div ref={makbuzContainerRef} className="w-[680px] min-w-[680px] space-y-6 print:space-y-4 print:w-full print:max-w-[740px] print:min-w-0 print:mx-auto print:p-0 print:rounded-none bg-white p-5 rounded-xl">
             {/* ÜST NÜSHA: MÜŞTERİ NÜSHASI */}
             {renderSingleMakbuz(nusha === '2' ? 'MÜŞTERİ NÜSHASI' : 'ASIL')}
 

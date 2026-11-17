@@ -82,9 +82,29 @@ body.keyboard-open main {
   .no-print {
     display: none !important;
   }
+  html,
   body {
     background-color: #ffffff !important;
     color: #000000 !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    min-height: 0 !important;
+    height: auto !important;
+  }
+  body:has([data-makbuz-print-root="true"]) main > *:not([data-makbuz-print-root="true"]) {
+    display: none !important;
+  }
+  body:has([data-makbuz-print-root="true"]) [data-makbuz-print-root="true"] {
+    position: static !important;
+    display: flex !important;
+    align-items: flex-start !important;
+    justify-content: center !important;
+    background: #ffffff !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    width: 100% !important;
+    height: auto !important;
+    overflow: visible !important;
   }
   @page {
     margin: 1cm;

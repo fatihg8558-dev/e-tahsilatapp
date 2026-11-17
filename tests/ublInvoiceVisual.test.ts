@@ -205,7 +205,7 @@ test('decodeBase64Utf8 accurately decodes UTF-8 Base64 containing Turkish charac
   assert.equal(decodeBase64Utf8(spaced), original);
 });
 
-test('sanitizeRenderedGibHtml strips scripts and inline handlers while preserving styles and tables', () => {
+test('sanitizeRenderedGibHtml strips scripts and inline handlers while preserving styles, centering, and printZoom', () => {
   const rawHtml =
     '<html><head><style>.gib-box{border:1px solid #000}</style><script>alert("xss")</script></head>' +
     '<body onload="evil()"><table onclick="steal()"><tr><td>Fatura Tutarı</td></tr></table>' +
@@ -218,6 +218,15 @@ test('sanitizeRenderedGibHtml strips scripts and inline handlers while preservin
   assert.ok(!clean.includes('javascript:alert'));
   assert.ok(clean.includes('.gib-box{border:1px solid #000}'));
   assert.ok(clean.includes('<table><tr><td>Fatura Tutarı</td></tr></table>'));
+  assert.ok(clean.includes('margin-left: auto !important;'));
+  assert.ok(clean.includes('margin-right: auto !important;'));
+  assert.ok(clean.includes('float: none !important;'));
+
+  // Eski cached HTML tekrar geçirildiğinde stil bloğu çoğalmaz ve printZoom uygulanır
+  const reSanitized = sanitizeRenderedGibHtml(clean, { printZoom: 0.9 });
+  const matches = reSanitized.match(/id="tahsilatim-gib-print-fix"/g) || [];
+  assert.equal(matches.length, 1);
+  assert.ok(reSanitized.includes('zoom: 0.9;'));
 });
 
 test('formatInvoiceTypeLabel and formatInvoiceScenarioLabel convert UBL codes to Turkish labels', () => {

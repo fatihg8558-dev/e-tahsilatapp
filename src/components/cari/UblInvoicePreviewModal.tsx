@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { X, Printer, Upload, FileText, AlertCircle, Sparkles, LayoutTemplate } from 'lucide-react';
 import { FaturaYon } from '../../types/database';
 import { formatCurrency, formatDate, numberToTurkishWords } from '../../lib/formatters';
@@ -7,6 +7,7 @@ import {
   formatInvoiceTypeLabel,
   ParsedUblInvoice,
   parseUblInvoiceXml,
+  sanitizeRenderedGibHtml,
 } from '../../lib/ublParser';
 import { isWebPlatform } from '../../lib/platform';
 
@@ -608,6 +609,7 @@ export const UblInvoicePreviewModal: React.FC<UblInvoicePreviewModalProps> = ({
     invoice?.renderedGibHtml ? 'gib' : 'standard'
   );
   const [iframeHeight, setIframeHeight] = useState<number>(1120);
+  const [gibPrintZoom, setGibPrintZoom] = useState<number>(1);
 
   useEffect(() => {
     if (invoice?.renderedGibHtml) {
@@ -617,7 +619,13 @@ export const UblInvoicePreviewModal: React.FC<UblInvoicePreviewModalProps> = ({
     }
     setAttachError(null);
     setIframeHeight(1120);
+    setGibPrintZoom(1);
   }, [invoice?.faturaNo, invoice?.renderedGibHtml]);
+
+  const centeredGibHtml = useMemo(() => {
+    if (!invoice?.renderedGibHtml) return '';
+    return sanitizeRenderedGibHtml(invoice.renderedGibHtml);
+  }, [invoice?.renderedGibHtml]);
 
   if (!isOpen || !invoice || !isWebPlatform()) return null;
 
@@ -632,7 +640,10 @@ export const UblInvoicePreviewModal: React.FC<UblInvoicePreviewModalProps> = ({
 
   const handlePrint = () => {
     if (viewMode === 'gib' && invoice.renderedGibHtml) {
-      printHtmlDocument(invoice.renderedGibHtml);
+      const printableGibHtml = sanitizeRenderedGibHtml(invoice.renderedGibHtml, {
+        printZoom: gibPrintZoom < 0.995 ? gibPrintZoom : undefined,
+      });
+      printHtmlDocument(printableGibHtml);
       return;
     }
     printHtmlDocument(buildPrintableUblInvoiceHtml(invoice, yon));
@@ -642,6 +653,27 @@ export const UblInvoicePreviewModal: React.FC<UblInvoicePreviewModalProps> = ({
     try {
       const doc = gibIframeRef.current?.contentDocument;
       if (!doc) return;
+
+      // Önbellekte kalmış eski HTML'lerde bile root tabloyu ortala ve taşmaları ölç
+      let maxContentWidth = 0;
+      const children = Array.from(doc.body?.children || []) as HTMLElement[];
+      for (const child of children) {
+        const tag = child.tagName;
+        if (tag === 'STYLE' || tag === 'SCRIPT' || tag === 'LINK' || tag === 'META') continue;
+        child.style.marginLeft = 'auto';
+        child.style.marginRight = 'auto';
+        child.style.float = 'none';
+        const w = Math.max(child.scrollWidth || 0, child.getBoundingClientRect?.().width || 0);
+        if (w > maxContentWidth) maxContentWidth = w;
+      }
+
+      if (maxContentWidth > 745) {
+        const computedZoom = Math.min(1, Math.max(0.65, 740 / maxContentWidth));
+        setGibPrintZoom(computedZoom);
+      } else {
+        setGibPrintZoom(1);
+      }
+
       const bodyH = doc.body?.scrollHeight || 0;
       const docH = doc.documentElement?.scrollHeight || 0;
       const measured = Math.max(bodyH, docH, 900);
@@ -805,16 +837,16 @@ export const UblInvoicePreviewModal: React.FC<UblInvoicePreviewModalProps> = ({
 
         {/* FATURA GÖRÜNÜM ALANI */}
         <div className="flex-1 overflow-y-auto bg-slate-300/90 p-3 sm:p-6">
-          {viewMode === 'gib' && invoice.renderedGibHtml ? (
-            <div className="max-w-[860px] mx-auto bg-white shadow-2xl border border-slate-400 rounded-sm overflow-hidden">
+          {viewMode === 'gib' && centeredGibHtml ? (
+            <div className="max-w-[900px] mx-auto bg-white shadow-2xl border border-slate-400 rounded-sm overflow-x-auto">
               <iframe
                 ref={gibIframeRef}
                 title={`${invoice.faturaNo} Orijinal GİB Fatura Görüntüsü`}
                 sandbox="allow-same-origin allow-modals"
-                srcDoc={invoice.renderedGibHtml}
+                srcDoc={centeredGibHtml}
                 onLoad={handleIframeLoad}
                 style={{ height: `${iframeHeight}px` }}
-                className="w-full bg-white border-0 block"
+                className="w-full min-w-[780px] bg-white border-0 block mx-auto"
                 data-testid="ubl_preview_gib_iframe"
               />
             </div>

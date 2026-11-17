@@ -452,29 +452,97 @@ export function decodeBase64Utf8(rawBase64: string): string {
   return decoded.replace(/^\uFEFF/, '').trim();
 }
 
-export function sanitizeRenderedGibHtml(rawHtml: string): string {
+export function sanitizeRenderedGibHtml(
+  rawHtml: string,
+  options?: { printZoom?: number }
+): string {
   if (!rawHtml) return '';
 
   // XSS önlemi: XSLT çıktısından olası script ve inline event handler'ları temizle
   let sanitized = rawHtml
     .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
     .replace(/\son[a-z]+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, '')
-    .replace(/javascript\s*:/gi, 'blocked:');
+    .replace(/javascript\s*:/gi, 'blocked:')
+    // Önceden eklenmiş stil varsa kaldırıp güncel ortalama stillerini uygula (idempotent)
+    .replace(/<style\s+id=["']tahsilatim-gib-print-fix["'][^>]*>[\s\S]*?<\/style>/gi, '');
 
   if (!/<meta[^>]+charset/i.test(sanitized) && /<head\b[^>]*>/i.test(sanitized)) {
     sanitized = sanitized.replace(/<head\b[^>]*>/i, (m) => `${m}<meta charset="utf-8" />`);
   }
 
+  const validZoom =
+    options?.printZoom && Number.isFinite(options.printZoom) && options.printZoom > 0.45 && options.printZoom < 0.995
+      ? Number(options.printZoom.toFixed(3))
+      : null;
+  const printZoomRule = validZoom ? `zoom: ${validZoom};` : '';
+
   const printOverrideStyle = `<style id="tahsilatim-gib-print-fix">
     @page { size: A4; margin: 6mm; }
-    html, body { background: #ffffff !important; margin: 0 auto; }
-    @media print { body { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
+    html {
+      width: 100% !important;
+      background: #ffffff !important;
+    }
+    body {
+      background: #ffffff !important;
+      margin: 0 auto !important;
+      padding: 16px 12px !important;
+      width: 100% !important;
+      min-width: 0 !important;
+      max-width: none !important;
+      box-sizing: border-box !important;
+      display: flex !important;
+      flex-direction: column !important;
+    }
+    body > *:not(style):not(script):not(link):not(meta) {
+      margin-left: auto !important;
+      margin-right: auto !important;
+      float: none !important;
+    }
+    body > div > table:only-child,
+    body > form > table:only-child,
+    body > div > table[align="left"],
+    body > form > table[align="left"],
+    body > center > table {
+      margin-left: auto !important;
+      margin-right: auto !important;
+      float: none !important;
+    }
+    @media print {
+      html, body {
+        width: 100% !important;
+        margin: 0 auto !important;
+        padding: 0 !important;
+        display: block !important;
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+      }
+      body {
+        ${printZoomRule}
+      }
+      body > *:not(style):not(script):not(link):not(meta) {
+        margin-left: auto !important;
+        margin-right: auto !important;
+        float: none !important;
+      }
+      body > div > table:only-child,
+      body > form > table:only-child,
+      body > div > table[align="left"],
+      body > form > table[align="left"],
+      body > center > table {
+        margin-left: auto !important;
+        margin-right: auto !important;
+        float: none !important;
+      }
+    }
   </style>`;
 
   if (/<\/head>/i.test(sanitized)) {
     sanitized = sanitized.replace(/<\/head>/i, `${printOverrideStyle}</head>`);
   } else if (/<body\b[^>]*>/i.test(sanitized)) {
-    sanitized = `<head><meta charset="utf-8" />${printOverrideStyle}</head>${sanitized}`;
+    sanitized = sanitized.replace(
+      /<body\b/i,
+      `<head><meta charset="utf-8" />${printOverrideStyle}</head><body`
+    );
   } else {
     sanitized = `<!DOCTYPE html><html lang="tr"><head><meta charset="utf-8" />${printOverrideStyle}</head><body>${sanitized}</body></html>`;
   }

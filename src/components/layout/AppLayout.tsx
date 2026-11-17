@@ -132,9 +132,9 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
   const isSubPage = currentTab !== homeTab;
 
   return (
-    <div className="min-h-[100dvh] bg-[#0b1322] text-slate-100 flex flex-col lg:flex-row relative overflow-x-hidden fintech-glow">
+    <div className="min-h-[100dvh] print:min-h-0 bg-[#0b1322] print:bg-white text-slate-100 flex flex-col lg:flex-row relative overflow-x-hidden fintech-glow">
       {/* MASAÜSTÜ SOL SABİT MENÜ (≥1024px, 240px) */}
-      <aside className="hidden lg:flex flex-col w-60 bg-[#111c2e] border-r border-slate-700/60 min-h-screen fixed left-0 top-0 bottom-0 z-30 select-none shadow-xl">
+      <aside className="no-print hidden lg:flex flex-col w-60 bg-[#111c2e] border-r border-slate-700/60 min-h-screen fixed left-0 top-0 bottom-0 z-30 select-none shadow-xl">
         {/* LOGO */}
         <div className="p-5 flex items-center justify-between border-b border-slate-700/60">
           <div className="flex items-center gap-2.5 cursor-pointer" onClick={() => onSelectTab(homeTab)}>
@@ -436,9 +436,9 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
       </aside>
 
       {/* MASAÜSTÜ İÇERİK ALANI (SOL MENÜNÜN YANINDA) */}
-      <div className="lg:pl-60 flex-1 flex flex-col min-w-0">
+      <div className="lg:pl-60 print:pl-0 flex-1 flex flex-col min-w-0">
         {/* ÜST ÇUBUK / HEADER */}
-        <header className="min-h-14 lg:h-16 pt-[max(env(safe-area-inset-top,0px),0.5rem)] pb-2 lg:py-0 border-b border-slate-700/60 bg-[#111c2e]/98 backdrop-blur-md sticky top-0 z-20 px-2.5 sm:px-4 lg:px-8 flex items-center justify-between gap-2 shadow-md">
+        <header className="no-print min-h-14 lg:h-16 pt-[max(env(safe-area-inset-top,0px),0.5rem)] pb-2 lg:py-0 border-b border-slate-700/60 bg-[#111c2e]/98 backdrop-blur-md sticky top-0 z-20 px-2.5 sm:px-4 lg:px-8 flex items-center justify-between gap-2 shadow-md">
           {/* SOL: Geri/Ana Sayfa Butonu, Menü & Başlık */}
           <div className="flex items-center gap-1.5 sm:gap-3 min-w-0 flex-1">
             {isSubPage ? (
@@ -799,7 +799,7 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
         )}
 
         {/* ANA İÇERİK ALANI */}
-        <main className="flex-1 p-4 lg:p-8 max-w-7xl w-full mx-auto pb-nav-safe lg:pb-8">
+        <main className="flex-1 p-4 lg:p-8 print:p-0 print:max-w-none print:pb-0 max-w-7xl w-full mx-auto pb-nav-safe lg:pb-8">
           {fridayReminderDue && currentTab !== 'yedekleme' && (
             <div
               data-testid="friday_backup_reminder_banner"
@@ -848,7 +848,7 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
         </main>
 
         {/* MOBİL ALT MENÜ */}
-        <nav className="mobile-bottom-nav lg:hidden fixed bottom-0 left-0 right-0 z-40 bg-[#111c2e] border-t border-slate-700/80 px-2 pt-2.5 pb-safe shadow-[0_-8px_25px_rgba(0,0,0,0.6)]">
+        <nav className="no-print mobile-bottom-nav lg:hidden fixed bottom-0 left-0 right-0 z-40 bg-[#111c2e] border-t border-slate-700/80 px-2 pt-2.5 pb-safe shadow-[0_-8px_25px_rgba(0,0,0,0.6)]">
           {workspaceMode === 'tahsilat' ? (
             <div className="flex items-center justify-around">
               <button
