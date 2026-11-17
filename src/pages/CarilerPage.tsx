@@ -36,6 +36,7 @@ import {
   RawEkstreMovement,
 } from '../lib/cariEkstreHelper';
 import { UblImportModal } from '../components/cari/UblImportModal';
+import { CariExcelImportModal } from '../components/cari/CariExcelImportModal';
 import { UblInvoicePreviewModal } from '../components/cari/UblInvoicePreviewModal';
 import { isWebPlatform } from '../lib/platform';
 import { ParsedUblInvoice, parseUblInvoiceXml } from '../lib/ublParser';
@@ -72,6 +73,7 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
   // Modal States
   const [isModalOpen, setIsModalOpen] = useState(openNewModalInitially);
   const [isUblModalOpen, setIsUblModalOpen] = useState(false);
+  const [isExcelImportModalOpen, setIsExcelImportModalOpen] = useState(false);
   const [editingCari, setEditingCari] = useState<Cari | null>(null);
   const [selectedCariForDetail, setSelectedCariForDetail] = useState<Cari | null>(null);
   const [detailMovements, setDetailMovements] = useState<RawEkstreMovement[]>([]);
@@ -613,6 +615,19 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
               </span>
             )}
           </button>
+
+          {isWebPlatform() && (
+            <button
+              type="button"
+              onClick={() => setIsExcelImportModalOpen(true)}
+              data-testid="open_cari_excel_import_button"
+              title="Excel (.xlsx/.xls/.csv) dosyasından toplu cari yükle"
+              className="font-bold text-xs px-4 py-2.5 rounded-xl transition flex items-center gap-2 border bg-emerald-500/15 hover:bg-emerald-500/25 border-emerald-400/35 text-emerald-300"
+            >
+              <FileSpreadsheet className="w-4 h-4" />
+              <span>Excel&apos;den Cari Yükle</span>
+            </button>
+          )}
 
           <button
             onClick={openAddModal}
@@ -1583,6 +1598,16 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
         cariler={cariler}
         onImported={fetchCariler}
       />
+
+      {/* SADECE WEB: EXCEL / CSV TOPLU CARİ YÜKLEME MODALI */}
+      {isWebPlatform() && (
+        <CariExcelImportModal
+          isOpen={isExcelImportModalOpen}
+          onClose={() => setIsExcelImportModalOpen(false)}
+          cariler={cariler}
+          onImported={fetchCariler}
+        />
+      )}
 
       {/* SADECE WEB: UBL / e-FATURA GÖRSEL ÖNİZLEME MODALI */}
       {canPreviewUblInvoice && previewFaturaState && (

@@ -18,7 +18,7 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { supabase, handleSupabaseError } from '../../lib/supabase';
-import { Cari, FaturaYon } from '../../types/database';
+import { Cari, CariTur, FaturaYon } from '../../types/database';
 import { formatCurrency, formatDate } from '../../lib/formatters';
 import {
   parseUblInvoiceXml,
@@ -46,13 +46,26 @@ interface ExistingFaturaKey {
   cari_id: string;
 }
 
+interface MissingCariDraft {
+  key: string;
+  unvan: string;
+  vergiTcNo: string;
+  tur: CariTur;
+  telefon: string;
+  email: string;
+  approved: boolean;
+  creating?: boolean;
+  createdCariId?: string;
+}
+
 interface ImportRow {
   id: string;
   fileName: string;
   parsed?: ParsedUblInvoice;
   error?: string;
   yon: FaturaYon;
-  selectedCariId: string; // existing cari id OR '__auto_create__' OR ''
+  selectedCariId: string; // existing cari id OR AUTO_CREATE_VALUE OR ''
+  missingCariKey?: string;
   exchangeRate: number;
   tutarTL: number;
   include: boolean;
@@ -60,6 +73,12 @@ interface ImportRow {
 }
 
 const AUTO_CREATE_VALUE = '__auto_create__';
+
+function buildPartyDedupKey(party: UblPartyInfo): string {
+  const normVkn = normalizeTaxId(party.vkn);
+  if (normVkn) return normVkn;
+  return (party.unvan || '').trim().toLocaleLowerCase('tr-TR').replace(/\s+/g, ' ');
+}
 
 export const UblImportModal: React.FC<UblImportModalProps> = ({
   isOpen,
@@ -71,6 +90,8 @@ export const UblImportModal: React.FC<UblImportModalProps> = ({
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const [rows, setRows] = useState<ImportRow[]>([]);
+  const [missingCariDrafts, setMissingCariDrafts] = useState<Record<string, MissingCariDraft>>({});
+  const [sessionCreatedCaris, setSessionCreatedCaris] = useState<Cari[]>([]);
   const [existingInvoices, setExistingInvoices] = useState<ExistingFaturaKey[]>([]);
   const [isDragging, setIsDragging] = useState(false);
   const [parsing, setParsing] = useState(false);
@@ -86,7 +107,18 @@ export const UblImportModal: React.FC<UblImportModalProps> = ({
     parsed: ParsedUblInvoice;
     yon: FaturaYon;
   } | null>(null);
+  const missingPanelRef = useRef<HTMLDivElement | null>(null);
   const showInvoicePreview = isWebPlatform();
+
+  const allCariler = React.useMemo(() => {
+    const merged = [...cariler];
+    for (const sc of sessionCreatedCaris) {
+      if (!merged.some((c) => c.id === sc.id)) {
+        merged.push(sc);
+      }
+    }
+    return merged;
+  }, [cariler, sessionCreatedCaris]);
 
   const loadExistingInvoices = async (): Promise<ExistingFaturaKey[]> => {
     if (!firma?.id) return [];
@@ -108,6 +140,8 @@ export const UblImportModal: React.FC<UblImportModalProps> = ({
     }
     if (!isOpen) {
       setRows([]);
+      setMissingCariDrafts({});
+      setSessionCreatedCaris([]);
       setFeedback(null);
       setIsDragging(false);
       setShowSqlHelp(false);
@@ -120,13 +154,40 @@ export const UblImportModal: React.FC<UblImportModalProps> = ({
   const findMatchingCariId = (party: UblPartyInfo): string => {
     const normVkn = normalizeTaxId(party.vkn);
     if (normVkn) {
-      const match = cariler.find((c) => normalizeTaxId(c.vergi_tc_no) === normVkn);
+      const match = allCariler.find((c) => normalizeTaxId(c.vergi_tc_no) === normVkn);
       if (match) return match.id;
+    } else if (party.unvan && party.unvan !== 'Bilinmeyen Cari') {
+      const normName = party.unvan.trim().toLocaleLowerCase('tr-TR').replace(/\s+/g, ' ');
+      const nameMatch = allCariler.find(
+        (c) => c.unvan.trim().toLocaleLowerCase('tr-TR').replace(/\s+/g, ' ') === normName
+      );
+      if (nameMatch) return nameMatch.id;
     }
     if (party.vkn || (party.unvan && party.unvan !== 'Bilinmeyen Cari')) {
       return AUTO_CREATE_VALUE;
     }
     return '';
+  };
+
+  const ensureDraftForRow = (
+    draftMap: Record<string, MissingCariDraft>,
+    party: UblPartyInfo,
+    yon: FaturaYon
+  ): string | undefined => {
+    const key = buildPartyDedupKey(party);
+    if (!key) return undefined;
+    if (!draftMap[key]) {
+      draftMap[key] = {
+        key,
+        unvan: party.unvan?.trim() || 'Bilinmeyen Cari',
+        vergiTcNo: normalizeTaxId(party.vkn),
+        tur: yon === 'satis' ? 'alici' : 'tedarikci',
+        telefon: party.telefon?.trim() || '',
+        email: party.email?.trim() || '',
+        approved: false,
+      };
+    }
+    return key;
   };
 
   const isDuplicateFatura = (
@@ -150,15 +211,20 @@ export const UblImportModal: React.FC<UblImportModalProps> = ({
     try {
       const latestInvoices = await loadExistingInvoices();
       const newRows: ImportRow[] = [];
+      const nextDrafts: Record<string, MissingCariDraft> = { ...missingCariDrafts };
 
       for (const file of files) {
         const rowId = `${file.name}-${file.size}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
         try {
           const text = await file.text();
-          const parsed = parseUblInvoiceXml(text, file.name, firma?.vergi_no, cariler);
+          const parsed = parseUblInvoiceXml(text, file.name, firma?.vergi_no, allCariler);
           const yon = parsed.detectedYon;
           const counterparty = yon === 'satis' ? parsed.customer : parsed.supplier;
           const selectedCariId = findMatchingCariId(counterparty);
+          const missingCariKey =
+            selectedCariId === AUTO_CREATE_VALUE
+              ? ensureDraftForRow(nextDrafts, counterparty, yon)
+              : undefined;
           const duplicate = isDuplicateFatura(parsed.faturaNo, yon, latestInvoices);
 
           newRows.push({
@@ -167,6 +233,7 @@ export const UblImportModal: React.FC<UblImportModalProps> = ({
             parsed,
             yon,
             selectedCariId,
+            missingCariKey,
             exchangeRate: parsed.exchangeRate,
             tutarTL: parsed.tutarTL,
             isDuplicate: duplicate,
@@ -187,6 +254,8 @@ export const UblImportModal: React.FC<UblImportModalProps> = ({
           });
         }
       }
+
+      setMissingCariDrafts(nextDrafts);
 
       if (firma?.id && showInvoicePreview) {
         const parsedSnapshots = newRows
@@ -237,35 +306,49 @@ export const UblImportModal: React.FC<UblImportModalProps> = ({
   };
 
   const handleYonChange = (rowId: string, newYon: FaturaYon) => {
+    const nextDrafts: Record<string, MissingCariDraft> = { ...missingCariDrafts };
     setRows((prev) =>
       prev.map((row) => {
         if (row.id !== rowId || !row.parsed) return row;
         const counterparty = newYon === 'satis' ? row.parsed.customer : row.parsed.supplier;
         const matchedCariId = findMatchingCariId(counterparty);
+        const missingCariKey =
+          matchedCariId === AUTO_CREATE_VALUE
+            ? ensureDraftForRow(nextDrafts, counterparty, newYon)
+            : undefined;
         const dup = isDuplicateFatura(row.parsed.faturaNo, newYon, existingInvoices);
         return {
           ...row,
           yon: newYon,
           selectedCariId: matchedCariId,
+          missingCariKey,
           isDuplicate: dup,
           include: !dup && row.tutarTL > 0 && Boolean(matchedCariId),
         };
       })
     );
+    setMissingCariDrafts(nextDrafts);
   };
 
   const handleCariChange = (rowId: string, cariId: string) => {
+    const nextDrafts: Record<string, MissingCariDraft> = { ...missingCariDrafts };
     setRows((prev) =>
-      prev.map((row) =>
-        row.id === rowId
-          ? {
-              ...row,
-              selectedCariId: cariId,
-              include: cariId ? (!row.isDuplicate ? true : row.include) : false,
-            }
-          : row
-      )
+      prev.map((row) => {
+        if (row.id !== rowId) return row;
+        let nextKey = row.missingCariKey;
+        if (cariId === AUTO_CREATE_VALUE && row.parsed) {
+          const party = row.yon === 'satis' ? row.parsed.customer : row.parsed.supplier;
+          nextKey = ensureDraftForRow(nextDrafts, party, row.yon);
+        }
+        return {
+          ...row,
+          selectedCariId: cariId,
+          missingCariKey: cariId === AUTO_CREATE_VALUE ? nextKey : undefined,
+          include: cariId ? (!row.isDuplicate ? true : row.include) : false,
+        };
+      })
     );
+    setMissingCariDrafts(nextDrafts);
   };
 
   const handleExchangeRateChange = (rowId: string, rawRate: string) => {
@@ -304,14 +387,151 @@ export const UblImportModal: React.FC<UblImportModalProps> = ({
   };
 
   const selectedRows = rows.filter((r) => r.include && !r.error && r.parsed && r.selectedCariId);
-  const autoCreateCount = new Set(
-    selectedRows
-      .filter((r) => r.selectedCariId === AUTO_CREATE_VALUE && r.parsed)
-      .map((r) => {
-        const party = r.yon === 'satis' ? r.parsed!.customer : r.parsed!.supplier;
-        return normalizeTaxId(party.vkn) || party.unvan.trim().toLowerCase();
-      })
-  ).size;
+
+  // Aktif olarak listede eksik cari durumunda bekleyen taslakları ve bağlı fatura numaralarını hesapla
+  const activeMissingCaris = React.useMemo(() => {
+    const grouped = new Map<string, { draft: MissingCariDraft; invoiceNos: string[] }>();
+    for (const row of rows) {
+      if (row.error || !row.parsed || row.selectedCariId !== AUTO_CREATE_VALUE) continue;
+      const party = row.yon === 'satis' ? row.parsed.customer : row.parsed.supplier;
+      const key = row.missingCariKey || buildPartyDedupKey(party);
+      if (!key) continue;
+      const draft = missingCariDrafts[key] || {
+        key,
+        unvan: party.unvan?.trim() || 'Bilinmeyen Cari',
+        vergiTcNo: normalizeTaxId(party.vkn),
+        tur: row.yon === 'satis' ? 'alici' : 'tedarikci',
+        telefon: party.telefon?.trim() || '',
+        email: party.email?.trim() || '',
+        approved: false,
+      };
+      const entry = grouped.get(key);
+      if (entry) {
+        entry.invoiceNos.push(row.parsed.faturaNo);
+      } else {
+        grouped.set(key, { draft, invoiceNos: [row.parsed.faturaNo] });
+      }
+    }
+    return Array.from(grouped.values());
+  }, [rows, missingCariDrafts]);
+
+  const unapprovedSelectedMissingKeys = React.useMemo(() => {
+    const keys = new Set<string>();
+    for (const row of selectedRows) {
+      if (row.selectedCariId !== AUTO_CREATE_VALUE || !row.parsed) continue;
+      const party = row.yon === 'satis' ? row.parsed.customer : row.parsed.supplier;
+      const key = row.missingCariKey || buildPartyDedupKey(party);
+      if (!key) continue;
+      const draft = missingCariDrafts[key];
+      if (!draft?.approved && !draft?.createdCariId) {
+        keys.add(key);
+      }
+    }
+    return Array.from(keys);
+  }, [selectedRows, missingCariDrafts]);
+
+  const approvedNewCariCount = React.useMemo(() => {
+    const keys = new Set<string>();
+    for (const row of selectedRows) {
+      if (row.selectedCariId !== AUTO_CREATE_VALUE || !row.parsed) continue;
+      const party = row.yon === 'satis' ? row.parsed.customer : row.parsed.supplier;
+      const key = row.missingCariKey || buildPartyDedupKey(party);
+      const draft = key ? missingCariDrafts[key] : undefined;
+      if (key && draft?.approved && !draft.createdCariId) {
+        keys.add(key);
+      }
+    }
+    return keys.size;
+  }, [selectedRows, missingCariDrafts]);
+
+  const updateMissingDraft = (key: string, patch: Partial<MissingCariDraft>) => {
+    setMissingCariDrafts((prev) => {
+      const current = prev[key];
+      if (!current) return prev;
+      return {
+        ...prev,
+        [key]: { ...current, ...patch },
+      };
+    });
+  };
+
+  const handleCreateSingleMissingCariNow = async (key: string) => {
+    if (!firma?.id) return;
+    const draft = missingCariDrafts[key];
+    if (!draft) return;
+    if (!draft.unvan.trim()) {
+      setFeedback({ type: 'error', text: 'Yeni cari oluşturmak için unvan alanı boş bırakılamaz.' });
+      return;
+    }
+
+    updateMissingDraft(key, { creating: true });
+    setFeedback(null);
+
+    try {
+      const { data: insertedCari, error: cariErr } = await supabase
+        .from('cariler')
+        .insert({
+          firma_id: firma.id,
+          unvan: draft.unvan.trim(),
+          vergi_tc_no: normalizeTaxId(draft.vergiTcNo) || null,
+          telefon: draft.telefon.trim() || null,
+          email: draft.email.trim() || null,
+          tur: draft.tur,
+          bakiye: 0,
+        })
+        .select('*')
+        .single();
+
+      if (cariErr) throw cariErr;
+      const created = insertedCari as Cari;
+      setSessionCreatedCaris((prev) => [...prev, created]);
+      updateMissingDraft(key, {
+        creating: false,
+        approved: true,
+        createdCariId: created.id,
+      });
+
+      setRows((prev) =>
+        prev.map((row) => {
+          if (row.selectedCariId !== AUTO_CREATE_VALUE || !row.parsed) return row;
+          const party = row.yon === 'satis' ? row.parsed.customer : row.parsed.supplier;
+          const rowKey = row.missingCariKey || buildPartyDedupKey(party);
+          if (rowKey !== key) return row;
+          return {
+            ...row,
+            selectedCariId: created.id,
+            missingCariKey: undefined,
+          };
+        })
+      );
+
+      await onImported();
+      setFeedback({
+        type: 'success',
+        text: `"${created.unvan}" cari kartı oluşturuldu ve ilgili faturalara bağlandı.`,
+      });
+    } catch (err: unknown) {
+      updateMissingDraft(key, { creating: false });
+      setFeedback({
+        type: 'error',
+        text: handleSupabaseError(err, 'Yeni cari kartı oluşturulamadı.', {
+          isFirmaUnlimited: Boolean(firma?.sinirsiz),
+        }),
+      });
+    }
+  };
+
+  const handleApproveAllMissingCaris = () => {
+    setMissingCariDrafts((prev) => {
+      const next = { ...prev };
+      for (const item of activeMissingCaris) {
+        if (next[item.draft.key]) {
+          next[item.draft.key] = { ...next[item.draft.key], approved: true };
+        }
+      }
+      return next;
+    });
+  };
 
   const handleImportConfirm = async () => {
     if (!firma?.id) return;
@@ -331,31 +551,54 @@ export const UblImportModal: React.FC<UblImportModalProps> = ({
       return;
     }
 
+    if (unapprovedSelectedMissingKeys.length > 0) {
+      setFeedback({
+        type: 'error',
+        text: `Sistemde bulunmayan ${unapprovedSelectedMissingKeys.length} yeni cari için henüz onay vermediniz. Lütfen "Sistemde Kayıtlı Olmayan Cariler" bölümünden bilgileri kontrol edip onaylayın veya fatura satırından mevcut bir cari seçin.`,
+      });
+      missingPanelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      return;
+    }
+
     setImporting(true);
     setFeedback(null);
 
     try {
-      // 1. Otomatik açılacak yeni carileri VKN bazında tekilleştirerek oluştur
+      // 1. Onaylanan yeni carileri VKN/key bazında tekilleştirerek kullanıcının düzenlediği alanlarla oluştur
       const createdCariByKey = new Map<string, Cari>();
       let createdCount = 0;
 
       for (const row of selectedRows) {
         if (row.selectedCariId !== AUTO_CREATE_VALUE || !row.parsed) continue;
         const party = row.yon === 'satis' ? row.parsed.customer : row.parsed.supplier;
-        const normVkn = normalizeTaxId(party.vkn);
-        const dedupKey = normVkn || party.unvan.trim().toLowerCase();
+        const dedupKey = row.missingCariKey || buildPartyDedupKey(party);
+        const draft = missingCariDrafts[dedupKey];
+
+        if (draft?.createdCariId) {
+          const existingCreated = allCariler.find((c) => c.id === draft.createdCariId);
+          if (existingCreated) {
+            createdCariByKey.set(dedupKey, existingCreated);
+            continue;
+          }
+        }
 
         if (createdCariByKey.has(dedupKey)) continue;
+
+        const targetUnvan = (draft?.unvan ?? party.unvan).trim() || 'Bilinmeyen Cari';
+        const targetVkn = normalizeTaxId(draft?.vergiTcNo ?? party.vkn) || null;
+        const targetTelefon = (draft?.telefon ?? party.telefon ?? '').trim() || null;
+        const targetEmail = (draft?.email ?? party.email ?? '').trim() || null;
+        const targetTur: CariTur = draft?.tur ?? (row.yon === 'satis' ? 'alici' : 'tedarikci');
 
         const { data: insertedCari, error: cariErr } = await supabase
           .from('cariler')
           .insert({
             firma_id: firma.id,
-            unvan: party.unvan.trim() || 'Bilinmeyen Cari',
-            vergi_tc_no: normVkn || null,
-            telefon: party.telefon?.trim() || null,
-            email: party.email?.trim() || null,
-            tur: row.yon === 'satis' ? 'alici' : 'tedarikci',
+            unvan: targetUnvan,
+            vergi_tc_no: targetVkn,
+            telefon: targetTelefon,
+            email: targetEmail,
+            tur: targetTur,
             bakiye: 0,
           })
           .select('*')
@@ -386,8 +629,7 @@ export const UblImportModal: React.FC<UblImportModalProps> = ({
 
         if (targetCariId === AUTO_CREATE_VALUE) {
           const party = row.yon === 'satis' ? row.parsed.customer : row.parsed.supplier;
-          const normVkn = normalizeTaxId(party.vkn);
-          const dedupKey = normVkn || party.unvan.trim().toLowerCase();
+          const dedupKey = row.missingCariKey || buildPartyDedupKey(party);
           const newCari = createdCariByKey.get(dedupKey);
           if (!newCari) {
             throw new Error(`${party.unvan} için cari kartı oluşturulamadı.`);
@@ -465,10 +707,11 @@ export const UblImportModal: React.FC<UblImportModalProps> = ({
       setFeedback({
         type: 'success',
         text: `${resolvedPayloads.length} adet fatura vergi numarasına göre ilgili cari hesaplara başarıyla işlendi.${
-          createdCount > 0 ? ` (${createdCount} yeni cari kartı otomatik açıldı.)` : ''
+          createdCount > 0 ? ` (${createdCount} yeni cari onaylanarak açıldı.)` : ''
         }`,
       });
       setRows([]);
+      setMissingCariDrafts({});
     } catch (err: unknown) {
       const msg = handleSupabaseError(err, 'Faturalar işlenirken hata oluştu.', {
         isFirmaUnlimited: Boolean(firma?.sinirsiz),
@@ -664,6 +907,162 @@ ALTER TABLE public.faturalar ADD COLUMN IF NOT EXISTS ubl_detay jsonb;
             </p>
           </div>
 
+          {/* SİSTEMDE OLMAYAN CARİLER İÇİN DÜZENLENEBİLİR ONAY PANELİ */}
+          {activeMissingCaris.length > 0 && (
+            <div
+              ref={missingPanelRef}
+              data-testid="ubl_missing_cari_prompt_panel"
+              className="p-4 rounded-2xl bg-amber-500/[0.08] border border-amber-400/35 space-y-3"
+            >
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-start gap-2.5">
+                  <div className="w-8 h-8 rounded-xl bg-amber-400/20 border border-amber-400/40 text-amber-300 flex items-center justify-center shrink-0">
+                    <UserPlus className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <h4 className="text-xs sm:text-sm font-extrabold text-amber-200">
+                      Sistemde Kayıtlı Olmayan Cariler Bulundu ({activeMissingCaris.length} adet)
+                    </h4>
+                    <p className="text-[11px] text-amber-100/80 mt-0.5">
+                      Faturadaki bilgilerle yeni cari açmak ister misiniz? Bilgileri aşağıdan düzenleyip onaylayabilir veya tek tıkla hemen açabilirsiniz.
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleApproveAllMissingCaris}
+                  data-testid="ubl_approve_all_missing_caris_btn"
+                  className="px-3 py-1.5 rounded-lg bg-amber-400 hover:bg-amber-300 text-slate-950 text-[11px] font-extrabold transition shrink-0"
+                >
+                  Tüm Yeni Carileri Onayla
+                </button>
+              </div>
+
+              <div className="space-y-2.5">
+                {activeMissingCaris.map(({ draft, invoiceNos }) => (
+                  <div
+                    key={draft.key}
+                    className={`p-3 rounded-xl border space-y-2.5 transition ${
+                      draft.approved
+                        ? 'bg-emerald-500/[0.07] border-emerald-400/35'
+                        : 'bg-[#0a0e13]/90 border-amber-400/30'
+                    }`}
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <label className="inline-flex items-center gap-2 cursor-pointer text-xs font-bold text-white">
+                        <input
+                          type="checkbox"
+                          checked={draft.approved}
+                          onChange={(e) =>
+                            updateMissingDraft(draft.key, { approved: e.target.checked })
+                          }
+                          data-testid={`ubl_missing_cari_approve_${draft.key}`}
+                          className="w-4 h-4 accent-emerald-400 rounded cursor-pointer"
+                        />
+                        <span>Bu bilgilerle yeni cari açılsın</span>
+                      </label>
+
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-[10px] text-gray-400">
+                          Faturalar:{' '}
+                          <strong className="font-mono text-teal-300">
+                            {invoiceNos.join(', ')}
+                          </strong>
+                        </span>
+                        <button
+                          type="button"
+                          disabled={draft.creating}
+                          onClick={() => handleCreateSingleMissingCariNow(draft.key)}
+                          data-testid={`ubl_create_single_cari_now_${draft.key}`}
+                          className="px-2.5 py-1 rounded-lg bg-teal-400/15 hover:bg-teal-400/25 border border-teal-400/35 text-teal-300 text-[11px] font-bold flex items-center gap-1 transition disabled:opacity-50"
+                        >
+                          <UserPlus className="w-3 h-3" />
+                          <span>{draft.creating ? 'Açılıyor...' : 'Cariyi Şimdi Aç'}</span>
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-2">
+                      <div className="lg:col-span-2">
+                        <label className="block text-[10px] font-semibold text-gray-400 mb-0.5">
+                          Cari Unvanı *
+                        </label>
+                        <input
+                          type="text"
+                          value={draft.unvan}
+                          onChange={(e) =>
+                            updateMissingDraft(draft.key, { unvan: e.target.value })
+                          }
+                          className="w-full bg-[#111820] border border-white/10 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-teal-400"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-[10px] font-semibold text-gray-400 mb-0.5">
+                          VKN / TCKN
+                        </label>
+                        <input
+                          type="text"
+                          value={draft.vergiTcNo}
+                          onChange={(e) =>
+                            updateMissingDraft(draft.key, { vergiTcNo: e.target.value })
+                          }
+                          className="w-full bg-[#111820] border border-white/10 rounded-lg px-2.5 py-1.5 text-xs font-mono text-white focus:outline-none focus:border-teal-400"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-[10px] font-semibold text-gray-400 mb-0.5">
+                          Cari Türü
+                        </label>
+                        <select
+                          value={draft.tur}
+                          onChange={(e) =>
+                            updateMissingDraft(draft.key, { tur: e.target.value as CariTur })
+                          }
+                          className="w-full bg-[#111820] border border-white/10 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-teal-400"
+                        >
+                          <option value="alici">Alıcı (Müşteri)</option>
+                          <option value="tedarikci">Tedarikçi</option>
+                        </select>
+                      </div>
+
+                      <div>
+                        <label className="block text-[10px] font-semibold text-gray-400 mb-0.5">
+                          Telefon
+                        </label>
+                        <input
+                          type="text"
+                          value={draft.telefon}
+                          onChange={(e) =>
+                            updateMissingDraft(draft.key, { telefon: e.target.value })
+                          }
+                          placeholder="05XX..."
+                          className="w-full bg-[#111820] border border-white/10 rounded-lg px-2.5 py-1.5 text-xs text-white placeholder-gray-500 focus:outline-none focus:border-teal-400"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-[10px] font-semibold text-gray-400 mb-0.5">
+                          E-posta
+                        </label>
+                        <input
+                          type="email"
+                          value={draft.email}
+                          onChange={(e) =>
+                            updateMissingDraft(draft.key, { email: e.target.value })
+                          }
+                          placeholder="ornek@firma.com"
+                          className="w-full bg-[#111820] border border-white/10 rounded-lg px-2.5 py-1.5 text-xs text-white placeholder-gray-500 focus:outline-none focus:border-teal-400"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* ÇÖZÜMLENEN FATURALAR LİSTESİ */}
           {rows.length > 0 && (
             <div className="space-y-3">
@@ -673,7 +1072,10 @@ ALTER TABLE public.faturalar ADD COLUMN IF NOT EXISTS ubl_detay jsonb;
                 </h4>
                 <button
                   type="button"
-                  onClick={() => setRows([])}
+                  onClick={() => {
+                    setRows([]);
+                    setMissingCariDrafts({});
+                  }}
                   className="text-[11px] text-gray-400 hover:text-red-400 font-semibold transition"
                 >
                   Listeyi Temizle
@@ -705,8 +1107,11 @@ ALTER TABLE public.faturalar ADD COLUMN IF NOT EXISTS ubl_detay jsonb;
 
                   const p = row.parsed;
                   const counterparty = row.yon === 'satis' ? p.customer : p.supplier;
-                  const matchedExisting = cariler.find((c) => c.id === row.selectedCariId);
+                  const matchedExisting = allCariler.find((c) => c.id === row.selectedCariId);
                   const isAutoCreate = row.selectedCariId === AUTO_CREATE_VALUE;
+                  const missingKey = row.missingCariKey || buildPartyDedupKey(counterparty);
+                  const missingDraft = missingKey ? missingCariDrafts[missingKey] : undefined;
+                  const isMissingApproved = Boolean(missingDraft?.approved);
                   const isForeign = p.currencyCode !== 'TRY' && p.currencyCode !== 'TL';
 
                   return (
@@ -830,25 +1235,37 @@ ALTER TABLE public.faturalar ADD COLUMN IF NOT EXISTS ubl_detay jsonb;
                             {matchedExisting ? (
                               <span className="inline-flex items-center gap-1 text-[10px] font-bold text-teal-400">
                                 <Building2 className="w-3 h-3" />
-                                VKN Eşleşti
+                                VKN / Cari Eşleşti
                               </span>
                             ) : isAutoCreate ? (
-                              <span className="inline-flex items-center gap-1 text-[10px] font-bold text-amber-300">
-                                <UserPlus className="w-3 h-3" />
-                                Yeni Cari Açılacak
-                              </span>
+                              isMissingApproved ? (
+                                <span className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-300">
+                                  <CheckCircle2 className="w-3 h-3" />
+                                  Onaylandı (Yeni Açılacak)
+                                </span>
+                              ) : (
+                                <span className="inline-flex items-center gap-1 text-[10px] font-bold text-amber-300">
+                                  <UserPlus className="w-3 h-3" />
+                                  Cari Yok — Yukarıdan Onaylayın
+                                </span>
+                              )
                             ) : null}
                           </div>
                           <select
                             value={row.selectedCariId}
                             onChange={(e) => handleCariChange(row.id, e.target.value)}
-                            className="w-full bg-[#111820] border border-white/10 rounded-lg px-2.5 py-2 text-xs text-white focus:outline-none focus:border-teal-400"
+                            className={`w-full bg-[#111820] border rounded-lg px-2.5 py-2 text-xs text-white focus:outline-none focus:border-teal-400 ${
+                              isAutoCreate && !isMissingApproved
+                                ? 'border-amber-400/50'
+                                : 'border-white/10'
+                            }`}
                           >
                             <option value="">-- Cari Seçiniz --</option>
                             <option value={AUTO_CREATE_VALUE}>
-                              + Otomatik Yeni Cari Aç ({counterparty.unvan} - {counterparty.vkn || 'VKN Yok'})
+                              + Faturadaki Bilgilerle Yeni Cari Aç ({counterparty.unvan} -{' '}
+                              {counterparty.vkn || 'VKN Yok'})
                             </option>
-                            {cariler.map((c) => (
+                            {allCariler.map((c) => (
                               <option key={c.id} value={c.id}>
                                 [{c.tur === 'alici' ? 'ALICI' : 'TEDARİKÇİ'}] {c.unvan}
                                 {c.vergi_tc_no ? ` (${c.vergi_tc_no})` : ''}
@@ -929,10 +1346,23 @@ ALTER TABLE public.faturalar ADD COLUMN IF NOT EXISTS ubl_detay jsonb;
             {selectedRows.length > 0 ? (
               <span>
                 <strong className="text-white">{selectedRows.length} fatura</strong> işlenecek
-                {autoCreateCount > 0 && (
+                {approvedNewCariCount > 0 && (
                   <>
                     {' '}
-                    • <strong className="text-amber-300">{autoCreateCount} yeni cari</strong> oluşturulacak
+                    •{' '}
+                    <strong className="text-emerald-300">
+                      {approvedNewCariCount} onaylı yeni cari
+                    </strong>{' '}
+                    açılacak
+                  </>
+                )}
+                {unapprovedSelectedMissingKeys.length > 0 && (
+                  <>
+                    {' '}
+                    •{' '}
+                    <strong className="text-amber-300">
+                      {unapprovedSelectedMissingKeys.length} yeni cari onay bekliyor
+                    </strong>
                   </>
                 )}
               </span>
