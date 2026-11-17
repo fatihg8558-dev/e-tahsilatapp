@@ -5,12 +5,51 @@ export interface UblPartyInfo {
   unvan: string;
   telefon: string;
   email: string;
+  vergiDairesi?: string;
+  adres?: string;
+  web?: string;
+}
+
+export interface UblInvoiceLine {
+  lineId: string;
+  name: string;
+  description: string;
+  sellerCode: string;
+  quantity: number;
+  unitCode: string;
+  unitLabel: string;
+  unitPrice: number;
+  discountAmount: number;
+  discountRate: number;
+  kdvRate: number;
+  kdvAmount: number;
+  lineExtensionAmount: number;
+}
+
+export interface UblTaxSubtotal {
+  percent: number;
+  taxableAmount: number;
+  taxAmount: number;
+}
+
+export interface UblInvoiceTotals {
+  lineExtensionAmount: number;
+  allowanceTotalAmount: number;
+  taxExclusiveAmount: number;
+  taxTotalAmount: number;
+  withholdingTaxAmount: number;
+  taxInclusiveAmount: number;
+  payableAmount: number;
+  taxSubtotals: UblTaxSubtotal[];
 }
 
 export interface ParsedUblInvoice {
   fileName: string;
   faturaNo: string;
+  uuid: string;
+  profileId: string;
   tarih: string; // YYYY-MM-DD
+  issueTime: string;
   invoiceTypeCode: string;
   currencyCode: string;
   exchangeRate: number;
@@ -20,10 +59,46 @@ export interface ParsedUblInvoice {
   customer: UblPartyInfo;
   detectedYon: FaturaYon;
   detectionReason: string;
+  notes: string[];
+  lines: UblInvoiceLine[];
+  totals: UblInvoiceTotals;
 }
 
 export const normalizeTaxId = (raw?: string | null): string =>
   (raw || '').replace(/\D/g, '').trim();
+
+const UBL_UNIT_LABELS: Record<string, string> = {
+  C62: 'Adet',
+  NIU: 'Adet',
+  EA: 'Adet',
+  PCE: 'Adet',
+  KGM: 'Kg',
+  GRM: 'Gr',
+  TNE: 'Ton',
+  LTR: 'Lt',
+  MLT: 'Ml',
+  MTR: 'Mt',
+  CMT: 'Cm',
+  MMT: 'Mm',
+  MTK: 'm²',
+  MTQ: 'm³',
+  BX: 'Kutu',
+  PK: 'Paket',
+  SET: 'Set',
+  PR: 'Çift',
+  DZN: 'Düzine',
+  DAY: 'Gün',
+  HUR: 'Saat',
+  MON: 'Ay',
+  ANN: 'Yıl',
+  KWH: 'kWh',
+};
+
+export function mapUblUnitCode(unitCode?: string | null): string {
+  const code = (unitCode || '').trim().toUpperCase();
+  if (!code) return 'Adet';
+  return UBL_UNIT_LABELS[code] || code;
+}
 
 const getDirectChildrenByLocalName = (parent: Element, localName: string): Element[] => {
   const result: Element[] = [];
@@ -68,10 +143,46 @@ const getDescendantText = (parent: Element | null, localName: string): string =>
   return el?.textContent?.trim() || '';
 };
 
+const parseDecimalSafe = (raw?: string | null): number => {
+  if (!raw) return 0;
+  const cleaned = raw.trim().replace(/\s+/g, '');
+  if (!cleaned) return 0;
+  // UBL XML standartta nokta ondalık ayırıcısıdır (örn: 12500.50); yine de virgül gelirse düzelt
+  const normalized =
+    cleaned.includes(',') && !cleaned.includes('.')
+      ? cleaned.replace(',', '.')
+      : cleaned.includes(',') && cleaned.includes('.')
+      ? cleaned.replace(/\./g, '').replace(',', '.')
+      : cleaned;
+  const num = parseFloat(normalized);
+  return isNaN(num) ? 0 : num;
+};
+
+const parsePartyAddress = (party: Element): string => {
+  const addrEl = getFirstDirectChild(party, 'PostalAddress');
+  if (!addrEl) return '';
+
+  const street = getDirectChildText(addrEl, 'StreetName');
+  const buildingName = getDirectChildText(addrEl, 'BuildingName');
+  const buildingNo = getDirectChildText(addrEl, 'BuildingNumber');
+  const room = getDirectChildText(addrEl, 'Room');
+  const district = getDirectChildText(addrEl, 'CitySubdivisionName');
+  const city = getDirectChildText(addrEl, 'CityName');
+  const countryEl = getFirstDirectChild(addrEl, 'Country');
+  const country = getDirectChildText(countryEl, 'Name');
+
+  const buildingPart = [buildingName, buildingNo ? `No:${buildingNo}` : '', room ? `D:${room}` : '']
+    .filter(Boolean)
+    .join(' ');
+  const cityPart = [district, city].filter(Boolean).join(' / ');
+
+  return [street, buildingPart, cityPart, country].filter(Boolean).join(', ');
+};
+
 const parsePartyInfo = (partyWrapper: Element | null): UblPartyInfo => {
   const party = getFirstDirectChild(partyWrapper, 'Party') || partyWrapper;
   if (!party) {
-    return { vkn: '', unvan: '', telefon: '', email: '' };
+    return { vkn: '', unvan: '', telefon: '', email: '', vergiDairesi: '', adres: '', web: '' };
   }
 
   // VKN / TCKN bul
@@ -121,7 +232,13 @@ const parsePartyInfo = (partyWrapper: Element | null): UblPartyInfo => {
     unvan = getDescendantText(party, 'RegistrationName') || getDescendantText(party, 'Name');
   }
 
-  // İletişim bilgileri
+  // Vergi dairesi, Adres, Web ve İletişim bilgileri
+  const partyTaxEl = getFirstDirectChild(party, 'PartyTaxScheme');
+  const taxSchemeEl = getFirstDirectChild(partyTaxEl, 'TaxScheme');
+  const vergiDairesi = getDirectChildText(taxSchemeEl, 'Name');
+  const adres = parsePartyAddress(party);
+  const web = getDirectChildText(party, 'WebsiteURI');
+
   const contactEl = getFirstDirectChild(party, 'Contact');
   const telefon = getDirectChildText(contactEl, 'Telephone');
   const email = getDirectChildText(contactEl, 'ElectronicMail');
@@ -131,22 +248,143 @@ const parsePartyInfo = (partyWrapper: Element | null): UblPartyInfo => {
     unvan: unvan || 'Bilinmeyen Cari',
     telefon,
     email,
+    vergiDairesi,
+    adres,
+    web,
   };
 };
 
-const parseDecimalSafe = (raw?: string | null): number => {
-  if (!raw) return 0;
-  const cleaned = raw.trim().replace(/\s+/g, '');
-  if (!cleaned) return 0;
-  // UBL XML standartta nokta ondalık ayırıcısıdır (örn: 12500.50); yine de virgül gelirse düzelt
-  const normalized =
-    cleaned.includes(',') && !cleaned.includes('.')
-      ? cleaned.replace(',', '.')
-      : cleaned.includes(',') && cleaned.includes('.')
-      ? cleaned.replace(/\./g, '').replace(',', '.')
-      : cleaned;
-  const num = parseFloat(normalized);
-  return isNaN(num) ? 0 : num;
+const parseInvoiceLines = (invoiceEl: Element): UblInvoiceLine[] => {
+  const lineEls = getDirectChildrenByLocalName(invoiceEl, 'InvoiceLine');
+  return lineEls.map((lineEl, index) => {
+    const lineId = getDirectChildText(lineEl, 'ID') || String(index + 1);
+    const qtyEl = getFirstDirectChild(lineEl, 'InvoicedQuantity');
+    const quantity = parseDecimalSafe(qtyEl?.textContent);
+    const unitCode = (qtyEl?.getAttribute('unitCode') || 'C62').trim().toUpperCase();
+    const unitLabel = mapUblUnitCode(unitCode);
+
+    const lineExtensionAmount = parseDecimalSafe(getDirectChildText(lineEl, 'LineExtensionAmount'));
+
+    const itemEl = getFirstDirectChild(lineEl, 'Item');
+    const name = getDirectChildText(itemEl, 'Name') || `Kalem #${index + 1}`;
+    const description = getDirectChildText(itemEl, 'Description');
+    const sellerIdentEl = getFirstDirectChild(itemEl, 'SellersItemIdentification');
+    const sellerCode = getDirectChildText(sellerIdentEl, 'ID');
+
+    const priceEl = getFirstDirectChild(lineEl, 'Price');
+    const unitPrice = parseDecimalSafe(getDirectChildText(priceEl, 'PriceAmount'));
+
+    // İskonto (AllowanceCharge[ChargeIndicator=false])
+    let discountAmount = 0;
+    let discountRate = 0;
+    const allowances = getDirectChildrenByLocalName(lineEl, 'AllowanceCharge');
+    for (const ac of allowances) {
+      const isCharge = getDirectChildText(ac, 'ChargeIndicator').toLowerCase() === 'true';
+      if (isCharge) continue;
+      discountAmount += parseDecimalSafe(getDirectChildText(ac, 'Amount'));
+      const factor = parseDecimalSafe(getDirectChildText(ac, 'MultiplierFactorNumeric'));
+      if (factor > 0) {
+        discountRate = factor <= 1 ? Math.round(factor * 10000) / 100 : factor;
+      }
+    }
+
+    // KDV Bilgisi
+    const taxTotalEl = getFirstDirectChild(lineEl, 'TaxTotal');
+    const taxSubtotalEl = getFirstDirectChild(taxTotalEl, 'TaxSubtotal');
+    const taxCategoryEl =
+      getFirstDirectChild(taxSubtotalEl, 'TaxCategory') ||
+      getFirstDirectChild(itemEl, 'ClassifiedTaxCategory');
+
+    const kdvRate = parseDecimalSafe(
+      getDirectChildText(taxSubtotalEl, 'Percent') ||
+        getDirectChildText(taxCategoryEl, 'Percent')
+    );
+    const kdvAmount = parseDecimalSafe(
+      getDirectChildText(taxSubtotalEl, 'TaxAmount') ||
+        getDirectChildText(taxTotalEl, 'TaxAmount')
+    );
+
+    return {
+      lineId,
+      name,
+      description,
+      sellerCode,
+      quantity,
+      unitCode,
+      unitLabel,
+      unitPrice,
+      discountAmount: Math.round(discountAmount * 100) / 100,
+      discountRate,
+      kdvRate,
+      kdvAmount: Math.round(kdvAmount * 100) / 100,
+      lineExtensionAmount: Math.round(lineExtensionAmount * 100) / 100,
+    };
+  });
+};
+
+const parseInvoiceTotals = (
+  invoiceEl: Element,
+  payableAmountFallback: number
+): UblInvoiceTotals => {
+  const monetaryEl = getFirstDirectChild(invoiceEl, 'LegalMonetaryTotal');
+  const lineExtensionAmount = parseDecimalSafe(
+    getDirectChildText(monetaryEl, 'LineExtensionAmount')
+  );
+  const allowanceTotalAmount = parseDecimalSafe(
+    getDirectChildText(monetaryEl, 'AllowanceTotalAmount')
+  );
+  const taxExclusiveAmount = parseDecimalSafe(
+    getDirectChildText(monetaryEl, 'TaxExclusiveAmount')
+  );
+  const taxInclusiveAmount = parseDecimalSafe(
+    getDirectChildText(monetaryEl, 'TaxInclusiveAmount')
+  );
+  const payableAmount =
+    parseDecimalSafe(getDirectChildText(monetaryEl, 'PayableAmount')) || payableAmountFallback;
+
+  let taxTotalAmount = 0;
+  const taxSubtotalsMap = new Map<number, UblTaxSubtotal>();
+  const taxTotals = getDirectChildrenByLocalName(invoiceEl, 'TaxTotal');
+  for (const tt of taxTotals) {
+    taxTotalAmount += parseDecimalSafe(getDirectChildText(tt, 'TaxAmount'));
+    const subs = getDirectChildrenByLocalName(tt, 'TaxSubtotal');
+    for (const sub of subs) {
+      const taxCat = getFirstDirectChild(sub, 'TaxCategory');
+      const percent = parseDecimalSafe(
+        getDirectChildText(sub, 'Percent') || getDirectChildText(taxCat, 'Percent')
+      );
+      const taxableAmount = parseDecimalSafe(getDirectChildText(sub, 'TaxableAmount'));
+      const taxAmount = parseDecimalSafe(getDirectChildText(sub, 'TaxAmount'));
+      const existing = taxSubtotalsMap.get(percent);
+      if (existing) {
+        existing.taxableAmount = Math.round((existing.taxableAmount + taxableAmount) * 100) / 100;
+        existing.taxAmount = Math.round((existing.taxAmount + taxAmount) * 100) / 100;
+      } else {
+        taxSubtotalsMap.set(percent, {
+          percent,
+          taxableAmount: Math.round(taxableAmount * 100) / 100,
+          taxAmount: Math.round(taxAmount * 100) / 100,
+        });
+      }
+    }
+  }
+
+  let withholdingTaxAmount = 0;
+  const withholdingEls = getDirectChildrenByLocalName(invoiceEl, 'WithholdingTaxTotal');
+  for (const wt of withholdingEls) {
+    withholdingTaxAmount += parseDecimalSafe(getDirectChildText(wt, 'TaxAmount'));
+  }
+
+  return {
+    lineExtensionAmount: Math.round(lineExtensionAmount * 100) / 100,
+    allowanceTotalAmount: Math.round(allowanceTotalAmount * 100) / 100,
+    taxExclusiveAmount: Math.round(taxExclusiveAmount * 100) / 100,
+    taxTotalAmount: Math.round(taxTotalAmount * 100) / 100,
+    withholdingTaxAmount: Math.round(withholdingTaxAmount * 100) / 100,
+    taxInclusiveAmount: Math.round(taxInclusiveAmount * 100) / 100,
+    payableAmount: Math.round(payableAmount * 100) / 100,
+    taxSubtotals: Array.from(taxSubtotalsMap.values()).sort((a, b) => b.percent - a.percent),
+  };
 };
 
 /**
@@ -179,12 +417,20 @@ export const parseUblInvoiceXml = (
   }
 
   const faturaNo = getDirectChildText(invoiceEl, 'ID') || fileName.replace(/\.(xml|ubl)$/i, '');
+  const uuid = getDirectChildText(invoiceEl, 'UUID');
+  const profileId = (getDirectChildText(invoiceEl, 'ProfileID') || 'TICARIFATURA').toUpperCase();
   const rawDate = getDirectChildText(invoiceEl, 'IssueDate');
   const tarih = /^\d{4}-\d{2}-\d{2}/.test(rawDate)
     ? rawDate.slice(0, 10)
     : new Date().toISOString().split('T')[0];
+  const issueTime = getDirectChildText(invoiceEl, 'IssueTime');
 
   const invoiceTypeCode = (getDirectChildText(invoiceEl, 'InvoiceTypeCode') || 'SATIS').toUpperCase();
+
+  // Notlar
+  const notes = getDirectChildrenByLocalName(invoiceEl, 'Note')
+    .map((el) => el.textContent?.trim() || '')
+    .filter(Boolean);
 
   // Satıcı ve Alıcı taraflar
   const supplierPartyEl = getFirstDirectChild(invoiceEl, 'AccountingSupplierParty');
@@ -220,6 +466,8 @@ export const parseUblInvoiceXml = (
   }
 
   const tutarTL = Math.round(originalAmount * exchangeRate * 100) / 100;
+  const lines = parseInvoiceLines(invoiceEl);
+  const totals = parseInvoiceTotals(invoiceEl, originalAmount);
 
   // Fatura Yönü Tespiti (Satış mı Alış mı?)
   const normFirmaVkn = normalizeTaxId(firmaVergiNo);
@@ -256,7 +504,10 @@ export const parseUblInvoiceXml = (
   return {
     fileName,
     faturaNo,
+    uuid,
+    profileId,
     tarih,
+    issueTime,
     invoiceTypeCode,
     currencyCode,
     exchangeRate,
@@ -266,5 +517,8 @@ export const parseUblInvoiceXml = (
     customer,
     detectedYon,
     detectionReason,
+    notes,
+    lines,
+    totals,
   };
 };

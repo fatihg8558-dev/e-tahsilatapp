@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { supabase, handleSupabaseError } from '../lib/supabase';
-import { Cari, CariTur, Islem, Fatura } from '../types/database';
+import { Cari, CariTur, Islem, Fatura, FaturaYon } from '../types/database';
 import { formatCurrency, formatDate } from '../lib/formatters';
 import {
   Users,
@@ -25,14 +25,24 @@ import {
   Upload,
   Lock,
   Calendar,
+  Eye,
 } from 'lucide-react';
 import { exportToExcel, printPdfReport } from '../lib/exportService';
 import {
   buildCariEkstre,
+  CariEkstreRow,
   formatEkstreBakiye,
   RawEkstreMovement,
 } from '../lib/cariEkstreHelper';
 import { UblImportModal } from '../components/cari/UblImportModal';
+import { UblInvoicePreviewModal } from '../components/cari/UblInvoicePreviewModal';
+import { isWebPlatform } from '../lib/platform';
+import { ParsedUblInvoice } from '../lib/ublParser';
+import {
+  buildFallbackInvoiceFromRecord,
+  getUblInvoiceSnapshot,
+  saveUblInvoiceSnapshots,
+} from '../lib/ublInvoiceStore';
 
 interface CarilerPageProps {
   onNavigate: (tab: string, state?: unknown) => void;
@@ -64,6 +74,12 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [detailStartDate, setDetailStartDate] = useState('');
   const [detailEndDate, setDetailEndDate] = useState('');
+  const [previewFaturaState, setPreviewFaturaState] = useState<{
+    invoice: ParsedUblInvoice;
+    yon: FaturaYon;
+    isSummaryFallback: boolean;
+  } | null>(null);
+  const canPreviewUblInvoice = isWebPlatform();
 
   // Form Fields
   const [formUnvan, setFormUnvan] = useState('');
@@ -255,6 +271,37 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
       console.error(err);
     } finally {
       setLoadingDetail(false);
+    }
+  };
+
+  const handleOpenFaturaPreview = (r: CariEkstreRow) => {
+    if (!r.rawMovement) return;
+    const rawFatura = r.rawMovement as Fatura;
+    const yon: FaturaYon = rawFatura.yon === 'satis' ? 'satis' : 'alis';
+    const faturaNo = rawFatura.fatura_no || r.belgeNo;
+    const snapshot = effectiveFirmaId
+      ? getUblInvoiceSnapshot(effectiveFirmaId, faturaNo, yon)
+      : null;
+
+    if (snapshot) {
+      setPreviewFaturaState({
+        invoice: snapshot.invoice,
+        yon: snapshot.yon,
+        isSummaryFallback: false,
+      });
+    } else {
+      setPreviewFaturaState({
+        invoice: buildFallbackInvoiceFromRecord({
+          faturaNo,
+          tarih: rawFatura.tarih || r.dateKey,
+          tutar: Number(rawFatura.tutar) || 0,
+          yon,
+          firma,
+          cari: selectedCariForDetail,
+        }),
+        yon,
+        isSummaryFallback: true,
+      });
     }
   };
 
@@ -727,7 +774,10 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
               </div>
               <button
                 type="button"
-                onClick={() => setSelectedCariForDetail(null)}
+                onClick={() => {
+                  setSelectedCariForDetail(null);
+                  setPreviewFaturaState(null);
+                }}
                 aria-label="Ekstreyi kapat"
                 className="p-2 text-gray-400 hover:text-white rounded-lg hover:bg-white/5 transition shrink-0"
               >
@@ -1069,6 +1119,17 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
                                     <ExternalLink className="w-3 h-3 text-teal-400" />
                                     <span>Makbuz</span>
                                   </button>
+                                ) : r.isInvoice && !r.isOpeningRow && r.rawMovement && canPreviewUblInvoice ? (
+                                  <button
+                                    type="button"
+                                    data-testid="ekstre_view_invoice_btn"
+                                    onClick={() => handleOpenFaturaPreview(r)}
+                                    className="px-2 py-1 rounded-lg bg-blue-500/15 hover:bg-blue-500/30 text-blue-300 border border-blue-500/30 text-[10.5px] font-bold inline-flex items-center gap-1 transition"
+                                    title="Fatura Görüntüsünü Aç (Sadece Web)"
+                                  >
+                                    <Eye className="w-3 h-3 text-blue-400" />
+                                    <span>Fatura</span>
+                                  </button>
                                 ) : (
                                   <span className="text-gray-500 text-[10px]">-</span>
                                 )}
@@ -1119,7 +1180,7 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
                               </div>
                             </div>
 
-                            {r.isPayment && !r.isOpeningRow && r.rawMovement && onOpenMakbuz && (
+                            {r.isPayment && !r.isOpeningRow && r.rawMovement && onOpenMakbuz ? (
                               <button
                                 type="button"
                                 onClick={() => {
@@ -1133,7 +1194,17 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
                                 <ExternalLink className="w-3 h-3" />
                                 <span>Makbuz</span>
                               </button>
-                            )}
+                            ) : r.isInvoice && !r.isOpeningRow && r.rawMovement && canPreviewUblInvoice ? (
+                              <button
+                                type="button"
+                                data-testid="ekstre_view_invoice_btn_mobile"
+                                onClick={() => handleOpenFaturaPreview(r)}
+                                className="px-2.5 py-1 rounded-lg bg-blue-500/15 text-blue-300 border border-blue-500/30 text-[11px] font-bold inline-flex items-center gap-1 shrink-0"
+                              >
+                                <Eye className="w-3 h-3" />
+                                <span>Fatura</span>
+                              </button>
+                            ) : null}
                           </div>
 
                           {r.aciklama && r.aciklama !== '-' && (
@@ -1350,6 +1421,29 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
         cariler={cariler}
         onImported={fetchCariler}
       />
+
+      {/* SADECE WEB: UBL / e-FATURA GÖRSEL ÖNİZLEME MODALI */}
+      {canPreviewUblInvoice && previewFaturaState && (
+        <UblInvoicePreviewModal
+          isOpen={Boolean(previewFaturaState)}
+          invoice={previewFaturaState.invoice}
+          yon={previewFaturaState.yon}
+          isSummaryFallback={previewFaturaState.isSummaryFallback}
+          firmaVergiNo={firma?.vergi_no}
+          onClose={() => setPreviewFaturaState(null)}
+          onXmlAttached={(parsed) => {
+            const targetYon = previewFaturaState.yon;
+            if (effectiveFirmaId) {
+              saveUblInvoiceSnapshots(effectiveFirmaId, [{ yon: targetYon, parsed }]);
+            }
+            setPreviewFaturaState({
+              invoice: parsed,
+              yon: targetYon,
+              isSummaryFallback: false,
+            });
+          }}
+        />
+      )}
     </div>
   );
 };

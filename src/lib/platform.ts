@@ -4,6 +4,10 @@ export function isAndroidNativeBridge(): boolean {
   return typeof window !== 'undefined' && Boolean(window.AndroidBridge);
 }
 
+export function isWebPlatform(): boolean {
+  return !isAndroidNativeBridge();
+}
+
 export function isIosUserAgent(userAgent?: string, maxTouchPoints: number = 0): boolean {
   const ua = userAgent || '';
   if (/iPhone|iPad|iPod/i.test(ua)) {

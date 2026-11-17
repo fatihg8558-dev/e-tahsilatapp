@@ -14,6 +14,7 @@ import {
   ArrowUpRight,
   ArrowDownLeft,
   Info,
+  Eye,
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { supabase, handleSupabaseError } from '../../lib/supabase';
@@ -25,6 +26,9 @@ import {
   normalizeTaxId,
   UblPartyInfo,
 } from '../../lib/ublParser';
+import { isWebPlatform } from '../../lib/platform';
+import { saveUblInvoiceSnapshots } from '../../lib/ublInvoiceStore';
+import { UblInvoicePreviewModal } from './UblInvoicePreviewModal';
 
 interface UblImportModalProps {
   isOpen: boolean;
@@ -75,6 +79,11 @@ export const UblImportModal: React.FC<UblImportModalProps> = ({
   } | null>(null);
   const [showSqlHelp, setShowSqlHelp] = useState(false);
   const [copiedSql, setCopiedSql] = useState(false);
+  const [previewRow, setPreviewRow] = useState<{
+    parsed: ParsedUblInvoice;
+    yon: FaturaYon;
+  } | null>(null);
+  const showInvoicePreview = isWebPlatform();
 
   const loadExistingInvoices = async (): Promise<ExistingFaturaKey[]> => {
     if (!firma?.id) return [];
@@ -99,6 +108,7 @@ export const UblImportModal: React.FC<UblImportModalProps> = ({
       setFeedback(null);
       setIsDragging(false);
       setShowSqlHelp(false);
+      setPreviewRow(null);
     }
   }, [isOpen, firma?.id]);
 
@@ -172,6 +182,15 @@ export const UblImportModal: React.FC<UblImportModalProps> = ({
             isDuplicate: false,
             include: false,
           });
+        }
+      }
+
+      if (firma?.id && showInvoicePreview) {
+        const parsedSnapshots = newRows
+          .filter((r): r is ImportRow & { parsed: ParsedUblInvoice } => Boolean(r.parsed))
+          .map((r) => ({ yon: r.yon, parsed: r.parsed }));
+        if (parsedSnapshots.length > 0) {
+          saveUblInvoiceSnapshots(firma.id, parsedSnapshots);
         }
       }
 
@@ -416,6 +435,13 @@ export const UblImportModal: React.FC<UblImportModalProps> = ({
               .eq('firma_id', firma.id);
           }
         }
+      }
+
+      if (firma.id && showInvoicePreview) {
+        const snapshots = selectedRows
+          .filter((r): r is ImportRow & { parsed: ParsedUblInvoice } => Boolean(r.parsed))
+          .map((r) => ({ yon: r.yon, parsed: r.parsed }));
+        saveUblInvoiceSnapshots(firma.id, snapshots);
       }
 
       await onImported();
@@ -708,7 +734,20 @@ export const UblImportModal: React.FC<UblImportModalProps> = ({
                           </div>
                         </div>
 
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          {showInvoicePreview && (
+                            <button
+                              type="button"
+                              onClick={() => setPreviewRow({ parsed: p, yon: row.yon })}
+                              data-testid="ubl_preview_invoice_btn"
+                              className="px-2.5 py-1 rounded-lg bg-blue-500/15 hover:bg-blue-500/25 border border-blue-500/30 text-[11px] font-bold text-blue-300 flex items-center gap-1 transition"
+                              title="Faturanın görsel e-Fatura önizlemesini aç (Sadece Web)"
+                            >
+                              <Eye className="w-3.5 h-3.5" />
+                              <span>Fatura Görüntüsü</span>
+                            </button>
+                          )}
+
                           {/* Yön Seçici */}
                           <div className="inline-flex rounded-lg bg-black/50 p-0.5 border border-white/10">
                             <button
@@ -908,6 +947,16 @@ export const UblImportModal: React.FC<UblImportModalProps> = ({
           </div>
         </div>
       </div>
+
+      {showInvoicePreview && previewRow && (
+        <UblInvoicePreviewModal
+          isOpen={Boolean(previewRow)}
+          invoice={previewRow.parsed}
+          yon={previewRow.yon}
+          firmaVergiNo={firma?.vergi_no}
+          onClose={() => setPreviewRow(null)}
+        />
+      )}
     </div>
   );
 };
