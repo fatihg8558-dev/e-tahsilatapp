@@ -27,7 +27,10 @@ import {
   UblPartyInfo,
 } from '../../lib/ublParser';
 import { isWebPlatform } from '../../lib/platform';
-import { saveUblInvoiceSnapshots } from '../../lib/ublInvoiceStore';
+import {
+  saveUblInvoiceSnapshotsAsync,
+  syncUblDetayToSupabase,
+} from '../../lib/ublInvoiceStore';
 import { UblInvoicePreviewModal } from './UblInvoicePreviewModal';
 
 interface UblImportModalProps {
@@ -190,7 +193,20 @@ export const UblImportModal: React.FC<UblImportModalProps> = ({
           .filter((r): r is ImportRow & { parsed: ParsedUblInvoice } => Boolean(r.parsed))
           .map((r) => ({ yon: r.yon, parsed: r.parsed }));
         if (parsedSnapshots.length > 0) {
-          saveUblInvoiceSnapshots(firma.id, parsedSnapshots);
+          await saveUblInvoiceSnapshotsAsync(firma.id, parsedSnapshots);
+        }
+
+        const duplicateSnapshots = newRows
+          .filter((r): r is ImportRow & { parsed: ParsedUblInvoice } =>
+            Boolean(r.isDuplicate && r.parsed)
+          )
+          .map((r) => ({ yon: r.yon, parsed: r.parsed }));
+        if (duplicateSnapshots.length > 0) {
+          await syncUblDetayToSupabase(firma.id, duplicateSnapshots);
+          setFeedback({
+            type: 'success',
+            text: `Zaten kayıtlı (mükerrer) olan ${duplicateSnapshots.length} faturanın görsel önizlemesi ve GİB XSLT verisi güncellendi. Ekstreden tam görüntüsünü açabilirsiniz.`,
+          });
         }
       }
 
@@ -441,7 +457,8 @@ export const UblImportModal: React.FC<UblImportModalProps> = ({
         const snapshots = selectedRows
           .filter((r): r is ImportRow & { parsed: ParsedUblInvoice } => Boolean(r.parsed))
           .map((r) => ({ yon: r.yon, parsed: r.parsed }));
-        saveUblInvoiceSnapshots(firma.id, snapshots);
+        await saveUblInvoiceSnapshotsAsync(firma.id, snapshots);
+        await syncUblDetayToSupabase(firma.id, snapshots);
       }
 
       await onImported();
@@ -475,8 +492,10 @@ export const UblImportModal: React.FC<UblImportModalProps> = ({
     }
   };
 
-  const faturaSqlSnippet = `-- UYARI: Fatura bakiye tetikleyicisi veritabanında zaten kurulu.
--- Bu SQL'i çalıştırmayın; ikinci bir tetikleyici bakiyeyi iki kez artırır.`;
+  const faturaSqlSnippet = `-- Opsiyonel: Fatura kalem ve vergi detaylarının farklı cihaz/tarayıcılarda da görünmesi için (~2 KB/fatura)
+ALTER TABLE public.faturalar ADD COLUMN IF NOT EXISTS ubl_detay jsonb;
+
+-- UYARI: Fatura bakiye tetikleyicisi veritabanında zaten kurulu; ikinci bir bakiye tetikleyicisi eklemeyiniz.`;
 
   const handleCopySql = () => {
     navigator.clipboard.writeText(faturaSqlSnippet);

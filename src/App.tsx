@@ -363,6 +363,7 @@ export const App: React.FC = () => {
             onSuccess={handleIslemSuccess}
             onCancel={() => handleSelectTab('dashboard')}
             onUpgradePackage={() => handleSelectTab('paketler')}
+            onPreviewPaymentLink={(params) => setPosPayParams(params)}
           />
         )}
 
@@ -374,6 +375,7 @@ export const App: React.FC = () => {
             onSuccess={handleIslemSuccess}
             onCancel={() => handleSelectTab('dashboard')}
             onUpgradePackage={() => handleSelectTab('paketler')}
+            onPreviewPaymentLink={(params) => setPosPayParams(params)}
           />
         )}
 
@@ -385,6 +387,7 @@ export const App: React.FC = () => {
             onSuccess={handleIslemSuccess}
             onCancel={() => handleSelectTab(editReturnTab || 'islemler')}
             onUpgradePackage={() => handleSelectTab('paketler')}
+            onPreviewPaymentLink={(params) => setPosPayParams(params)}
           />
         )}
 

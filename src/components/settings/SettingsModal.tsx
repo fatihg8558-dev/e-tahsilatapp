@@ -19,7 +19,19 @@ import {
   generatePaymentLink,
   getAndroidNfcStatus,
   isAndroidCepPosInstalled,
+  DEFAULT_SHARED_WEB_URL,
+  isAndroidApkOrigin,
+  isPrivateDevOrigin,
+  resolveGatewayFunctionUrl,
+  resolvePaymentLinkBaseUrl,
 } from '../../lib/posService';
+import {
+  checkGatewayHealth,
+  fetchCloudPosConfig,
+  POS_EDGE_DEPLOY_COMMANDS,
+  POS_GATEWAY_SQL_SNIPPET,
+  syncPublicPosConfigToCloud,
+} from '../../lib/posGatewayService';
 import {
   X,
   Building2,
@@ -50,8 +62,9 @@ import {
   Code2,
   Wifi,
   Smartphone,
+  ExternalLink,
 } from 'lucide-react';
-import { openWhatsApp } from '../../lib/linkHelper';
+import { openExternalLink, openWhatsApp } from '../../lib/linkHelper';
 import { StandaloneEkPlasiyerPanel } from '../paketler/StandaloneEkPlasiyerPanel';
 
 interface SettingsModalProps {
@@ -79,6 +92,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [posConfig, setPosConfig] = useState<PosConfig>(() => getPosConfig(firma?.id));
   const [posMsg, setPosMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [posSaving, setPosSaving] = useState(false);
+  const [gatewayChecking, setGatewayChecking] = useState(false);
+  const [gatewayStatus, setGatewayStatus] = useState<{ reachable: boolean; message: string } | null>(
+    null
+  );
+  const [showGatewaySetup, setShowGatewaySetup] = useState(false);
+  const [copiedGatewaySnippet, setCopiedGatewaySnippet] = useState<'sql' | 'cli' | null>(null);
   const [showPosLinkModal, setShowPosLinkModal] = useState(false);
   const [testLinkTutar, setTestLinkTutar] = useState('500');
   const [generatedLinkInfo, setGeneratedLinkInfo] = useState<{ url: string; message: string; ref: string } | null>(null);
@@ -126,9 +145,15 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     if (isOpen) {
       setActiveTab(initialTab);
       setShowEkPlasiyerPurchase(false);
+      setGatewayStatus(null);
     }
     if (firma?.id) {
       setPosConfig(getPosConfig(firma.id));
+      if (isOpen) {
+        void fetchCloudPosConfig(firma.id).then((merged) => {
+          setPosConfig(merged);
+        });
+      }
     }
     if (isOpen && firma) {
       setFirmaUnvan(firma.unvan || '');
@@ -140,7 +165,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       setFirmaWeb(firma.web || '');
       setFirmaMsg(null);
     }
-  }, [isOpen, firma]);
+  }, [isOpen, firma, initialTab]);
 
   const loadPlasiyerler = async () => {
     if (!firma?.id) return;
@@ -468,7 +493,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   };
 
   // Sanal POS Ayarları Kaydetme
-  const handleSavePosSubmit = (e: React.FormEvent) => {
+  const handleSavePosSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setPosMsg(null);
     setPosSaving(true);
@@ -482,16 +507,36 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       }
 
       savePosConfig(posConfig, firma?.id);
+      const syncRes = firma?.id
+        ? await syncPublicPosConfigToCloud(firma.id, posConfig)
+        : { cloudSaved: false, secretsSynced: false };
+
+      const syncSuffix = syncRes.cloudSaved
+        ? ' Web adresi bulutla senkronize edildi (Android ve tüm cihazlarda aktif).'
+        : ' Ayarlar bu cihaza kaydedildi.';
+
       setPosMsg({
         type: 'success',
-        text: posConfig.enabled && posConfig.provider !== 'none'
-          ? `${posConfig.provider === 'iyzico' ? 'iyzico' : 'PayTR'} Sanal POS entegrasyonu başarıyla kaydedildi ve aktif edildi.`
-          : 'Sanal POS ayarları kaydedildi (Pasif).',
+        text:
+          posConfig.enabled && posConfig.provider !== 'none'
+            ? `${posConfig.provider === 'iyzico' ? 'iyzico' : 'PayTR'} Sanal POS ayarları kaydedildi.${syncSuffix}`
+            : `Ödeme linki web adresi ve POS tercihleri kaydedildi.${syncSuffix}`,
       });
     } catch {
       setPosMsg({ type: 'error', text: 'Ayarlar kaydedilirken hata oluştu.' });
     } finally {
       setPosSaving(false);
+    }
+  };
+
+  const handleCheckGatewayHealth = async () => {
+    setGatewayChecking(true);
+    setGatewayStatus(null);
+    try {
+      const res = await checkGatewayHealth(posConfig);
+      setGatewayStatus({ reachable: res.reachable, message: res.message });
+    } finally {
+      setGatewayChecking(false);
     }
   };
 
@@ -504,6 +549,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     const result = generatePaymentLink({
       amount: num,
       customerName: 'Örnek Müşteri Ltd.',
+      firmaName: firma?.unvan || undefined,
+      firmaId: firma?.id || undefined,
       config: posConfig,
     });
     setGeneratedLinkInfo({
@@ -1793,6 +1840,196 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       </div>
                     )}
 
+                    {/* ÖDEME LİNKİ PAYLAŞIM WEB ADRESİ (ANDROID APK + TÜM CİHAZLAR İÇİN) */}
+                    <div className="p-4 rounded-xl bg-cyan-500/[0.06] border border-cyan-500/25 space-y-3">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="flex items-center gap-2">
+                          <Globe className="w-4 h-4 text-cyan-400" />
+                          <span className="text-xs font-bold text-white">
+                            Ödeme Linki Web Alan Adı (Public URL)
+                          </span>
+                        </div>
+                        <span className="text-[10px] px-2 py-0.5 rounded-full bg-black/40 border border-white/10 text-cyan-300 font-semibold">
+                          Android APK &amp; Tüm Cihazlar
+                        </span>
+                      </div>
+
+                      <p className="text-[11px] text-gray-300 leading-relaxed">
+                        Android uygulamasından müşteriye gönderilen ödeme linkleri, yalnızca yerel APK adresi yerine burada tanımladığınız canlı web adresiyle oluşturulur ve bulut üzerinden tüm cihazlarınıza eşitlenir.
+                      </p>
+
+                      <div>
+                        <label className="block text-[11px] text-gray-300 font-semibold mb-1">
+                          Canlı Web Uygulama Adresi (https://...)
+                        </label>
+                        <input
+                          type="url"
+                          data-testid="pos_public_web_url_input"
+                          value={posConfig.publicWebUrl || ''}
+                          onChange={(e) =>
+                            setPosConfig({ ...posConfig, publicWebUrl: e.target.value })
+                          }
+                          placeholder="Örn: https://odeme.firmam.com veya yayınlanan web URL"
+                          className="w-full bg-[#0a0e13] border border-white/15 rounded-xl px-3 py-2 text-xs text-white font-mono placeholder-gray-500 focus:outline-none focus:border-cyan-400"
+                        />
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-2">
+                        {typeof window !== 'undefined' &&
+                          window.location?.origin &&
+                          !isAndroidApkOrigin(window.location.origin) &&
+                          !isPrivateDevOrigin(window.location.origin) && (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setPosConfig({
+                                  ...posConfig,
+                                  publicWebUrl: window.location.origin,
+                                })
+                              }
+                              className="px-2.5 py-1 rounded-lg bg-teal-500/15 hover:bg-teal-500/25 border border-teal-500/30 text-teal-300 text-[11px] font-semibold transition"
+                            >
+                              Mevcut Web Adresini Al
+                            </button>
+                          )}
+
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setPosConfig({
+                              ...posConfig,
+                              publicWebUrl: DEFAULT_SHARED_WEB_URL,
+                            })
+                          }
+                          className="px-2.5 py-1 rounded-lg bg-cyan-500/15 hover:bg-cyan-500/25 border border-cyan-500/30 text-cyan-200 text-[11px] font-semibold transition"
+                        >
+                          Paylaşılan Web Adresini Kullan
+                        </button>
+                      </div>
+
+                      <div className="text-[10.5px] text-gray-400 bg-black/30 rounded-lg px-2.5 py-1.5 font-mono truncate">
+                        Örnek Link:{' '}
+                        <span className="text-cyan-300">
+                          {resolvePaymentLinkBaseUrl(posConfig).baseUrl}/?pay=THS-ORNEK
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* GERÇEK İYZİCO / PAYTR GATEWAY (SUPABASE EDGE FUNCTION) */}
+                    <div className="p-4 rounded-xl bg-indigo-500/[0.06] border border-indigo-400/25 space-y-3">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="flex items-center gap-2">
+                          <Code2 className="w-4 h-4 text-indigo-300" />
+                          <span className="text-xs font-bold text-white">
+                            Canlı iyzico / PayTR Sunucu Gateway (Edge Function)
+                          </span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setShowGatewaySetup((prev) => !prev)}
+                          className="text-[11px] text-indigo-300 hover:text-indigo-200 font-bold underline"
+                        >
+                          {showGatewaySetup ? 'Kurulum Kodunu Gizle' : 'SQL & Gateway Kurulum Kodu'}
+                        </button>
+                      </div>
+
+                      <div className="flex flex-col sm:flex-row gap-2">
+                        <input
+                          type="url"
+                          value={posConfig.gatewayFunctionUrl || ''}
+                          onChange={(e) =>
+                            setPosConfig({ ...posConfig, gatewayFunctionUrl: e.target.value })
+                          }
+                          placeholder={`Varsayılan: ${resolveGatewayFunctionUrl(null)}`}
+                          className="flex-1 bg-[#0a0e13] border border-white/10 rounded-xl px-3 py-2 text-[11px] text-white font-mono placeholder-gray-500 focus:outline-none focus:border-indigo-400"
+                        />
+                        <button
+                          type="button"
+                          disabled={gatewayChecking}
+                          onClick={() => void handleCheckGatewayHealth()}
+                          className="px-3.5 py-2 rounded-xl bg-indigo-500/20 hover:bg-indigo-500/30 border border-indigo-400/35 text-indigo-200 text-xs font-bold whitespace-nowrap flex items-center justify-center gap-1.5 transition disabled:opacity-50"
+                        >
+                          {gatewayChecking ? (
+                            <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                          ) : (
+                            <Shield className="w-3.5 h-3.5" />
+                          )}
+                          <span>Bağlantıyı Test Et</span>
+                        </button>
+                      </div>
+
+                      {gatewayStatus && (
+                        <div
+                          className={`p-2.5 rounded-lg text-[11px] flex items-center gap-2 ${
+                            gatewayStatus.reachable
+                              ? 'bg-emerald-500/15 border border-emerald-500/30 text-emerald-300'
+                              : 'bg-amber-500/15 border border-amber-500/30 text-amber-200'
+                          }`}
+                        >
+                          {gatewayStatus.reachable ? (
+                            <CheckCircle2 className="w-4 h-4 shrink-0" />
+                          ) : (
+                            <AlertCircle className="w-4 h-4 shrink-0" />
+                          )}
+                          <span>{gatewayStatus.message}</span>
+                        </div>
+                      )}
+
+                      {showGatewaySetup && (
+                        <div className="space-y-2.5 pt-2 border-t border-white/10">
+                          <div className="flex items-center justify-between text-[11px]">
+                            <span className="text-gray-300 font-semibold">
+                              1. Supabase SQL Editor Tabloları (`odeme_linkleri` &amp; `firma_pos_ayarlari`)
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                void navigator.clipboard.writeText(POS_GATEWAY_SQL_SNIPPET);
+                                setCopiedGatewaySnippet('sql');
+                                setTimeout(() => setCopiedGatewaySnippet(null), 2000);
+                              }}
+                              className="px-2 py-1 rounded bg-white/10 hover:bg-white/20 text-white font-semibold flex items-center gap-1"
+                            >
+                              {copiedGatewaySnippet === 'sql' ? (
+                                <Check className="w-3 h-3 text-emerald-300" />
+                              ) : (
+                                <Copy className="w-3 h-3" />
+                              )}
+                              <span>{copiedGatewaySnippet === 'sql' ? 'Kopyalandı' : 'SQL Kopyala'}</span>
+                            </button>
+                          </div>
+                          <pre className="p-2.5 rounded-lg bg-[#070b10] border border-white/10 text-[10px] font-mono text-gray-300 overflow-x-auto max-h-36">
+                            {POS_GATEWAY_SQL_SNIPPET}
+                          </pre>
+
+                          <div className="flex items-center justify-between text-[11px]">
+                            <span className="text-gray-300 font-semibold">
+                              2. Supabase Edge Function Dağıtım Komutu (`pos-payment-gateway`)
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                void navigator.clipboard.writeText(POS_EDGE_DEPLOY_COMMANDS);
+                                setCopiedGatewaySnippet('cli');
+                                setTimeout(() => setCopiedGatewaySnippet(null), 2000);
+                              }}
+                              className="px-2 py-1 rounded bg-white/10 hover:bg-white/20 text-white font-semibold flex items-center gap-1"
+                            >
+                              {copiedGatewaySnippet === 'cli' ? (
+                                <Check className="w-3 h-3 text-emerald-300" />
+                              ) : (
+                                <Copy className="w-3 h-3" />
+                              )}
+                              <span>{copiedGatewaySnippet === 'cli' ? 'Kopyalandı' : 'Komut Kopyala'}</span>
+                            </button>
+                          </div>
+                          <pre className="p-2.5 rounded-lg bg-[#070b10] border border-white/10 text-[10px] font-mono text-cyan-200 overflow-x-auto">
+                            {POS_EDGE_DEPLOY_COMMANDS}
+                          </pre>
+                        </div>
+                      )}
+                    </div>
+
                     <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-2">
                       {posConfig.enabled && posConfig.provider !== 'none' && (
                         entitlements.canUsePaymentLink ? (
@@ -1877,14 +2114,14 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                           <div className="text-gray-300 text-[11px] whitespace-pre-line bg-[#0a0e13] p-2.5 rounded border border-white/5 font-mono">
                             {generatedLinkInfo.message}
                           </div>
-                          <div className="flex items-center gap-2">
+                          <div className="flex flex-wrap items-center gap-2">
                             <button
                               type="button"
                               onClick={() => {
                                 navigator.clipboard.writeText(generatedLinkInfo.message);
                                 alert('Mesaj ve ödeme linki kopyalandı!');
                               }}
-                              className="px-3 py-1 rounded bg-teal-400/20 text-teal-300 text-xs font-bold hover:bg-teal-400/30 transition flex items-center gap-1"
+                              className="px-3 py-1.5 rounded bg-teal-400/20 text-teal-300 text-xs font-bold hover:bg-teal-400/30 transition flex items-center gap-1"
                             >
                               <Copy className="w-3.5 h-3.5" />
                               <span>Metni ve Linki Kopyala</span>
@@ -1894,10 +2131,18 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                               onClick={() => {
                                 openWhatsApp(null, generatedLinkInfo.message);
                               }}
-                              className="px-3 py-1 rounded bg-emerald-500/20 text-emerald-300 text-xs font-bold hover:bg-emerald-500/30 transition flex items-center gap-1"
+                              className="px-3 py-1.5 rounded bg-emerald-500/20 text-emerald-300 text-xs font-bold hover:bg-emerald-500/30 transition flex items-center gap-1"
                             >
                               <Share2 className="w-3.5 h-3.5" />
                               <span>WhatsApp ile Gönder</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => openExternalLink(generatedLinkInfo.url)}
+                              className="px-3 py-1.5 rounded bg-cyan-500/20 text-cyan-200 text-xs font-bold hover:bg-cyan-500/30 transition flex items-center gap-1"
+                            >
+                              <ExternalLink className="w-3.5 h-3.5" />
+                              <span>Tarayıcıda Aç</span>
                             </button>
                           </div>
                         </div>

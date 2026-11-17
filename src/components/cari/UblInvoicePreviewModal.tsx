@@ -1,8 +1,13 @@
-import React, { useRef, useState } from 'react';
-import { X, Printer, Upload, FileText, AlertCircle } from 'lucide-react';
+import React, { useEffect, useRef, useState } from 'react';
+import { X, Printer, Upload, FileText, AlertCircle, Sparkles, LayoutTemplate } from 'lucide-react';
 import { FaturaYon } from '../../types/database';
 import { formatCurrency, formatDate, numberToTurkishWords } from '../../lib/formatters';
-import { ParsedUblInvoice, parseUblInvoiceXml } from '../../lib/ublParser';
+import {
+  formatInvoiceScenarioLabel,
+  formatInvoiceTypeLabel,
+  ParsedUblInvoice,
+  parseUblInvoiceXml,
+} from '../../lib/ublParser';
 import { isWebPlatform } from '../../lib/platform';
 
 interface UblInvoicePreviewModalProps {
@@ -65,6 +70,58 @@ function buildAmountInWordsText(invoice: ParsedUblInvoice): string {
   )})`;
 }
 
+function printHtmlDocument(html: string): void {
+  const printWindow = window.open('', '_blank');
+  if (printWindow) {
+    printWindow.document.write(html);
+    printWindow.document.close();
+    setTimeout(() => {
+      printWindow.print();
+    }, 300);
+    return;
+  }
+
+  const iframe = document.createElement('iframe');
+  iframe.setAttribute('aria-hidden', 'true');
+  iframe.style.position = 'fixed';
+  iframe.style.right = '0';
+  iframe.style.bottom = '0';
+  iframe.style.width = '0';
+  iframe.style.height = '0';
+  iframe.style.border = '0';
+  iframe.style.opacity = '0';
+  iframe.style.pointerEvents = 'none';
+  document.body.appendChild(iframe);
+
+  const cleanup = () => {
+    setTimeout(() => {
+      if (document.body.contains(iframe)) {
+        document.body.removeChild(iframe);
+      }
+    }, 1500);
+  };
+
+  const iframeWin = iframe.contentWindow;
+  const iframeDoc = iframe.contentDocument || iframeWin?.document;
+  if (!iframeWin || !iframeDoc) {
+    cleanup();
+    return;
+  }
+
+  iframeDoc.open();
+  iframeDoc.write(html);
+  iframeDoc.close();
+  setTimeout(() => {
+    try {
+      iframeWin.addEventListener('afterprint', cleanup, { once: true });
+      iframeWin.focus();
+      iframeWin.print();
+    } finally {
+      setTimeout(cleanup, 60000);
+    }
+  }, 350);
+}
+
 /**
  * Standart GİB e-Fatura / e-Arşiv görünümünde yazdırılabilir A4 HTML üretir.
  */
@@ -75,6 +132,8 @@ export function buildPrintableUblInvoiceHtml(
   const code = (invoice.currencyCode || 'TRY').toUpperCase();
   const isForeign = code !== 'TRY' && code !== 'TL';
   const badgeTitle = getInvoiceBadgeTitle(invoice.profileId);
+  const scenarioLabel = formatInvoiceScenarioLabel(invoice.profileId);
+  const typeLabel = formatInvoiceTypeLabel(invoice.invoiceTypeCode);
   const totals = invoice.totals;
   const wordsText = buildAmountInWordsText(invoice);
 
@@ -343,7 +402,7 @@ export function buildPrintableUblInvoiceHtml(
               </div>
               <div style="margin-top: 6px; font-size: 9.5px; color: #334155;">
                 <div><strong>Özelleştirme No:</strong> TR1.2</div>
-                <div><strong>Senaryo:</strong> ${escapeHtml(invoice.profileId)}</div>
+                <div><strong>Senaryo:</strong> ${escapeHtml(scenarioLabel)}</div>
                 <div style="margin-top: 4px; font-weight: 700; color: ${
                   yon === 'satis' ? '#0f766e' : '#c2410c'
                 };">
@@ -373,7 +432,7 @@ export function buildPrintableUblInvoiceHtml(
                 }
                 <tr>
                   <td class="meta-label">Fatura Tipi</td>
-                  <td>${escapeHtml(invoice.invoiceTypeCode)}</td>
+                  <td>${escapeHtml(typeLabel)}</td>
                 </tr>
                 <tr>
                   <td class="meta-label">Para Birimi</td>
@@ -543,67 +602,53 @@ export const UblInvoicePreviewModal: React.FC<UblInvoicePreviewModalProps> = ({
   onXmlAttached,
 }) => {
   const xmlAttachInputRef = useRef<HTMLInputElement | null>(null);
+  const gibIframeRef = useRef<HTMLIFrameElement | null>(null);
   const [attachError, setAttachError] = useState<string | null>(null);
+  const [viewMode, setViewMode] = useState<'gib' | 'standard'>(() =>
+    invoice?.renderedGibHtml ? 'gib' : 'standard'
+  );
+  const [iframeHeight, setIframeHeight] = useState<number>(1120);
+
+  useEffect(() => {
+    if (invoice?.renderedGibHtml) {
+      setViewMode('gib');
+    } else {
+      setViewMode('standard');
+    }
+    setAttachError(null);
+    setIframeHeight(1120);
+  }, [invoice?.faturaNo, invoice?.renderedGibHtml]);
 
   if (!isOpen || !invoice || !isWebPlatform()) return null;
 
+  const hasGibXsltView = Boolean(invoice.renderedGibHtml);
   const code = (invoice.currencyCode || 'TRY').toUpperCase();
   const isForeign = code !== 'TRY' && code !== 'TL';
   const badgeTitle = getInvoiceBadgeTitle(invoice.profileId);
+  const scenarioLabel = formatInvoiceScenarioLabel(invoice.profileId);
+  const typeLabel = formatInvoiceTypeLabel(invoice.invoiceTypeCode);
   const totals = invoice.totals;
   const wordsText = buildAmountInWordsText(invoice);
 
   const handlePrint = () => {
-    const html = buildPrintableUblInvoiceHtml(invoice, yon);
-    const printWindow = window.open('', '_blank');
-    if (printWindow) {
-      printWindow.document.write(html);
-      printWindow.document.close();
-      setTimeout(() => {
-        printWindow.print();
-      }, 300);
+    if (viewMode === 'gib' && invoice.renderedGibHtml) {
+      printHtmlDocument(invoice.renderedGibHtml);
       return;
     }
+    printHtmlDocument(buildPrintableUblInvoiceHtml(invoice, yon));
+  };
 
-    const iframe = document.createElement('iframe');
-    iframe.setAttribute('aria-hidden', 'true');
-    iframe.style.position = 'fixed';
-    iframe.style.right = '0';
-    iframe.style.bottom = '0';
-    iframe.style.width = '0';
-    iframe.style.height = '0';
-    iframe.style.border = '0';
-    iframe.style.opacity = '0';
-    iframe.style.pointerEvents = 'none';
-    document.body.appendChild(iframe);
-
-    const cleanup = () => {
-      setTimeout(() => {
-        if (document.body.contains(iframe)) {
-          document.body.removeChild(iframe);
-        }
-      }, 1500);
-    };
-
-    const iframeWin = iframe.contentWindow;
-    const iframeDoc = iframe.contentDocument || iframeWin?.document;
-    if (!iframeWin || !iframeDoc) {
-      cleanup();
-      return;
+  const handleIframeLoad = () => {
+    try {
+      const doc = gibIframeRef.current?.contentDocument;
+      if (!doc) return;
+      const bodyH = doc.body?.scrollHeight || 0;
+      const docH = doc.documentElement?.scrollHeight || 0;
+      const measured = Math.max(bodyH, docH, 900);
+      setIframeHeight(Math.min(measured + 32, 4200));
+    } catch {
+      // Cross-origin or restricted env fallback
     }
-
-    iframeDoc.open();
-    iframeDoc.write(html);
-    iframeDoc.close();
-    setTimeout(() => {
-      try {
-        iframeWin.addEventListener('afterprint', cleanup, { once: true });
-        iframeWin.focus();
-        iframeWin.print();
-      } finally {
-        setTimeout(cleanup, 60000);
-      }
-    }, 350);
   };
 
   const handleXmlAttachChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -651,14 +696,54 @@ export const UblInvoicePreviewModal: React.FC<UblInvoicePreviewModalProps> = ({
                 >
                   {yon === 'satis' ? 'Satış Faturası' : 'Alış Faturası'}
                 </span>
+                {hasGibXsltView && (
+                  <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 flex items-center gap-1">
+                    <Sparkles className="w-3 h-3" />
+                    <span>GİB XSLT</span>
+                  </span>
+                )}
               </div>
               <p className="text-[11px] text-gray-400 truncate">
-                {badgeTitle} • {formatDate(invoice.tarih)} • {invoice.profileId}
+                {badgeTitle} • {formatDate(invoice.tarih)} • {scenarioLabel} • {typeLabel}
               </p>
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            {hasGibXsltView && (
+              <div
+                className="inline-flex rounded-lg bg-black/50 p-0.5 border border-white/10"
+                data-testid="ubl_preview_view_toggle"
+              >
+                <button
+                  type="button"
+                  data-testid="ubl_preview_mode_gib"
+                  onClick={() => setViewMode('gib')}
+                  className={`px-2.5 py-1 rounded-md text-[11px] font-bold flex items-center gap-1 transition ${
+                    viewMode === 'gib'
+                      ? 'bg-emerald-400 text-[#0a0e13]'
+                      : 'text-gray-300 hover:text-white'
+                  }`}
+                >
+                  <Sparkles className="w-3 h-3" />
+                  <span>Orijinal GİB</span>
+                </button>
+                <button
+                  type="button"
+                  data-testid="ubl_preview_mode_standard"
+                  onClick={() => setViewMode('standard')}
+                  className={`px-2.5 py-1 rounded-md text-[11px] font-bold flex items-center gap-1 transition ${
+                    viewMode === 'standard'
+                      ? 'bg-teal-400 text-[#0a0e13]'
+                      : 'text-gray-300 hover:text-white'
+                  }`}
+                >
+                  <LayoutTemplate className="w-3 h-3" />
+                  <span>Standart Görünüm</span>
+                </button>
+              </div>
+            )}
+
             {onXmlAttached && (
               <>
                 <input
@@ -702,6 +787,15 @@ export const UblInvoicePreviewModal: React.FC<UblInvoicePreviewModalProps> = ({
           </div>
         </div>
 
+        {isSummaryFallback && onXmlAttached && (
+          <div className="px-4 py-2 bg-amber-500/10 border-b border-amber-500/25 text-[11px] text-amber-200 flex items-center justify-between gap-2 flex-wrap">
+            <span>
+              Bu kayıt önceki bir yüklemeden geldiği için veritabanında yalnızca fatura özeti tutuluyor. Orijinal GİB görünümü ve satırlar için faturanın{' '}
+              <strong className="text-white">.xml / .ubl</strong> dosyasını seçebilirsiniz.
+            </span>
+          </div>
+        )}
+
         {attachError && (
           <div className="px-4 py-2 bg-red-500/15 border-b border-red-500/30 text-xs text-red-300 flex items-center gap-2">
             <AlertCircle className="w-4 h-4 shrink-0" />
@@ -709,379 +803,394 @@ export const UblInvoicePreviewModal: React.FC<UblInvoicePreviewModalProps> = ({
           </div>
         )}
 
-        {/* BEYAZ A4 FATURA KAĞIDI ÖNİZLEMESİ */}
+        {/* FATURA GÖRÜNÜM ALANI */}
         <div className="flex-1 overflow-y-auto bg-slate-300/90 p-3 sm:p-6">
-          <div className="bg-white text-slate-900 max-w-[820px] mx-auto border-2 border-slate-700 shadow-2xl p-4 sm:p-7 text-[11px] leading-snug">
-            {/* ÜST BÖLÜM: SATICI | e-FATURA ROZETİ | KÜNYE + ETTN */}
-            <div className="grid grid-cols-1 md:grid-cols-12 gap-4 pb-4 border-b-2 border-slate-700">
-              <div className="md:col-span-5 space-y-1">
-                <div className="text-[9px] font-bold uppercase tracking-wider text-slate-500">
-                  Satıcı Bilgileri
-                </div>
-                <div className="text-xs font-extrabold text-slate-900">
-                  {invoice.supplier.unvan}
-                </div>
-                {invoice.supplier.adres && (
-                  <div className="text-[10.5px] text-slate-700">{invoice.supplier.adres}</div>
-                )}
-                <div className="text-[10.5px] text-slate-800 space-y-0.5 pt-0.5">
-                  {invoice.supplier.vergiDairesi && (
-                    <div>
-                      <span className="font-bold">Vergi Dairesi:</span>{' '}
-                      {invoice.supplier.vergiDairesi}
-                    </div>
-                  )}
-                  <div>
-                    <span className="font-bold">VKN/TCKN:</span>{' '}
-                    <span className="font-mono">{invoice.supplier.vkn || '-'}</span>
+          {viewMode === 'gib' && invoice.renderedGibHtml ? (
+            <div className="max-w-[860px] mx-auto bg-white shadow-2xl border border-slate-400 rounded-sm overflow-hidden">
+              <iframe
+                ref={gibIframeRef}
+                title={`${invoice.faturaNo} Orijinal GİB Fatura Görüntüsü`}
+                sandbox="allow-same-origin allow-modals"
+                srcDoc={invoice.renderedGibHtml}
+                onLoad={handleIframeLoad}
+                style={{ height: `${iframeHeight}px` }}
+                className="w-full bg-white border-0 block"
+                data-testid="ubl_preview_gib_iframe"
+              />
+            </div>
+          ) : (
+            <div className="bg-white text-slate-900 max-w-[820px] mx-auto border-2 border-slate-700 shadow-2xl p-4 sm:p-7 text-[11px] leading-snug">
+              {/* ÜST BÖLÜM: SATICI | e-FATURA ROZETİ | KÜNYE + ETTN */}
+              <div className="grid grid-cols-1 md:grid-cols-12 gap-4 pb-4 border-b-2 border-slate-700">
+                <div className="md:col-span-5 space-y-1">
+                  <div className="text-[9px] font-bold uppercase tracking-wider text-slate-500">
+                    Satıcı Bilgileri
                   </div>
-                  {invoice.supplier.telefon && (
-                    <div>
-                      <span className="font-bold">Tel:</span> {invoice.supplier.telefon}
-                    </div>
+                  <div className="text-xs font-extrabold text-slate-900">
+                    {invoice.supplier.unvan}
+                  </div>
+                  {invoice.supplier.adres && (
+                    <div className="text-[10.5px] text-slate-700">{invoice.supplier.adres}</div>
                   )}
-                  {invoice.supplier.email && (
+                  <div className="text-[10.5px] text-slate-800 space-y-0.5 pt-0.5">
+                    {invoice.supplier.vergiDairesi && (
+                      <div>
+                        <span className="font-bold">Vergi Dairesi:</span>{' '}
+                        {invoice.supplier.vergiDairesi}
+                      </div>
+                    )}
                     <div>
-                      <span className="font-bold">E-Posta:</span> {invoice.supplier.email}
+                      <span className="font-bold">VKN/TCKN:</span>{' '}
+                      <span className="font-mono">{invoice.supplier.vkn || '-'}</span>
                     </div>
-                  )}
-                  {invoice.supplier.web && (
-                    <div>
-                      <span className="font-bold">Web:</span> {invoice.supplier.web}
-                    </div>
-                  )}
+                    {invoice.supplier.telefon && (
+                      <div>
+                        <span className="font-bold">Tel:</span> {invoice.supplier.telefon}
+                      </div>
+                    )}
+                    {invoice.supplier.email && (
+                      <div>
+                        <span className="font-bold">E-Posta:</span> {invoice.supplier.email}
+                      </div>
+                    )}
+                    {invoice.supplier.web && (
+                      <div>
+                        <span className="font-bold">Web:</span> {invoice.supplier.web}
+                      </div>
+                    )}
+                  </div>
                 </div>
-              </div>
 
-              <div className="md:col-span-3 flex flex-col items-center justify-start text-center py-1">
-                <div className="border-2 border-slate-900 px-3 py-1.5 font-black text-xs tracking-wide text-slate-900">
-                  {badgeTitle}
+                <div className="md:col-span-3 flex flex-col items-center justify-start text-center py-1">
+                  <div className="border-2 border-slate-900 px-3 py-1.5 font-black text-xs tracking-wide text-slate-900">
+                    {badgeTitle}
+                  </div>
+                  <div className="mt-2 text-[10px] text-slate-700 space-y-0.5">
+                    <div>
+                      <span className="font-bold">Özelleştirme:</span> TR1.2
+                    </div>
+                    <div>
+                      <span className="font-bold">Senaryo:</span> {scenarioLabel}
+                    </div>
+                    <div
+                      className={`mt-1 font-extrabold ${
+                        yon === 'satis' ? 'text-teal-700' : 'text-orange-700'
+                      }`}
+                    >
+                      {yon === 'satis' ? 'SATIŞ FATURASI' : 'ALIŞ FATURASI'}
+                    </div>
+                  </div>
                 </div>
-                <div className="mt-2 text-[10px] text-slate-700 space-y-0.5">
-                  <div>
-                    <span className="font-bold">Özelleştirme:</span> TR1.2
-                  </div>
-                  <div>
-                    <span className="font-bold">Senaryo:</span> {invoice.profileId}
-                  </div>
-                  <div
-                    className={`mt-1 font-extrabold ${
-                      yon === 'satis' ? 'text-teal-700' : 'text-orange-700'
-                    }`}
-                  >
-                    {yon === 'satis' ? 'SATIŞ FATURASI' : 'ALIŞ FATURASI'}
-                  </div>
-                </div>
-              </div>
 
-              <div className="md:col-span-4 space-y-1.5">
-                <table className="w-full border-collapse text-[10px]">
-                  <tbody>
-                    <tr>
-                      <td className="border border-slate-400 bg-slate-100 px-2 py-1 font-bold w-[44%]">
-                        Fatura No
-                      </td>
-                      <td className="border border-slate-400 px-2 py-1 font-mono font-extrabold">
-                        {invoice.faturaNo}
-                      </td>
-                    </tr>
-                    <tr>
-                      <td className="border border-slate-400 bg-slate-100 px-2 py-1 font-bold">
-                        Fatura Tarihi
-                      </td>
-                      <td className="border border-slate-400 px-2 py-1">
-                        {formatDate(invoice.tarih)}
-                      </td>
-                    </tr>
-                    {invoice.issueTime && (
+                <div className="md:col-span-4 space-y-1.5">
+                  <table className="w-full border-collapse text-[10px]">
+                    <tbody>
+                      <tr>
+                        <td className="border border-slate-400 bg-slate-100 px-2 py-1 font-bold w-[44%]">
+                          Fatura No
+                        </td>
+                        <td className="border border-slate-400 px-2 py-1 font-mono font-extrabold">
+                          {invoice.faturaNo}
+                        </td>
+                      </tr>
                       <tr>
                         <td className="border border-slate-400 bg-slate-100 px-2 py-1 font-bold">
-                          Saat
+                          Fatura Tarihi
                         </td>
-                        <td className="border border-slate-400 px-2 py-1 font-mono">
-                          {invoice.issueTime.slice(0, 8)}
-                        </td>
-                      </tr>
-                    )}
-                    <tr>
-                      <td className="border border-slate-400 bg-slate-100 px-2 py-1 font-bold">
-                        Fatura Tipi
-                      </td>
-                      <td className="border border-slate-400 px-2 py-1 font-semibold">
-                        {invoice.invoiceTypeCode}
-                      </td>
-                    </tr>
-                    <tr>
-                      <td className="border border-slate-400 bg-slate-100 px-2 py-1 font-bold">
-                        Para Birimi
-                      </td>
-                      <td className="border border-slate-400 px-2 py-1">
-                        {code}
-                        {isForeign ? ` (Kur: ${invoice.exchangeRate})` : ''}
-                      </td>
-                    </tr>
-                  </tbody>
-                </table>
-                {invoice.uuid && (
-                  <div className="text-[9.5px] font-mono text-slate-700 break-all bg-slate-50 border border-slate-300 px-2 py-1">
-                    <span className="font-bold">ETTN:</span> {invoice.uuid}
-                  </div>
-                )}
-              </div>
-            </div>
-
-            {/* ALICI BİLGİLERİ */}
-            <div className="mt-3 border border-slate-400 bg-slate-50 p-2.5 sm:p-3">
-              <div className="text-[9px] font-extrabold uppercase tracking-wider text-slate-500">
-                Sayın (Alıcı Bilgileri)
-              </div>
-              <div className="text-xs font-extrabold text-slate-900 mt-0.5">
-                {invoice.customer.unvan}
-              </div>
-              {invoice.customer.adres && (
-                <div className="text-[10.5px] text-slate-700 mt-0.5">{invoice.customer.adres}</div>
-              )}
-              <div className="text-[10.5px] text-slate-800 mt-1 flex flex-wrap gap-x-4 gap-y-0.5">
-                {invoice.customer.vergiDairesi && (
-                  <span>
-                    <strong>Vergi Dairesi:</strong> {invoice.customer.vergiDairesi}
-                  </span>
-                )}
-                <span>
-                  <strong>VKN/TCKN:</strong>{' '}
-                  <span className="font-mono">{invoice.customer.vkn || '-'}</span>
-                </span>
-                {invoice.customer.telefon && (
-                  <span>
-                    <strong>Tel:</strong> {invoice.customer.telefon}
-                  </span>
-                )}
-                {invoice.customer.email && (
-                  <span>
-                    <strong>E-Posta:</strong> {invoice.customer.email}
-                  </span>
-                )}
-              </div>
-            </div>
-
-            {/* FATURA KALEMLERİ TABLOSU */}
-            <div className="mt-3 overflow-x-auto">
-              <table className="w-full border-collapse text-[10px]">
-                <thead>
-                  <tr className="bg-slate-800 text-white">
-                    <th className="border border-slate-700 px-1.5 py-1.5 text-center w-9">Sıra</th>
-                    <th className="border border-slate-700 px-2 py-1.5 text-left">Mal / Hizmet</th>
-                    <th className="border border-slate-700 px-2 py-1.5 text-right whitespace-nowrap">
-                      Miktar
-                    </th>
-                    <th className="border border-slate-700 px-2 py-1.5 text-right whitespace-nowrap">
-                      Birim Fiyat
-                    </th>
-                    <th className="border border-slate-700 px-2 py-1.5 text-right whitespace-nowrap">
-                      İskonto
-                    </th>
-                    <th className="border border-slate-700 px-1.5 py-1.5 text-center whitespace-nowrap">
-                      KDV
-                    </th>
-                    <th className="border border-slate-700 px-2 py-1.5 text-right whitespace-nowrap">
-                      KDV Tutarı
-                    </th>
-                    <th className="border border-slate-700 px-2 py-1.5 text-right whitespace-nowrap">
-                      Mal Hizmet Tutarı
-                    </th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {invoice.lines.length > 0 ? (
-                    invoice.lines.map((line, idx) => (
-                      <tr key={`${line.lineId}-${idx}`} className="even:bg-slate-50/70">
-                        <td className="border border-slate-300 px-1.5 py-1.5 text-center font-mono align-top">
-                          {line.lineId || idx + 1}
-                        </td>
-                        <td className="border border-slate-300 px-2 py-1.5 align-top">
-                          <div className="font-bold text-slate-900">{line.name}</div>
-                          {line.sellerCode && (
-                            <div className="text-[9px] text-slate-500">
-                              Kod: {line.sellerCode}
-                            </div>
-                          )}
-                          {line.description && (
-                            <div className="text-[9.5px] text-slate-600 mt-0.5">
-                              {line.description}
-                            </div>
-                          )}
-                        </td>
-                        <td className="border border-slate-300 px-2 py-1.5 text-right font-mono whitespace-nowrap align-top">
-                          {formatQuantity(line.quantity)} {line.unitLabel}
-                        </td>
-                        <td className="border border-slate-300 px-2 py-1.5 text-right font-mono whitespace-nowrap align-top">
-                          {formatInvoiceMoney(line.unitPrice, code)}
-                        </td>
-                        <td className="border border-slate-300 px-2 py-1.5 text-right font-mono whitespace-nowrap align-top">
-                          {line.discountAmount > 0
-                            ? `${formatInvoiceMoney(line.discountAmount, code)}${
-                                line.discountRate > 0 ? ` (%${line.discountRate})` : ''
-                              }`
-                            : '-'}
-                        </td>
-                        <td className="border border-slate-300 px-1.5 py-1.5 text-center font-mono whitespace-nowrap align-top">
-                          %{line.kdvRate}
-                        </td>
-                        <td className="border border-slate-300 px-2 py-1.5 text-right font-mono whitespace-nowrap align-top">
-                          {formatInvoiceMoney(line.kdvAmount, code)}
-                        </td>
-                        <td className="border border-slate-300 px-2 py-1.5 text-right font-mono font-bold whitespace-nowrap align-top">
-                          {formatInvoiceMoney(line.lineExtensionAmount, code)}
+                        <td className="border border-slate-400 px-2 py-1">
+                          {formatDate(invoice.tarih)}
                         </td>
                       </tr>
-                    ))
-                  ) : (
-                    <tr>
-                      <td className="border border-slate-300 px-1.5 py-2 text-center font-mono">
-                        1
-                      </td>
-                      <td className="border border-slate-300 px-2 py-2">
-                        <div className="font-bold text-slate-900">
-                          Fatura Toplam Tutarı (Özet Kayıt)
-                        </div>
-                        <div className="text-[9.5px] text-slate-600">
-                          Kalem bazlı detaylar için yukarıdaki &quot;XML Yükle / Eşleştir&quot; butonunu
-                          kullanabilirsiniz.
-                        </div>
-                      </td>
-                      <td className="border border-slate-300 px-2 py-2 text-right font-mono">
-                        1 Adet
-                      </td>
-                      <td className="border border-slate-300 px-2 py-2 text-right font-mono">
-                        {formatInvoiceMoney(invoice.originalAmount, code)}
-                      </td>
-                      <td className="border border-slate-300 px-2 py-2 text-right">-</td>
-                      <td className="border border-slate-300 px-1.5 py-2 text-center">-</td>
-                      <td className="border border-slate-300 px-2 py-2 text-right">-</td>
-                      <td className="border border-slate-300 px-2 py-2 text-right font-mono font-bold">
-                        {formatInvoiceMoney(invoice.originalAmount, code)}
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-
-            {/* ALT BÖLÜM: NOTLAR + YAZIYLA TUTAR & TOPLAMLAR TABLOSU */}
-            <div className="mt-3 grid grid-cols-1 md:grid-cols-12 gap-3">
-              <div className="md:col-span-7 border border-slate-400 p-2.5 flex flex-col justify-between bg-slate-50/50">
-                <div>
-                  <div className="text-[9px] font-extrabold uppercase tracking-wider text-slate-500 mb-1">
-                    Notlar &amp; Açıklamalar
-                  </div>
-                  {invoice.notes.length > 0 ? (
-                    <ul className="space-y-1 text-[10px] text-slate-800">
-                      {invoice.notes.map((note, idx) => (
-                        <li key={idx}>• {note}</li>
-                      ))}
-                    </ul>
-                  ) : (
-                    <div className="text-[10px] text-slate-500">
-                      Fatura üzerinde ek not bulunmamaktadır.
+                      {invoice.issueTime && (
+                        <tr>
+                          <td className="border border-slate-400 bg-slate-100 px-2 py-1 font-bold">
+                            Saat
+                          </td>
+                          <td className="border border-slate-400 px-2 py-1 font-mono">
+                            {invoice.issueTime.slice(0, 8)}
+                          </td>
+                        </tr>
+                      )}
+                      <tr>
+                        <td className="border border-slate-400 bg-slate-100 px-2 py-1 font-bold">
+                          Fatura Tipi
+                        </td>
+                        <td className="border border-slate-400 px-2 py-1 font-semibold">
+                          {typeLabel}
+                        </td>
+                      </tr>
+                      <tr>
+                        <td className="border border-slate-400 bg-slate-100 px-2 py-1 font-bold">
+                          Para Birimi
+                        </td>
+                        <td className="border border-slate-400 px-2 py-1">
+                          {code}
+                          {isForeign ? ` (Kur: ${invoice.exchangeRate})` : ''}
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                  {invoice.uuid && (
+                    <div className="text-[9.5px] font-mono text-slate-700 break-all bg-slate-50 border border-slate-300 px-2 py-1">
+                      <span className="font-bold">ETTN:</span> {invoice.uuid}
                     </div>
                   )}
                 </div>
+              </div>
 
-                <div className="mt-3 pt-2 border-t border-dashed border-slate-300 text-[10.5px] font-bold text-slate-900">
-                  Yalnız: {wordsText}
+              {/* ALICI BİLGİLERİ */}
+              <div className="mt-3 border border-slate-400 bg-slate-50 p-2.5 sm:p-3">
+                <div className="text-[9px] font-extrabold uppercase tracking-wider text-slate-500">
+                  Sayın (Alıcı Bilgileri)
+                </div>
+                <div className="text-xs font-extrabold text-slate-900 mt-0.5">
+                  {invoice.customer.unvan}
+                </div>
+                {invoice.customer.adres && (
+                  <div className="text-[10.5px] text-slate-700 mt-0.5">{invoice.customer.adres}</div>
+                )}
+                <div className="text-[10.5px] text-slate-800 mt-1 flex flex-wrap gap-x-4 gap-y-0.5">
+                  {invoice.customer.vergiDairesi && (
+                    <span>
+                      <strong>Vergi Dairesi:</strong> {invoice.customer.vergiDairesi}
+                    </span>
+                  )}
+                  <span>
+                    <strong>VKN/TCKN:</strong>{' '}
+                    <span className="font-mono">{invoice.customer.vkn || '-'}</span>
+                  </span>
+                  {invoice.customer.telefon && (
+                    <span>
+                      <strong>Tel:</strong> {invoice.customer.telefon}
+                    </span>
+                  )}
+                  {invoice.customer.email && (
+                    <span>
+                      <strong>E-Posta:</strong> {invoice.customer.email}
+                    </span>
+                  )}
                 </div>
               </div>
 
-              <div className="md:col-span-5">
-                <table className="w-full border-collapse text-[10.5px]">
+              {/* FATURA KALEMLERİ TABLOSU */}
+              <div className="mt-3 overflow-x-auto">
+                <table className="w-full border-collapse text-[10px]">
+                  <thead>
+                    <tr className="bg-slate-800 text-white">
+                      <th className="border border-slate-700 px-1.5 py-1.5 text-center w-9">Sıra</th>
+                      <th className="border border-slate-700 px-2 py-1.5 text-left">Mal / Hizmet</th>
+                      <th className="border border-slate-700 px-2 py-1.5 text-right whitespace-nowrap">
+                        Miktar
+                      </th>
+                      <th className="border border-slate-700 px-2 py-1.5 text-right whitespace-nowrap">
+                        Birim Fiyat
+                      </th>
+                      <th className="border border-slate-700 px-2 py-1.5 text-right whitespace-nowrap">
+                        İskonto
+                      </th>
+                      <th className="border border-slate-700 px-1.5 py-1.5 text-center whitespace-nowrap">
+                        KDV
+                      </th>
+                      <th className="border border-slate-700 px-2 py-1.5 text-right whitespace-nowrap">
+                        KDV Tutarı
+                      </th>
+                      <th className="border border-slate-700 px-2 py-1.5 text-right whitespace-nowrap">
+                        Mal Hizmet Tutarı
+                      </th>
+                    </tr>
+                  </thead>
                   <tbody>
-                    <tr>
-                      <td className="border border-slate-400 px-2.5 py-1">
-                        Mal Hizmet Toplam Tutarı
-                      </td>
-                      <td className="border border-slate-400 px-2.5 py-1 text-right font-mono font-semibold">
-                        {formatInvoiceMoney(totals.lineExtensionAmount, code)}
-                      </td>
-                    </tr>
-                    <tr>
-                      <td className="border border-slate-400 px-2.5 py-1">Toplam İskonto</td>
-                      <td className="border border-slate-400 px-2.5 py-1 text-right font-mono font-semibold">
-                        {formatInvoiceMoney(totals.allowanceTotalAmount, code)}
-                      </td>
-                    </tr>
-                    {totals.taxExclusiveAmount > 0 && (
-                      <tr>
-                        <td className="border border-slate-400 px-2.5 py-1">KDV Matrahı</td>
-                        <td className="border border-slate-400 px-2.5 py-1 text-right font-mono font-semibold">
-                          {formatInvoiceMoney(totals.taxExclusiveAmount, code)}
-                        </td>
-                      </tr>
-                    )}
-                    {totals.taxSubtotals.length > 0 ? (
-                      totals.taxSubtotals.map((sub) => (
-                        <tr key={sub.percent}>
-                          <td className="border border-slate-400 px-2.5 py-1">
-                            Hesaplanan KDV (%{sub.percent})
+                    {invoice.lines.length > 0 ? (
+                      invoice.lines.map((line, idx) => (
+                        <tr key={`${line.lineId}-${idx}`} className="even:bg-slate-50/70">
+                          <td className="border border-slate-300 px-1.5 py-1.5 text-center font-mono align-top">
+                            {line.lineId || idx + 1}
                           </td>
-                          <td className="border border-slate-400 px-2.5 py-1 text-right font-mono font-semibold">
-                            {formatInvoiceMoney(sub.taxAmount, code)}
+                          <td className="border border-slate-300 px-2 py-1.5 align-top">
+                            <div className="font-bold text-slate-900">{line.name}</div>
+                            {line.sellerCode && (
+                              <div className="text-[9px] text-slate-500">
+                                Kod: {line.sellerCode}
+                              </div>
+                            )}
+                            {line.description && (
+                              <div className="text-[9.5px] text-slate-600 mt-0.5">
+                                {line.description}
+                              </div>
+                            )}
+                          </td>
+                          <td className="border border-slate-300 px-2 py-1.5 text-right font-mono whitespace-nowrap align-top">
+                            {formatQuantity(line.quantity)} {line.unitLabel}
+                          </td>
+                          <td className="border border-slate-300 px-2 py-1.5 text-right font-mono whitespace-nowrap align-top">
+                            {formatInvoiceMoney(line.unitPrice, code)}
+                          </td>
+                          <td className="border border-slate-300 px-2 py-1.5 text-right font-mono whitespace-nowrap align-top">
+                            {line.discountAmount > 0
+                              ? `${formatInvoiceMoney(line.discountAmount, code)}${
+                                  line.discountRate > 0 ? ` (%${line.discountRate})` : ''
+                                }`
+                              : '-'}
+                          </td>
+                          <td className="border border-slate-300 px-1.5 py-1.5 text-center font-mono whitespace-nowrap align-top">
+                            %{line.kdvRate}
+                          </td>
+                          <td className="border border-slate-300 px-2 py-1.5 text-right font-mono whitespace-nowrap align-top">
+                            {formatInvoiceMoney(line.kdvAmount, code)}
+                          </td>
+                          <td className="border border-slate-300 px-2 py-1.5 text-right font-mono font-bold whitespace-nowrap align-top">
+                            {formatInvoiceMoney(line.lineExtensionAmount, code)}
                           </td>
                         </tr>
                       ))
                     ) : (
                       <tr>
-                        <td className="border border-slate-400 px-2.5 py-1">Hesaplanan KDV</td>
-                        <td className="border border-slate-400 px-2.5 py-1 text-right font-mono font-semibold">
-                          {formatInvoiceMoney(totals.taxTotalAmount, code)}
+                        <td className="border border-slate-300 px-1.5 py-2 text-center font-mono">
+                          1
                         </td>
-                      </tr>
-                    )}
-                    {totals.withholdingTaxAmount > 0 && (
-                      <tr>
-                        <td className="border border-slate-400 px-2.5 py-1">Tevkifat Tutarı</td>
-                        <td className="border border-slate-400 px-2.5 py-1 text-right font-mono font-semibold">
-                          -{formatInvoiceMoney(totals.withholdingTaxAmount, code)}
+                        <td className="border border-slate-300 px-2 py-2">
+                          <div className="font-bold text-slate-900">
+                            Fatura Toplam Tutarı (Özet Kayıt)
+                          </div>
+                          <div className="text-[9.5px] text-slate-600">
+                            Kalem bazlı detaylar için yukarıdaki &quot;XML Yükle / Eşleştir&quot; butonunu
+                            kullanabilirsiniz.
+                          </div>
                         </td>
-                      </tr>
-                    )}
-                    <tr>
-                      <td className="border border-slate-400 px-2.5 py-1">
-                        Vergiler Dahil Toplam Tutar
-                      </td>
-                      <td className="border border-slate-400 px-2.5 py-1 text-right font-mono font-bold">
-                        {formatInvoiceMoney(
-                          totals.taxInclusiveAmount || totals.payableAmount,
-                          code
-                        )}
-                      </td>
-                    </tr>
-                    <tr className="bg-slate-900 text-white">
-                      <td className="border border-slate-900 px-2.5 py-1.5 font-extrabold">
-                        Ödenecek Tutar
-                      </td>
-                      <td className="border border-slate-900 px-2.5 py-1.5 text-right font-mono font-black">
-                        {formatInvoiceMoney(totals.payableAmount, code)}
-                      </td>
-                    </tr>
-                    {isForeign && (
-                      <tr className="bg-amber-50">
-                        <td className="border border-slate-400 px-2.5 py-1 font-bold text-slate-900">
-                          TL Karşılığı
+                        <td className="border border-slate-300 px-2 py-2 text-right font-mono">
+                          1 Adet
                         </td>
-                        <td className="border border-slate-400 px-2.5 py-1 text-right font-mono font-extrabold text-slate-900">
-                          {formatCurrency(invoice.tutarTL, true)}
+                        <td className="border border-slate-300 px-2 py-2 text-right font-mono">
+                          {formatInvoiceMoney(invoice.originalAmount, code)}
+                        </td>
+                        <td className="border border-slate-300 px-2 py-2 text-right">-</td>
+                        <td className="border border-slate-300 px-1.5 py-2 text-center">-</td>
+                        <td className="border border-slate-300 px-2 py-2 text-right">-</td>
+                        <td className="border border-slate-300 px-2 py-2 text-right font-mono font-bold">
+                          {formatInvoiceMoney(invoice.originalAmount, code)}
                         </td>
                       </tr>
                     )}
                   </tbody>
                 </table>
               </div>
-            </div>
 
-            <div className="mt-4 pt-2 border-t border-slate-200 text-[9.5px] text-slate-500 text-center">
-              Tahsilatım Web • UBL-TR Fatura Görselleştirme Önizlemesi
+              {/* ALT BÖLÜM: NOTLAR + YAZIYLA TUTAR & TOPLAMLAR TABLOSU */}
+              <div className="mt-3 grid grid-cols-1 md:grid-cols-12 gap-3">
+                <div className="md:col-span-7 border border-slate-400 p-2.5 flex flex-col justify-between bg-slate-50/50">
+                  <div>
+                    <div className="text-[9px] font-extrabold uppercase tracking-wider text-slate-500 mb-1">
+                      Notlar &amp; Açıklamalar
+                    </div>
+                    {invoice.notes.length > 0 ? (
+                      <ul className="space-y-1 text-[10px] text-slate-800">
+                        {invoice.notes.map((note, idx) => (
+                          <li key={idx}>• {note}</li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <div className="text-[10px] text-slate-500">
+                        Fatura üzerinde ek not bulunmamaktadır.
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="mt-3 pt-2 border-t border-dashed border-slate-300 text-[10.5px] font-bold text-slate-900">
+                    Yalnız: {wordsText}
+                  </div>
+                </div>
+
+                <div className="md:col-span-5">
+                  <table className="w-full border-collapse text-[10.5px]">
+                    <tbody>
+                      <tr>
+                        <td className="border border-slate-400 px-2.5 py-1">
+                          Mal Hizmet Toplam Tutarı
+                        </td>
+                        <td className="border border-slate-400 px-2.5 py-1 text-right font-mono font-semibold">
+                          {formatInvoiceMoney(totals.lineExtensionAmount, code)}
+                        </td>
+                      </tr>
+                      <tr>
+                        <td className="border border-slate-400 px-2.5 py-1">Toplam İskonto</td>
+                        <td className="border border-slate-400 px-2.5 py-1 text-right font-mono font-semibold">
+                          {formatInvoiceMoney(totals.allowanceTotalAmount, code)}
+                        </td>
+                      </tr>
+                      {totals.taxExclusiveAmount > 0 && (
+                        <tr>
+                          <td className="border border-slate-400 px-2.5 py-1">KDV Matrahı</td>
+                          <td className="border border-slate-400 px-2.5 py-1 text-right font-mono font-semibold">
+                            {formatInvoiceMoney(totals.taxExclusiveAmount, code)}
+                          </td>
+                        </tr>
+                      )}
+                      {totals.taxSubtotals.length > 0 ? (
+                        totals.taxSubtotals.map((sub) => (
+                          <tr key={sub.percent}>
+                            <td className="border border-slate-400 px-2.5 py-1">
+                              Hesaplanan KDV (%{sub.percent})
+                            </td>
+                            <td className="border border-slate-400 px-2.5 py-1 text-right font-mono font-semibold">
+                              {formatInvoiceMoney(sub.taxAmount, code)}
+                            </td>
+                          </tr>
+                        ))
+                      ) : (
+                        <tr>
+                          <td className="border border-slate-400 px-2.5 py-1">Hesaplanan KDV</td>
+                          <td className="border border-slate-400 px-2.5 py-1 text-right font-mono font-semibold">
+                            {formatInvoiceMoney(totals.taxTotalAmount, code)}
+                          </td>
+                        </tr>
+                      )}
+                      {totals.withholdingTaxAmount > 0 && (
+                        <tr>
+                          <td className="border border-slate-400 px-2.5 py-1">Tevkifat Tutarı</td>
+                          <td className="border border-slate-400 px-2.5 py-1 text-right font-mono font-semibold">
+                            -{formatInvoiceMoney(totals.withholdingTaxAmount, code)}
+                          </td>
+                        </tr>
+                      )}
+                      <tr>
+                        <td className="border border-slate-400 px-2.5 py-1">
+                          Vergiler Dahil Toplam Tutar
+                        </td>
+                        <td className="border border-slate-400 px-2.5 py-1 text-right font-mono font-bold">
+                          {formatInvoiceMoney(
+                            totals.taxInclusiveAmount || totals.payableAmount,
+                            code
+                          )}
+                        </td>
+                      </tr>
+                      <tr className="bg-slate-900 text-white">
+                        <td className="border border-slate-900 px-2.5 py-1.5 font-extrabold">
+                          Ödenecek Tutar
+                        </td>
+                        <td className="border border-slate-900 px-2.5 py-1.5 text-right font-mono font-black">
+                          {formatInvoiceMoney(totals.payableAmount, code)}
+                        </td>
+                      </tr>
+                      {isForeign && (
+                        <tr className="bg-amber-50">
+                          <td className="border border-slate-400 px-2.5 py-1 font-bold text-slate-900">
+                            TL Karşılığı
+                          </td>
+                          <td className="border border-slate-400 px-2.5 py-1 text-right font-mono font-extrabold text-slate-900">
+                            {formatCurrency(invoice.tutarTL, true)}
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <div className="mt-4 pt-2 border-t border-slate-200 text-[9.5px] text-slate-500 text-center">
+                Tahsilatım Web • UBL-TR Fatura Görselleştirme Önizlemesi
+              </div>
             </div>
-          </div>
+          )}
         </div>
       </div>
     </div>

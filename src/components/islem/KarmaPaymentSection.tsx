@@ -655,22 +655,19 @@ export const KarmaPaymentSection: React.FC<KarmaPaymentSectionProps> = ({
             </button>
           </div>
         ) : (
-          posConfig.enabled &&
-          posConfig.provider !== 'none' && (
-            <div className="pt-2 border-t border-white/[0.05] flex flex-col sm:flex-row items-center justify-between gap-2">
-              <span className="text-[11px] text-gray-400">
-                Kart tutarı için müşteriye Sanal POS linki gönderebilirsiniz:
-              </span>
-              <button
-                type="button"
-                onClick={() => onCreatePosLinkForKarma(kartTL)}
-                className="px-3 py-1.5 rounded-lg bg-sky-400/20 text-sky-300 hover:bg-sky-400/30 border border-sky-400/30 text-xs font-bold flex items-center gap-1.5 transition whitespace-nowrap"
-              >
-                <Share2 className="w-3.5 h-3.5" />
-                <span>Kart Tutarı İçin Link Üret</span>
-              </button>
-            </div>
-          )
+          <div className="pt-2 border-t border-white/[0.05] flex flex-col sm:flex-row items-center justify-between gap-2">
+            <span className="text-[11px] text-gray-400">
+              Kart tutarı için müşteriye iyzico / PayTR ödeme linki gönderebilirsiniz:
+            </span>
+            <button
+              type="button"
+              onClick={() => onCreatePosLinkForKarma(kartTL)}
+              className="px-3 py-1.5 rounded-lg bg-sky-400/20 text-sky-300 hover:bg-sky-400/30 border border-sky-400/30 text-xs font-bold flex items-center gap-1.5 transition whitespace-nowrap"
+            >
+              <Share2 className="w-3.5 h-3.5" />
+              <span>Ödeme İste (Link Üret)</span>
+            </button>
+          </div>
         )}
 
         {posLinkGenerated && (

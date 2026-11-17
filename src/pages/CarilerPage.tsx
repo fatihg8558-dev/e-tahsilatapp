@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { supabase, handleSupabaseError } from '../lib/supabase';
 import { Cari, CariTur, Islem, Fatura, FaturaYon } from '../types/database';
@@ -26,6 +26,7 @@ import {
   Lock,
   Calendar,
   Eye,
+  RefreshCw,
 } from 'lucide-react';
 import { exportToExcel, printPdfReport } from '../lib/exportService';
 import {
@@ -37,11 +38,14 @@ import {
 import { UblImportModal } from '../components/cari/UblImportModal';
 import { UblInvoicePreviewModal } from '../components/cari/UblInvoicePreviewModal';
 import { isWebPlatform } from '../lib/platform';
-import { ParsedUblInvoice } from '../lib/ublParser';
+import { ParsedUblInvoice, parseUblInvoiceXml } from '../lib/ublParser';
 import {
   buildFallbackInvoiceFromRecord,
-  getUblInvoiceSnapshot,
-  saveUblInvoiceSnapshots,
+  FaturaWithDetay,
+  getUblInvoiceSnapshotAsync,
+  hydrateParsedFromCompactDetay,
+  saveUblInvoiceSnapshotsAsync,
+  syncUblDetayToSupabase,
 } from '../lib/ublInvoiceStore';
 
 interface CarilerPageProps {
@@ -78,6 +82,12 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
     invoice: ParsedUblInvoice;
     yon: FaturaYon;
     isSummaryFallback: boolean;
+  } | null>(null);
+  const bulkXmlInputRef = useRef<HTMLInputElement | null>(null);
+  const [bulkXmlSyncing, setBulkXmlSyncing] = useState(false);
+  const [bulkXmlFeedback, setBulkXmlFeedback] = useState<{
+    type: 'success' | 'error';
+    text: string;
   } | null>(null);
   const canPreviewUblInvoice = isWebPlatform();
 
@@ -221,6 +231,7 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
     if (isDifferentCari) {
       setDetailStartDate('');
       setDetailEndDate('');
+      setBulkXmlFeedback(null);
     }
     setLoadingDetail(true);
 
@@ -274,13 +285,13 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
     }
   };
 
-  const handleOpenFaturaPreview = (r: CariEkstreRow) => {
+  const handleOpenFaturaPreview = async (r: CariEkstreRow) => {
     if (!r.rawMovement) return;
-    const rawFatura = r.rawMovement as Fatura;
+    const rawFatura = r.rawMovement as FaturaWithDetay;
     const yon: FaturaYon = rawFatura.yon === 'satis' ? 'satis' : 'alis';
     const faturaNo = rawFatura.fatura_no || r.belgeNo;
     const snapshot = effectiveFirmaId
-      ? getUblInvoiceSnapshot(effectiveFirmaId, faturaNo, yon)
+      ? await getUblInvoiceSnapshotAsync(effectiveFirmaId, faturaNo, yon)
       : null;
 
     if (snapshot) {
@@ -289,19 +300,109 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
         yon: snapshot.yon,
         isSummaryFallback: false,
       });
-    } else {
+      return;
+    }
+
+    if (rawFatura.ubl_detay && typeof rawFatura.ubl_detay === 'object') {
       setPreviewFaturaState({
-        invoice: buildFallbackInvoiceFromRecord({
-          faturaNo,
-          tarih: rawFatura.tarih || r.dateKey,
-          tutar: Number(rawFatura.tutar) || 0,
-          yon,
-          firma,
-          cari: selectedCariForDetail,
+        invoice: hydrateParsedFromCompactDetay({
+          fatura: rawFatura,
+          detay: rawFatura.ubl_detay,
         }),
         yon,
-        isSummaryFallback: true,
+        isSummaryFallback: false,
       });
+      return;
+    }
+
+    setPreviewFaturaState({
+      invoice: buildFallbackInvoiceFromRecord({
+        faturaNo,
+        tarih: rawFatura.tarih || r.dateKey,
+        tutar: Number(rawFatura.tutar) || 0,
+        yon,
+        firma,
+        cari: selectedCariForDetail,
+      }),
+      yon,
+      isSummaryFallback: true,
+    });
+  };
+
+  const handleBulkXmlMatch = async (fileList: FileList | null) => {
+    if (!fileList || fileList.length === 0 || !effectiveFirmaId) return;
+
+    setBulkXmlSyncing(true);
+    setBulkXmlFeedback(null);
+
+    try {
+      const files = Array.from(fileList);
+      const detailInvoiceYonMap = new Map<string, FaturaYon>();
+      for (const movement of detailMovements) {
+        if ('fatura_no' in movement && movement.fatura_no) {
+          detailInvoiceYonMap.set(
+            String(movement.fatura_no).trim().toUpperCase(),
+            movement.yon === 'satis' ? 'satis' : 'alis'
+          );
+        }
+      }
+
+      const parsedItems: Array<{ yon: FaturaYon; parsed: ParsedUblInvoice }> = [];
+      let matchedInCurrentCari = 0;
+      let gibXsltCount = 0;
+      let failedCount = 0;
+
+      for (const file of files) {
+        try {
+          const text = await file.text();
+          const parsed = parseUblInvoiceXml(text, file.name, firma?.vergi_no, cariler);
+          const cleanNo = parsed.faturaNo.trim().toUpperCase();
+          const dbYon = detailInvoiceYonMap.get(cleanNo);
+          const yon = dbYon || parsed.detectedYon;
+          parsedItems.push({ yon, parsed });
+          if (detailInvoiceYonMap.has(cleanNo)) {
+            matchedInCurrentCari += 1;
+          }
+          if (parsed.renderedGibHtml) {
+            gibXsltCount += 1;
+          }
+        } catch {
+          failedCount += 1;
+        }
+      }
+
+      if (parsedItems.length === 0) {
+        setBulkXmlFeedback({
+          type: 'error',
+          text: 'Seçilen dosyalardan geçerli bir UBL / XML faturası okunamadı.',
+        });
+        return;
+      }
+
+      await saveUblInvoiceSnapshotsAsync(effectiveFirmaId, parsedItems);
+      const cloudRes = await syncUblDetayToSupabase(effectiveFirmaId, parsedItems);
+
+      const parts = [
+        `${parsedItems.length} XML faturası önbelleğe işlendi`,
+        matchedInCurrentCari > 0 ? `bu caride ${matchedInCurrentCari} fatura eşleşti` : '',
+        gibXsltCount > 0 ? `${gibXsltCount} adedinde Orijinal GİB XSLT görünümü hazır` : '',
+        cloudRes.syncedCount > 0 ? `${cloudRes.syncedCount} kayıt buluta eşitlendi` : '',
+      ].filter(Boolean);
+
+      setBulkXmlFeedback({
+        type: 'success',
+        text: `${parts.join(' • ')}.${failedCount > 0 ? ` (${failedCount} dosya okunamadı)` : ''}`,
+      });
+    } catch (err: unknown) {
+      setBulkXmlFeedback({
+        type: 'error',
+        text: err instanceof Error ? err.message : 'Toplu XML eşleştirme sırasında hata oluştu.',
+      });
+    } finally {
+      setBulkXmlSyncing(false);
+      if (bulkXmlInputRef.current) {
+        bulkXmlInputRef.current.value = '';
+      }
     }
   };
 
@@ -777,6 +878,7 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
                 onClick={() => {
                   setSelectedCariForDetail(null);
                   setPreviewFaturaState(null);
+                  setBulkXmlFeedback(null);
                 }}
                 aria-label="Ekstreyi kapat"
                 className="p-2 text-gray-400 hover:text-white rounded-lg hover:bg-white/5 transition shrink-0"
@@ -856,6 +958,35 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
               </div>
 
               <div className="flex flex-wrap items-center gap-2">
+                {canPreviewUblInvoice && (
+                  <>
+                    <input
+                      ref={bulkXmlInputRef}
+                      type="file"
+                      accept=".xml,.ubl,text/xml,application/xml"
+                      multiple
+                      className="hidden"
+                      onChange={(e) => {
+                        void handleBulkXmlMatch(e.target.files);
+                      }}
+                    />
+                    <button
+                      type="button"
+                      data-testid="ekstre_bulk_xml_match_btn"
+                      disabled={bulkXmlSyncing}
+                      onClick={() => bulkXmlInputRef.current?.click()}
+                      className="px-3 py-1.5 rounded-lg bg-blue-500/15 hover:bg-blue-500/25 text-blue-300 text-xs font-semibold flex items-center gap-1.5 border border-blue-500/30 transition disabled:opacity-50"
+                      title="Eski faturalar için XML / UBL dosyalarını tekrar kayıt oluşturmadan toplu eşleştir (Sadece Web)"
+                    >
+                      {bulkXmlSyncing ? (
+                        <RefreshCw className="w-3.5 h-3.5 text-blue-400 animate-spin" />
+                      ) : (
+                        <Upload className="w-3.5 h-3.5 text-blue-400" />
+                      )}
+                      <span>{bulkXmlSyncing ? 'Eşleştiriliyor...' : 'Toplu XML Eşleştir'}</span>
+                    </button>
+                  </>
+                )}
                 <button
                   type="button"
                   data-testid="ekstre_export_excel_btn"
@@ -878,6 +1009,33 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
                 </button>
               </div>
             </div>
+
+            {canPreviewUblInvoice && bulkXmlFeedback && (
+              <div
+                className={`mx-4 sm:mx-5 mt-3 px-3 py-2 rounded-xl border text-xs flex items-center justify-between gap-2 ${
+                  bulkXmlFeedback.type === 'success'
+                    ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
+                    : 'bg-red-500/10 border-red-500/30 text-red-300'
+                }`}
+              >
+                <div className="flex items-center gap-2 min-w-0">
+                  {bulkXmlFeedback.type === 'success' ? (
+                    <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-400" />
+                  ) : (
+                    <AlertCircle className="w-4 h-4 shrink-0 text-red-400" />
+                  )}
+                  <span className="leading-snug">{bulkXmlFeedback.text}</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setBulkXmlFeedback(null)}
+                  aria-label="Bildirimi kapat"
+                  className="text-gray-400 hover:text-white shrink-0"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            )}
 
             {/* Tarih Aralığı Çekme & Dönem Özeti */}
             <div className="px-4 sm:px-5 py-3 border-b border-white/[0.06] bg-[#0d141c] space-y-2.5">
@@ -1123,7 +1281,9 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
                                   <button
                                     type="button"
                                     data-testid="ekstre_view_invoice_btn"
-                                    onClick={() => handleOpenFaturaPreview(r)}
+                                    onClick={() => {
+                                      void handleOpenFaturaPreview(r);
+                                    }}
                                     className="px-2 py-1 rounded-lg bg-blue-500/15 hover:bg-blue-500/30 text-blue-300 border border-blue-500/30 text-[10.5px] font-bold inline-flex items-center gap-1 transition"
                                     title="Fatura Görüntüsünü Aç (Sadece Web)"
                                   >
@@ -1198,7 +1358,9 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
                               <button
                                 type="button"
                                 data-testid="ekstre_view_invoice_btn_mobile"
-                                onClick={() => handleOpenFaturaPreview(r)}
+                                onClick={() => {
+                                  void handleOpenFaturaPreview(r);
+                                }}
                                 className="px-2.5 py-1 rounded-lg bg-blue-500/15 text-blue-300 border border-blue-500/30 text-[11px] font-bold inline-flex items-center gap-1 shrink-0"
                               >
                                 <Eye className="w-3 h-3" />
@@ -1431,10 +1593,12 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
           isSummaryFallback={previewFaturaState.isSummaryFallback}
           firmaVergiNo={firma?.vergi_no}
           onClose={() => setPreviewFaturaState(null)}
-          onXmlAttached={(parsed) => {
+          onXmlAttached={async (parsed) => {
             const targetYon = previewFaturaState.yon;
             if (effectiveFirmaId) {
-              saveUblInvoiceSnapshots(effectiveFirmaId, [{ yon: targetYon, parsed }]);
+              const items = [{ yon: targetYon, parsed }];
+              await saveUblInvoiceSnapshotsAsync(effectiveFirmaId, items);
+              void syncUblDetayToSupabase(effectiveFirmaId, items);
             }
             setPreviewFaturaState({
               invoice: parsed,

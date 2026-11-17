@@ -62,6 +62,41 @@ export interface ParsedUblInvoice {
   notes: string[];
   lines: UblInvoiceLine[];
   totals: UblInvoiceTotals;
+  hasEmbeddedXslt?: boolean;
+  renderedGibHtml?: string;
+}
+
+const INVOICE_TYPE_LABELS: Record<string, string> = {
+  SATIS: 'SATIŞ',
+  IADE: 'İADE',
+  TEVKIFAT: 'TEVKİFAT',
+  ISTISNA: 'İSTİSNA',
+  OZELMATRAH: 'ÖZEL MATRAH',
+  IHRACKAYITLI: 'İHRAÇ KAYITLI',
+  SGK: 'SGK',
+  KOMISYONCU: 'KOMİSYONCU',
+  TEVKIFATIADE: 'TEVKİFAT İADE',
+};
+
+const INVOICE_SCENARIO_LABELS: Record<string, string> = {
+  TICARIFATURA: 'TİCARİ FATURA',
+  TEMELFATURA: 'TEMEL FATURA',
+  EARSIVFATURA: 'E-ARŞİV FATURA',
+  IHRACAT: 'İHRACAT',
+  YOLCUBERABERFATURA: 'YOLCU BERABER',
+  KAMU: 'KAMU',
+  HKS: 'HAL KAYIT SİSTEMİ',
+  ILAC_TIBBICIHAZ: 'İLAÇ / TIBBİ CİHAZ',
+};
+
+export function formatInvoiceTypeLabel(code?: string | null): string {
+  const clean = (code || 'SATIS').trim().toUpperCase();
+  return INVOICE_TYPE_LABELS[clean] || clean;
+}
+
+export function formatInvoiceScenarioLabel(profileId?: string | null): string {
+  const clean = (profileId || 'TICARIFATURA').trim().toUpperCase();
+  return INVOICE_SCENARIO_LABELS[clean] || clean;
 }
 
 export const normalizeTaxId = (raw?: string | null): string =>
@@ -387,6 +422,152 @@ const parseInvoiceTotals = (
   };
 };
 
+export function decodeBase64Utf8(rawBase64: string): string {
+  const cleaned = (rawBase64 || '').replace(/\s+/g, '');
+  if (!cleaned) return '';
+
+  let bytes: Uint8Array;
+  const nodeBuffer = (
+    globalThis as unknown as {
+      Buffer?: { from(input: string, encoding: string): Uint8Array };
+    }
+  ).Buffer;
+  if (typeof atob === 'function') {
+    const binary = atob(cleaned);
+    bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+  } else if (nodeBuffer) {
+    bytes = Uint8Array.from(nodeBuffer.from(cleaned, 'base64'));
+  } else {
+    return '';
+  }
+
+  const decoded =
+    typeof TextDecoder !== 'undefined'
+      ? new TextDecoder('utf-8', { fatal: false }).decode(bytes)
+      : Array.from(bytes, (b) => String.fromCharCode(b)).join('');
+
+  return decoded.replace(/^\uFEFF/, '').trim();
+}
+
+export function sanitizeRenderedGibHtml(rawHtml: string): string {
+  if (!rawHtml) return '';
+
+  // XSS önlemi: XSLT çıktısından olası script ve inline event handler'ları temizle
+  let sanitized = rawHtml
+    .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
+    .replace(/\son[a-z]+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, '')
+    .replace(/javascript\s*:/gi, 'blocked:');
+
+  if (!/<meta[^>]+charset/i.test(sanitized) && /<head\b[^>]*>/i.test(sanitized)) {
+    sanitized = sanitized.replace(/<head\b[^>]*>/i, (m) => `${m}<meta charset="utf-8" />`);
+  }
+
+  const printOverrideStyle = `<style id="tahsilatim-gib-print-fix">
+    @page { size: A4; margin: 6mm; }
+    html, body { background: #ffffff !important; margin: 0 auto; }
+    @media print { body { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
+  </style>`;
+
+  if (/<\/head>/i.test(sanitized)) {
+    sanitized = sanitized.replace(/<\/head>/i, `${printOverrideStyle}</head>`);
+  } else if (/<body\b[^>]*>/i.test(sanitized)) {
+    sanitized = `<head><meta charset="utf-8" />${printOverrideStyle}</head>${sanitized}`;
+  } else {
+    sanitized = `<!DOCTYPE html><html lang="tr"><head><meta charset="utf-8" />${printOverrideStyle}</head><body>${sanitized}</body></html>`;
+  }
+
+  return sanitized;
+}
+
+export function extractEmbeddedXsltFromElement(invoiceEl: Element): string | null {
+  const docRefs = getDirectChildrenByLocalName(invoiceEl, 'AdditionalDocumentReference');
+  for (const ref of docRefs) {
+    const docTypeCode = getDirectChildText(ref, 'DocumentTypeCode').toUpperCase();
+    const docType = getDirectChildText(ref, 'DocumentType').toUpperCase();
+    const attachment = getFirstDirectChild(ref, 'Attachment');
+    const embedded = getFirstDirectChild(attachment, 'EmbeddedDocumentBinaryObject');
+    if (!embedded?.textContent) continue;
+
+    const filename = (embedded.getAttribute('filename') || '').toLowerCase();
+    const mime = (embedded.getAttribute('mimeCode') || '').toLowerCase();
+    const isExplicitXslt =
+      docTypeCode.includes('XSLT') ||
+      docType.includes('XSLT') ||
+      filename.endsWith('.xslt') ||
+      filename.endsWith('.xsl') ||
+      mime.includes('xslt') ||
+      mime.includes('xsl');
+
+    const decoded = decodeBase64Utf8(embedded.textContent);
+    if (!decoded) continue;
+
+    const looksLikeXslt =
+      decoded.includes('http://www.w3.org/1999/XSL/Transform') ||
+      /<([a-z0-9_-]+:)?stylesheet\b/i.test(decoded) ||
+      /<([a-z0-9_-]+:)?transform\b/i.test(decoded);
+
+    if (isExplicitXslt || looksLikeXslt) {
+      return decoded;
+    }
+  }
+  return null;
+}
+
+function renderUblWithEmbeddedXslt(
+  doc: Document,
+  invoiceEl: Element,
+  xsltText: string
+): string | null {
+  if (typeof DOMParser === 'undefined' || typeof XSLTProcessor === 'undefined') {
+    return null;
+  }
+
+  try {
+    const parser = new DOMParser();
+    const xsltDoc = parser.parseFromString(xsltText, 'text/xml');
+    const xsltParseErr = xsltDoc.getElementsByTagName('parsererror');
+    if (xsltParseErr && xsltParseErr.length > 0) {
+      return null;
+    }
+
+    // Zarf XML (<ef:Envelope> / <StandardBusinessDocument>) içinde gelen <Invoice> düğümünü kök yap
+    let targetXmlDoc: Document = doc;
+    if (doc.documentElement?.localName !== 'Invoice') {
+      const standaloneDoc = document.implementation.createDocument(null, null, null);
+      const imported = standaloneDoc.importNode(invoiceEl, true);
+      standaloneDoc.appendChild(imported);
+      targetXmlDoc = standaloneDoc;
+    }
+
+    const processor = new XSLTProcessor();
+    processor.importStylesheet(xsltDoc);
+    const resultDoc = processor.transformToDocument(targetXmlDoc);
+    if (!resultDoc || !resultDoc.documentElement) {
+      return null;
+    }
+
+    const serialized = new XMLSerializer().serializeToString(resultDoc);
+    if (!serialized || serialized.trim().length < 100) {
+      return null;
+    }
+
+    // Hata sayfası / boş çıktı kontrolü
+    const plainTextLen = (resultDoc.body?.textContent || resultDoc.documentElement.textContent || '')
+      .replace(/\s+/g, '')
+      .length;
+    if (plainTextLen < 20) {
+      return null;
+    }
+
+    return sanitizeRenderedGibHtml(serialized);
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Tek bir UBL-TR XML / Zarf XML dosya metnini ayrıştırır.
  */
@@ -501,6 +682,11 @@ export const parseUblInvoiceXml = (
     }
   }
 
+  const embeddedXslt = extractEmbeddedXsltFromElement(invoiceEl);
+  const renderedGibHtml = embeddedXslt
+    ? renderUblWithEmbeddedXslt(doc, invoiceEl, embeddedXslt) || undefined
+    : undefined;
+
   return {
     fileName,
     faturaNo,
@@ -520,5 +706,7 @@ export const parseUblInvoiceXml = (
     notes,
     lines,
     totals,
+    hasEmbeddedXslt: Boolean(embeddedXslt),
+    renderedGibHtml,
   };
 };

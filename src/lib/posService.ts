@@ -16,12 +16,20 @@ export interface PosConfig {
   paytrMerchantId?: string;
   paytrMerchantKey?: string;
   paytrMerchantSalt?: string;
-  // NFC & iyzico Cep POS parametreleri
+  // Cep POS parametreleri
   nfcEnabled?: boolean;
   cepPosMode?: CepPosMode;
   cepPosDeepLinkBase?: string;
   cepPosCallbackScheme?: string;
+  // Her cihazda açılan ödeme linki Web Alan Adı ve Edge Function Gateway
+  publicWebUrl?: string;
+  gatewayFunctionUrl?: string;
 }
+
+export const DEFAULT_SHARED_WEB_URL =
+  'https://ais-pre-ow5iiixphenxsbz6fjufbo-543191284489.europe-west2.run.app';
+export const DEFAULT_SUPABASE_GATEWAY_URL =
+  'https://joxnbnclogasumkfzyqt.supabase.co/functions/v1/pos-payment-gateway';
 
 export interface NfcCardReadDetail {
   success: boolean;
@@ -70,6 +78,8 @@ export const DEFAULT_POS_CONFIG: PosConfig = {
   cepPosMode: 'hybrid',
   cepPosDeepLinkBase: '',
   cepPosCallbackScheme: 'tahsilatim://ceppost-callback',
+  publicWebUrl: '',
+  gatewayFunctionUrl: '',
 };
 
 export function getPosConfig(firmaId?: string): PosConfig {
@@ -92,7 +102,119 @@ export function savePosConfig(config: PosConfig, firmaId?: string): void {
   }
 }
 
+export function isAndroidApkOrigin(origin?: string | null): boolean {
+  const clean = (origin || '').trim().toLowerCase();
+  if (!clean) return false;
+  return (
+    clean.includes('appassets.androidplatform.net') ||
+    clean.startsWith('file://') ||
+    clean.startsWith('capacitor://') ||
+    clean.startsWith('ionic://')
+  );
+}
+
+export function isPrivateDevOrigin(origin?: string | null): boolean {
+  const clean = (origin || '').trim().toLowerCase();
+  if (!clean) return false;
+  return (
+    clean.includes('ais-dev-') ||
+    clean.includes('localhost') ||
+    clean.includes('127.0.0.1') ||
+    clean.includes('10.0.2.2')
+  );
+}
+
+export function normalizePublicWebUrl(raw?: string | null): string {
+  const trimmed = (raw || '').trim();
+  if (!trimmed) return '';
+  const withScheme = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+  try {
+    const parsed = new URL(withScheme);
+    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return '';
+    if (isAndroidApkOrigin(parsed.origin)) return '';
+    return parsed.origin.replace(/\/+$/, '');
+  } catch {
+    return '';
+  }
+}
+
+export function resolvePaymentLinkBaseUrl(
+  config?: PosConfig | null,
+  explicitBaseUrl?: string
+): {
+  baseUrl: string;
+  source: 'explicit' | 'configured' | 'window' | 'shared_fallback';
+  isPublicReachable: boolean;
+  warning?: string;
+} {
+  const explicit = normalizePublicWebUrl(explicitBaseUrl);
+  if (explicit) {
+    return {
+      baseUrl: explicit,
+      source: 'explicit',
+      isPublicReachable: !isPrivateDevOrigin(explicit),
+    };
+  }
+
+  const configured = normalizePublicWebUrl(config?.publicWebUrl);
+  if (configured) {
+    return {
+      baseUrl: configured,
+      source: 'configured',
+      isPublicReachable: !isPrivateDevOrigin(configured),
+    };
+  }
+
+  const winOrigin =
+    typeof window !== 'undefined' && window.location?.origin
+      ? normalizePublicWebUrl(window.location.origin)
+      : '';
+
+  if (winOrigin && !isAndroidApkOrigin(winOrigin) && !isPrivateDevOrigin(winOrigin)) {
+    return {
+      baseUrl: winOrigin,
+      source: 'window',
+      isPublicReachable: true,
+    };
+  }
+
+  return {
+    baseUrl: DEFAULT_SHARED_WEB_URL,
+    source: 'shared_fallback',
+    isPublicReachable: true,
+    warning:
+      'Sanal POS ayarlarından özel web alan adınız henüz tanımlanmadığı için paylaşılan web bağlantısı kullanıldı. Ayarlar > Sanal POS içinden kendi canlı web adresinizi tanımlayabilirsiniz.',
+  };
+}
+
+export function resolveGatewayFunctionUrl(config?: PosConfig | null): string {
+  const custom = (config?.gatewayFunctionUrl || '').trim().replace(/\/+$/, '');
+  if (custom && /^https?:\/\//i.test(custom)) {
+    return custom;
+  }
+  const supaUrl = (import.meta.env?.VITE_SUPABASE_URL || 'https://joxnbnclogasumkfzyqt.supabase.co')
+    .trim()
+    .replace(/\/+$/, '');
+  return `${supaUrl}/functions/v1/pos-payment-gateway`;
+}
+
 export function validatePosConfig(config: PosConfig): { valid: boolean; message?: string } {
+  if (config.publicWebUrl?.trim()) {
+    if (isAndroidApkOrigin(config.publicWebUrl)) {
+      return {
+        valid: false,
+        message:
+          'Android uygulama içi yerel adresi (appassets.androidplatform.net) dışarıdan açılamaz. Lütfen gerçek bir https:// web adresi giriniz.',
+      };
+    }
+    if (!normalizePublicWebUrl(config.publicWebUrl)) {
+      return {
+        valid: false,
+        message: 'Ödeme Linki Web Adresi geçerli bir https:// alan adı olmalıdır (örn: https://odeme.firmam.com).',
+      };
+    }
+  }
+
   if (!config.enabled || config.provider === 'none') {
     return { valid: true };
   }
@@ -128,6 +250,9 @@ export interface PaymentLinkResult {
   url: string;
   referenceNo: string;
   message: string;
+  payCode?: string;
+  baseUrlSource?: 'explicit' | 'configured' | 'window' | 'shared_fallback';
+  warning?: string;
 }
 
 export interface PosPayLinkParams {
@@ -135,14 +260,25 @@ export interface PosPayLinkParams {
   amount: number;
   customerName: string;
   provider: 'iyzico' | 'paytr';
+  payCode?: string;
+  description?: string;
+  firmaName?: string;
+  firmaId?: string;
+  payStatus?: 'success' | 'failed';
 }
 
 export function parsePosPayParams(search: string): PosPayLinkParams | null {
   try {
     const query = search.startsWith('?') ? search : `?${search}`;
     const params = new URLSearchParams(query);
-    const referenceNo = (params.get('pos_pay') || '').trim();
-    if (!referenceNo) return null;
+
+    const payCode = (params.get('pay') || '').trim();
+    const payStatusRaw = (params.get('pay_status') || '').trim().toLowerCase();
+    const payStatus: 'success' | 'failed' | undefined =
+      payStatusRaw === 'success' || payStatusRaw === 'failed' ? payStatusRaw : undefined;
+    const refReturn = (params.get('ref') || '').trim();
+    const referenceNo = (params.get('pos_pay') || payCode || refReturn).trim();
+    if (!referenceNo && !payStatus) return null;
 
     const rawAmount = Number((params.get('tut') || '0').replace(',', '.'));
     const amount = Number.isFinite(rawAmount) && rawAmount > 0 ? Math.round(rawAmount * 100) / 100 : 0;
@@ -150,12 +286,23 @@ export function parsePosPayParams(search: string): PosPayLinkParams | null {
     const rawProvider = (params.get('prov') || 'iyzico').trim().toLowerCase();
     const provider: 'iyzico' | 'paytr' = rawProvider === 'paytr' ? 'paytr' : 'iyzico';
 
-    return {
-      referenceNo,
+    const result: PosPayLinkParams = {
+      referenceNo: referenceNo || 'POS-ODEME',
       amount,
       customerName,
       provider,
     };
+
+    if (payCode) result.payCode = payCode;
+    const desc = (params.get('desc') || '').trim();
+    if (desc) result.description = desc;
+    const firmaName = (params.get('firma') || '').trim();
+    if (firmaName) result.firmaName = firmaName;
+    const firmaId = (params.get('fid') || '').trim();
+    if (firmaId) result.firmaId = firmaId;
+    if (payStatus) result.payStatus = payStatus;
+
+    return result;
   } catch {
     return null;
   }
@@ -166,27 +313,62 @@ export function generatePaymentLink(params: {
   customerName: string;
   customerPhone?: string;
   description?: string;
+  firmaName?: string;
+  firmaId?: string;
+  payCode?: string;
+  referenceNo?: string;
   config: PosConfig;
+  providerOverride?: 'iyzico' | 'paytr';
+  baseUrl?: string;
 }): PaymentLinkResult {
-  const refNo = `POS-${Date.now().toString().slice(-6)}`;
+  const refNo = params.referenceNo?.trim() || `POS-${Date.now().toString().slice(-6)}`;
+  const effectiveProvider: 'iyzico' | 'paytr' =
+    params.providerOverride ||
+    (params.config.provider === 'paytr' ? 'paytr' : 'iyzico');
   const providerLabel =
-    params.config.provider === 'paytr' ? 'PayTR Güvenli Ödeme' : 'iyzico Güvenli Ödeme';
+    effectiveProvider === 'paytr' ? 'PayTR Güvenli Ödeme' : 'iyzico Güvenli Ödeme';
   const modeLabel = params.config.testMode ? '[TEST MODU] ' : '';
 
-  const baseUrl = window.location.origin;
-  const paymentUrl = `${baseUrl}/?pos_pay=${refNo}&tut=${params.amount}&cari=${encodeURIComponent(
-    params.customerName
-  )}&prov=${params.config.provider === 'none' ? 'iyzico' : params.config.provider}`;
+  const resolvedBase = resolvePaymentLinkBaseUrl(params.config, params.baseUrl);
+  const baseUrl = resolvedBase.baseUrl;
+
+  let paymentUrl: string;
+  if (params.payCode?.trim()) {
+    paymentUrl = `${baseUrl}/?pay=${encodeURIComponent(params.payCode.trim())}`;
+  } else {
+    const query = new URLSearchParams();
+    query.set('pos_pay', refNo);
+    query.set('tut', String(params.amount));
+    query.set('cari', params.customerName);
+    query.set('prov', effectiveProvider);
+    if (params.description?.trim()) {
+      query.set('desc', params.description.trim());
+    }
+    if (params.firmaName?.trim()) {
+      query.set('firma', params.firmaName.trim());
+    }
+    if (params.firmaId?.trim()) {
+      query.set('fid', params.firmaId.trim());
+    }
+    paymentUrl = `${baseUrl}/?${query.toString()}`;
+  }
+
+  const descLine = params.description?.trim()
+    ? `\nAçıklama: ${params.description.trim()}`
+    : '';
 
   const message = `${modeLabel}Sayın ${params.customerName},\n${params.amount.toLocaleString(
     'tr-TR',
     { minimumFractionDigits: 2 }
-  )} ₺ tutarındaki ödemenizi kredi kartınız ile aşağıdaki link üzerinden ${providerLabel} güvencesiyle 3D Secure olarak tamamlayabilirsiniz:\n\n${paymentUrl}\n\nReferans No: ${refNo}`;
+  )} ₺ tutarındaki ödemenizi kredi kartınız ile aşağıdaki link üzerinden ${providerLabel} güvencesiyle 3D Secure olarak tamamlayabilirsiniz:${descLine}\n\n${paymentUrl}\n\nReferans No: ${refNo}`;
 
   return {
     url: paymentUrl,
     referenceNo: refNo,
     message,
+    payCode: params.payCode?.trim() || undefined,
+    baseUrlSource: resolvedBase.source,
+    warning: resolvedBase.warning,
   };
 }
 

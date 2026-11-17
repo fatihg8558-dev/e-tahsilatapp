@@ -1,9 +1,18 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mapUblUnitCode, ParsedUblInvoice } from '../src/lib/ublParser.ts';
+import {
+  decodeBase64Utf8,
+  formatInvoiceScenarioLabel,
+  formatInvoiceTypeLabel,
+  mapUblUnitCode,
+  ParsedUblInvoice,
+  sanitizeRenderedGibHtml,
+} from '../src/lib/ublParser.ts';
 import {
   buildFallbackInvoiceFromRecord,
+  createCompactCloudDetay,
   getUblInvoiceSnapshot,
+  hydrateParsedFromCompactDetay,
   saveUblInvoiceSnapshots,
   StorageLike,
 } from '../src/lib/ublInvoiceStore.ts';
@@ -186,4 +195,72 @@ test('isWebPlatform returns false when AndroidBridge is present and true on Web'
   } finally {
     g.window = prevWindow;
   }
+});
+
+test('decodeBase64Utf8 accurately decodes UTF-8 Base64 containing Turkish characters', () => {
+  const original = '<xsl:stylesheet>İADE ŞİRKETİ ĞÜÖÇ</xsl:stylesheet>';
+  const b64 = Buffer.from(original, 'utf-8').toString('base64');
+  // Satır sonları ve BOM simülasyonu ile dene
+  const spaced = `  ${b64.slice(0, 12)}\n${b64.slice(12)}  `;
+  assert.equal(decodeBase64Utf8(spaced), original);
+});
+
+test('sanitizeRenderedGibHtml strips scripts and inline handlers while preserving styles and tables', () => {
+  const rawHtml =
+    '<html><head><style>.gib-box{border:1px solid #000}</style><script>alert("xss")</script></head>' +
+    '<body onload="evil()"><table onclick="steal()"><tr><td>Fatura Tutarı</td></tr></table>' +
+    '<a href="javascript:alert(1)">Link</a></body></html>';
+
+  const clean = sanitizeRenderedGibHtml(rawHtml);
+  assert.ok(!clean.includes('<script'));
+  assert.ok(!clean.includes('onload='));
+  assert.ok(!clean.includes('onclick='));
+  assert.ok(!clean.includes('javascript:alert'));
+  assert.ok(clean.includes('.gib-box{border:1px solid #000}'));
+  assert.ok(clean.includes('<table><tr><td>Fatura Tutarı</td></tr></table>'));
+});
+
+test('formatInvoiceTypeLabel and formatInvoiceScenarioLabel convert UBL codes to Turkish labels', () => {
+  assert.equal(formatInvoiceTypeLabel('SATIS'), 'SATIŞ');
+  assert.equal(formatInvoiceTypeLabel('TEVKIFAT'), 'TEVKİFAT');
+  assert.equal(formatInvoiceTypeLabel('iade'), 'İADE');
+  assert.equal(formatInvoiceScenarioLabel('TICARIFATURA'), 'TİCARİ FATURA');
+  assert.equal(formatInvoiceScenarioLabel('EARSIVFATURA'), 'E-ARŞİV FATURA');
+  assert.equal(formatInvoiceScenarioLabel('TEMELFATURA'), 'TEMEL FATURA');
+});
+
+test('createCompactCloudDetay omits heavy renderedGibHtml and hydrateParsedFromCompactDetay restores invoice details', () => {
+  const sample = makeSampleInvoice({
+    invoiceTypeCode: 'TEVKIFAT',
+    hasEmbeddedXslt: true,
+    renderedGibHtml: '<html><body><div>' + 'X'.repeat(40000) + '</div></body></html>',
+  });
+
+  const compact = createCompactCloudDetay(sample);
+  const jsonText = JSON.stringify(compact);
+  assert.ok(jsonText.length < 3000, `Compact JSON too large: ${jsonText.length}`);
+  assert.equal('renderedGibHtml' in compact, false);
+  assert.equal(compact.hasEmbeddedXslt, true);
+  assert.equal(compact.lines.length, 1);
+
+  const hydrated = hydrateParsedFromCompactDetay({
+    fatura: {
+      id: 'f-1',
+      firma_id: 'firma-1',
+      cari_id: 'cari-1',
+      fatura_no: 'ACE2026000000189',
+      tarih: '2026-10-15',
+      tutar: 11800,
+      yon: 'satis',
+    },
+    detay: compact,
+  });
+
+  assert.equal(hydrated.faturaNo, 'ACE2026000000189');
+  assert.equal(hydrated.invoiceTypeCode, 'TEVKIFAT');
+  assert.equal(hydrated.lines.length, 1);
+  assert.equal(hydrated.lines[0].name, 'Endüstriyel Zeytinyağı 18L');
+  assert.equal(hydrated.supplier.unvan, 'Atlas Toptan Gıda A.Ş.');
+  assert.equal(hydrated.hasEmbeddedXslt, true);
+  assert.equal(hydrated.renderedGibHtml, undefined);
 });
