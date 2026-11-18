@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { X, Printer, Upload, FileText, AlertCircle, Sparkles, LayoutTemplate } from 'lucide-react';
+import { X, Printer, Upload, FileText, AlertCircle, Sparkles, LayoutTemplate, Trash2 } from 'lucide-react';
 import { FaturaYon } from '../../types/database';
 import { formatCurrency, formatDate, numberToTurkishWords } from '../../lib/formatters';
 import {
@@ -19,6 +19,7 @@ interface UblInvoicePreviewModalProps {
   firmaVergiNo?: string | null;
   onClose: () => void;
   onXmlAttached?: (parsed: ParsedUblInvoice) => void;
+  onDelete?: () => void;
 }
 
 function escapeHtml(raw: string | number | null | undefined): string {
@@ -601,6 +602,7 @@ export const UblInvoicePreviewModal: React.FC<UblInvoicePreviewModalProps> = ({
   firmaVergiNo,
   onClose,
   onXmlAttached,
+  onDelete,
 }) => {
   const xmlAttachInputRef = useRef<HTMLInputElement | null>(null);
   const gibIframeRef = useRef<HTMLIFrameElement | null>(null);
@@ -795,6 +797,19 @@ export const UblInvoicePreviewModal: React.FC<UblInvoicePreviewModalProps> = ({
                   <span>{isSummaryFallback ? 'XML Yükle / Eşleştir' : 'XML Güncelle'}</span>
                 </button>
               </>
+            )}
+
+            {onDelete && (
+              <button
+                type="button"
+                onClick={onDelete}
+                data-testid="ubl_preview_delete_btn"
+                className="px-3 py-1.5 rounded-lg bg-red-500/15 hover:bg-red-500/25 border border-red-500/35 text-red-300 text-xs font-bold flex items-center gap-1.5 transition"
+                title="Bu faturayı sil"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Sil</span>
+              </button>
             )}
 
             <button

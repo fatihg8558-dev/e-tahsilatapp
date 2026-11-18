@@ -330,6 +330,59 @@ export async function getUblInvoiceSnapshotAsync(
   return getUblInvoiceSnapshot(firmaId, faturaNo, yon, storage);
 }
 
+export async function removeUblInvoiceSnapshotAsync(
+  firmaId: string,
+  faturaNo: string,
+  yon?: FaturaYon,
+  storage?: StorageLike | null
+): Promise<void> {
+  const cleanNo = (faturaNo || '').trim().toUpperCase();
+  if (!firmaId || !cleanNo) return;
+
+  const existing = readAllEntries(firmaId, storage);
+  const filtered = existing.filter((e) => {
+    const entryNo = e.invoice.faturaNo.trim().toUpperCase();
+    if (yon) {
+      return !(entryNo === cleanNo && e.yon === yon);
+    }
+    return entryNo !== cleanNo;
+  });
+
+  if (filtered.length !== existing.length) {
+    writeEntries(firmaId, filtered, storage);
+  }
+
+  if (!storage && typeof indexedDB !== 'undefined') {
+    const db = await openUblIdb();
+    if (!db) return;
+    const keysToDelete = yon
+      ? [buildIdbRecordKey(firmaId, cleanNo, yon)]
+      : [buildIdbRecordKey(firmaId, cleanNo, 'satis'), buildIdbRecordKey(firmaId, cleanNo, 'alis')];
+    try {
+      await new Promise<void>((resolve) => {
+        try {
+          const tx = db.transaction(IDB_STORE, 'readwrite');
+          const store = tx.objectStore(IDB_STORE);
+          for (const key of keysToDelete) {
+            store.delete(key);
+          }
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => resolve();
+          tx.onabort = () => resolve();
+        } catch {
+          resolve();
+        }
+      });
+    } finally {
+      try {
+        db.close();
+      } catch {
+        // ignore
+      }
+    }
+  }
+}
+
 /**
  * Veritabanı kotasını şişirmemek için yalnızca ~1.5-3 KB boyutunda kompakt JSON özeti üretir (ham XSLT HTML dahil edilmez).
  */

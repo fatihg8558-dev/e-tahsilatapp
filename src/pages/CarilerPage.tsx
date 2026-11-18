@@ -38,6 +38,10 @@ import {
 import { UblImportModal } from '../components/cari/UblImportModal';
 import { CariExcelImportModal } from '../components/cari/CariExcelImportModal';
 import { UblInvoicePreviewModal } from '../components/cari/UblInvoicePreviewModal';
+import {
+  DeleteCariConfirmModal,
+  DeleteFaturaConfirmModal,
+} from '../components/cari/CariDeleteModals';
 import { isWebPlatform } from '../lib/platform';
 import { ParsedUblInvoice, parseUblInvoiceXml } from '../lib/ublParser';
 import {
@@ -84,6 +88,7 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
     invoice: ParsedUblInvoice;
     yon: FaturaYon;
     isSummaryFallback: boolean;
+    sourceFatura?: Fatura;
   } | null>(null);
   const bulkXmlInputRef = useRef<HTMLInputElement | null>(null);
   const [bulkXmlSyncing, setBulkXmlSyncing] = useState(false);
@@ -103,6 +108,7 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
 
   // Delete State
   const [cariToDelete, setCariToDelete] = useState<Cari | null>(null);
+  const [faturaToDelete, setFaturaToDelete] = useState<Fatura | null>(null);
 
   const fetchCariler = async () => {
     if (!effectiveFirmaId) {
@@ -207,25 +213,6 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
     }
   };
 
-  const handleDeleteCari = async () => {
-    if (!cariToDelete || !effectiveFirmaId) return;
-    try {
-      setError(null);
-      const { error: delErr } = await supabase
-        .from('cariler')
-        .delete()
-        .eq('id', cariToDelete.id)
-        .eq('firma_id', effectiveFirmaId);
-
-      if (delErr) throw delErr;
-
-      setCariToDelete(null);
-      await fetchCariler();
-    } catch (err: unknown) {
-      setError(handleSupabaseError(err, 'Cari silinemedi. Bu cariye bağlı işlemler veya faturalar olabilir.'));
-    }
-  };
-
   // Cari Detay ve Hareketleri Yükle
   const openDetail = async (cari: Cari) => {
     const isDifferentCari = selectedCariForDetail?.id !== cari.id;
@@ -301,6 +288,7 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
         invoice: snapshot.invoice,
         yon: snapshot.yon,
         isSummaryFallback: false,
+        sourceFatura: rawFatura,
       });
       return;
     }
@@ -313,6 +301,7 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
         }),
         yon,
         isSummaryFallback: false,
+        sourceFatura: rawFatura,
       });
       return;
     }
@@ -328,6 +317,7 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
       }),
       yon,
       isSummaryFallback: true,
+      sourceFatura: rawFatura,
     });
   };
 
@@ -1292,19 +1282,33 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
                                     <ExternalLink className="w-3 h-3 text-teal-400" />
                                     <span>Makbuz</span>
                                   </button>
-                                ) : r.isInvoice && !r.isOpeningRow && r.rawMovement && canPreviewUblInvoice ? (
-                                  <button
-                                    type="button"
-                                    data-testid="ekstre_view_invoice_btn"
-                                    onClick={() => {
-                                      void handleOpenFaturaPreview(r);
-                                    }}
-                                    className="px-2 py-1 rounded-lg bg-blue-500/15 hover:bg-blue-500/30 text-blue-300 border border-blue-500/30 text-[10.5px] font-bold inline-flex items-center gap-1 transition"
-                                    title="Fatura Görüntüsünü Aç (Sadece Web)"
-                                  >
-                                    <Eye className="w-3 h-3 text-blue-400" />
-                                    <span>Fatura</span>
-                                  </button>
+                                ) : r.isInvoice && !r.isOpeningRow && r.rawMovement ? (
+                                  <div className="inline-flex items-center justify-end gap-1.5">
+                                    {canPreviewUblInvoice && (
+                                      <button
+                                        type="button"
+                                        data-testid="ekstre_view_invoice_btn"
+                                        onClick={() => {
+                                          void handleOpenFaturaPreview(r);
+                                        }}
+                                        className="px-2 py-1 rounded-lg bg-blue-500/15 hover:bg-blue-500/30 text-blue-300 border border-blue-500/30 text-[10.5px] font-bold inline-flex items-center gap-1 transition"
+                                        title="Fatura Görüntüsünü Aç (Sadece Web)"
+                                      >
+                                        <Eye className="w-3 h-3 text-blue-400" />
+                                        <span>Fatura</span>
+                                      </button>
+                                    )}
+                                    <button
+                                      type="button"
+                                      data-testid="ekstre_delete_invoice_btn"
+                                      onClick={() => setFaturaToDelete(r.rawMovement as Fatura)}
+                                      className="px-2 py-1 rounded-lg bg-red-500/15 hover:bg-red-500/30 text-red-300 border border-red-500/30 text-[10.5px] font-bold inline-flex items-center gap-1 transition"
+                                      title="Faturayı Sil"
+                                    >
+                                      <Trash2 className="w-3 h-3 text-red-400" />
+                                      <span>Sil</span>
+                                    </button>
+                                  </div>
                                 ) : (
                                   <span className="text-gray-500 text-[10px]">-</span>
                                 )}
@@ -1369,18 +1373,32 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
                                 <ExternalLink className="w-3 h-3" />
                                 <span>Makbuz</span>
                               </button>
-                            ) : r.isInvoice && !r.isOpeningRow && r.rawMovement && canPreviewUblInvoice ? (
-                              <button
-                                type="button"
-                                data-testid="ekstre_view_invoice_btn_mobile"
-                                onClick={() => {
-                                  void handleOpenFaturaPreview(r);
-                                }}
-                                className="px-2.5 py-1 rounded-lg bg-blue-500/15 text-blue-300 border border-blue-500/30 text-[11px] font-bold inline-flex items-center gap-1 shrink-0"
-                              >
-                                <Eye className="w-3 h-3" />
-                                <span>Fatura</span>
-                              </button>
+                            ) : r.isInvoice && !r.isOpeningRow && r.rawMovement ? (
+                              <div className="inline-flex items-center gap-1.5 shrink-0">
+                                {canPreviewUblInvoice && (
+                                  <button
+                                    type="button"
+                                    data-testid="ekstre_view_invoice_btn_mobile"
+                                    onClick={() => {
+                                      void handleOpenFaturaPreview(r);
+                                    }}
+                                    className="px-2.5 py-1 rounded-lg bg-blue-500/15 text-blue-300 border border-blue-500/30 text-[11px] font-bold inline-flex items-center gap-1 shrink-0"
+                                  >
+                                    <Eye className="w-3 h-3" />
+                                    <span>Fatura</span>
+                                  </button>
+                                )}
+                                <button
+                                  type="button"
+                                  data-testid="ekstre_delete_invoice_btn_mobile"
+                                  onClick={() => setFaturaToDelete(r.rawMovement as Fatura)}
+                                  className="px-2.5 py-1 rounded-lg bg-red-500/15 text-red-300 border border-red-500/30 text-[11px] font-bold inline-flex items-center gap-1 shrink-0"
+                                  title="Faturayı Sil"
+                                >
+                                  <Trash2 className="w-3 h-3" />
+                                  <span>Sil</span>
+                                </button>
+                              </div>
                             ) : null}
                           </div>
 
@@ -1563,34 +1581,31 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
         </div>
       )}
 
-      {/* SİLME ONAY MODALI */}
-      {cariToDelete && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-[#111820] border border-white/10 rounded-2xl w-full max-w-sm p-6 shadow-2xl text-center">
-            <div className="w-12 h-12 rounded-2xl bg-red-500/20 text-red-400 flex items-center justify-center mx-auto mb-3">
-              <Trash2 className="w-6 h-6" />
-            </div>
-            <h3 className="font-bold text-white text-base">Cariyi Silmek İstiyor musunuz?</h3>
-            <p className="text-xs text-gray-400 mt-2 leading-relaxed">
-              <strong className="text-white">{cariToDelete.unvan}</strong> cari kartı silinecektir. Bu işlem geri alınamaz.
-            </p>
-            <div className="mt-5 flex items-center justify-center gap-3">
-              <button
-                onClick={() => setCariToDelete(null)}
-                className="px-4 py-2 rounded-xl border border-white/10 text-gray-300 text-xs font-semibold hover:bg-white/5 transition"
-              >
-                Vazgeç
-              </button>
-              <button
-                onClick={handleDeleteCari}
-                className="px-4 py-2 rounded-xl bg-red-500 hover:bg-red-600 text-white text-xs font-bold transition shadow-md"
-              >
-                Evet, Sil
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      {/* CARİ SİLME ONAY MODALI (Bağlı fatura & işlem kontrolü + RLS SQL desteği) */}
+      <DeleteCariConfirmModal
+        cari={cariToDelete}
+        onClose={() => setCariToDelete(null)}
+        onDeleted={async (deletedCariId) => {
+          if (selectedCariForDetail?.id === deletedCariId) {
+            setSelectedCariForDetail(null);
+          }
+          await fetchCariler();
+        }}
+      />
+
+      {/* FATURA SİLME ONAY MODALI */}
+      <DeleteFaturaConfirmModal
+        fatura={faturaToDelete}
+        cariUnvan={selectedCariForDetail?.unvan}
+        onClose={() => setFaturaToDelete(null)}
+        onDeleted={async () => {
+          await fetchCariler();
+          if (selectedCariForDetail) {
+            await openDetail(selectedCariForDetail);
+          }
+        }}
+      />
+
       {/* UBL / XML FATURA YÜKLEME MODALI */}
       <UblImportModal
         isOpen={isUblModalOpen && entitlements.canUseUblImport}
@@ -1618,6 +1633,15 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
           isSummaryFallback={previewFaturaState.isSummaryFallback}
           firmaVergiNo={firma?.vergi_no}
           onClose={() => setPreviewFaturaState(null)}
+          onDelete={
+            previewFaturaState.sourceFatura
+              ? () => {
+                  const target = previewFaturaState.sourceFatura!;
+                  setPreviewFaturaState(null);
+                  setFaturaToDelete(target);
+                }
+              : undefined
+          }
           onXmlAttached={async (parsed) => {
             const targetYon = previewFaturaState.yon;
             if (effectiveFirmaId) {
@@ -1629,6 +1653,7 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
               invoice: parsed,
               yon: targetYon,
               isSummaryFallback: false,
+              sourceFatura: previewFaturaState.sourceFatura,
             });
           }}
         />

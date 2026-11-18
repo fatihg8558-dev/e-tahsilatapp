@@ -151,6 +151,20 @@ CREATE POLICY "cariler_firma_update" ON public.cariler FOR UPDATE
     firma_id = public.get_my_firma_id()
     OR public.get_my_rol() = 'superadmin'
   );
+
+DROP POLICY IF EXISTS "cariler_firma_delete" ON public.cariler;
+CREATE POLICY "cariler_firma_delete" ON public.cariler FOR DELETE
+  USING (
+    firma_id = public.get_my_firma_id()
+    OR public.get_my_rol() = 'superadmin'
+  );
+
+DROP POLICY IF EXISTS "faturalar_firma_delete" ON public.faturalar;
+CREATE POLICY "faturalar_firma_delete" ON public.faturalar FOR DELETE
+  USING (
+    firma_id = public.get_my_firma_id()
+    OR public.get_my_rol() = 'superadmin'
+  );
 `;
 
 async function syncProfileWithClient(
