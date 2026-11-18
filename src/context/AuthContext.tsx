@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
 import { User, Session } from '@supabase/supabase-js';
 import { supabase, handleSupabaseError } from '../lib/supabase';
+import { isAnaHesapForeignKeyError } from '../lib/plasiyerService';
 import { Profile, Firma, Paket, Ayar } from '../types/database';
 import {
   FIRMA_EK_PLASIYER_AYAR_KEY,
@@ -199,11 +200,22 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
               email: authEmail,
               aktif: true,
             };
-            const { data: createdProf } = await supabase
+            let { data: createdProf, error: recoverErr } = await supabase
               .from('profiles')
               .upsert(recoveredPayload, { onConflict: 'id' })
               .select('*')
               .maybeSingle();
+
+            if (!createdProf && recoveredPayload.ana_hesap_id && isAnaHesapForeignKeyError(recoverErr)) {
+              const fallbackPayload = { ...recoveredPayload, ana_hesap_id: null };
+              const retryRes = await supabase
+                .from('profiles')
+                .upsert(fallbackPayload, { onConflict: 'id' })
+                .select('*')
+                .maybeSingle();
+              createdProf = retryRes.data;
+              recoveredPayload.ana_hesap_id = null;
+            }
             profileData = (createdProf as Profile) || (recoveredPayload as Profile);
           } else {
             setProfile(null);
@@ -286,10 +298,21 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           }
 
           if (needsUpdate) {
-            const { error: healErr } = await supabase
+            let { error: healErr } = await supabase
               .from('profiles')
               .update(updates)
               .eq('id', profileData.id);
+
+            if (healErr && updates.ana_hesap_id && isAnaHesapForeignKeyError(healErr)) {
+              const safeUpdates = { ...updates, ana_hesap_id: null };
+              profileData.ana_hesap_id = null;
+              const retryHeal = await supabase
+                .from('profiles')
+                .update(safeUpdates)
+                .eq('id', profileData.id);
+              healErr = retryHeal.error;
+            }
+
             if (healErr) {
               console.warn('Profile self-heal warning:', healErr);
             }

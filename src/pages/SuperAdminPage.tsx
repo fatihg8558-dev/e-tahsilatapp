@@ -3,6 +3,7 @@ import { useAuth, SUPER_ADMIN_EMAIL } from '../context/AuthContext';
 import { OdemelerPanel } from './OdemelerPanel';
 import { supabase } from '../lib/supabase';
 import { deleteFirmaAndAccounts, deleteUserProfileAccount } from '../lib/accountDeleteHelper';
+import { isAnaHesapForeignKeyError } from '../lib/plasiyerService';
 import { Firma, Profile, Paket, Ayar, UserRole } from '../types/database';
 import {
   PAKET_OZELLIKLERI_AYAR_KEY,
@@ -515,15 +516,35 @@ export const SuperAdminPage: React.FC<SuperAdminPageProps> = ({ onBackToDashboar
     try {
       setSavingId(u.id);
       setFeedback(null);
-      const { error } = await supabase
+
+      const firmaUsers = profilesByFirma[u.firma_id] || [];
+      const firmaAnaUser = firmaUsers.find((p) => p.rol === 'ana' && p.id !== u.id) || null;
+      const rolePayload: Partial<Profile> =
+        newRole === 'ana' || newRole === 'superadmin'
+          ? { rol: newRole, ana_hesap_id: null }
+          : newRole === 'plasiyer' && firmaAnaUser?.id
+          ? { rol: newRole, ana_hesap_id: firmaAnaUser.id }
+          : { rol: newRole };
+
+      let { error } = await supabase
         .from('profiles')
-        .update({ rol: newRole })
+        .update(rolePayload)
         .eq('id', u.id);
+
+      let appliedPayload = rolePayload;
+      if (error && isAnaHesapForeignKeyError(error)) {
+        appliedPayload = { rol: newRole, ana_hesap_id: null };
+        const retryRes = await supabase
+          .from('profiles')
+          .update(appliedPayload)
+          .eq('id', u.id);
+        error = retryRes.error;
+      }
 
       if (error) throw error;
 
       setProfiles((prev) =>
-        prev.map((item) => (item.id === u.id ? { ...item, rol: newRole } : item))
+        prev.map((item) => (item.id === u.id ? { ...item, ...appliedPayload } : item))
       );
       setFeedback({
         type: 'success',
@@ -546,16 +567,28 @@ export const SuperAdminPage: React.FC<SuperAdminPageProps> = ({ onBackToDashboar
       setFeedback(null);
 
       const firmaUsers = profilesByFirma[newFirmaId] || [];
-      const anaUser = firmaUsers.find((p) => p.rol === 'ana') || null;
-      const updatePayload: Partial<Profile> = {
+      const anaUser = firmaUsers.find((p) => p.rol === 'ana' && p.id !== u.id) || null;
+      let updatePayload: Partial<Profile> = {
         firma_id: newFirmaId,
-        ...(anaUser?.id ? { ana_hesap_id: anaUser.id } : {}),
+        ana_hesap_id: u.rol === 'ana' || u.rol === 'superadmin' ? null : anaUser?.id || null,
       };
 
-      const { error } = await supabase
+      let { error } = await supabase
         .from('profiles')
         .update(updatePayload)
         .eq('id', u.id);
+
+      if (error && isAnaHesapForeignKeyError(error)) {
+        updatePayload = {
+          firma_id: newFirmaId,
+          ana_hesap_id: null,
+        };
+        const retryRes = await supabase
+          .from('profiles')
+          .update(updatePayload)
+          .eq('id', u.id);
+        error = retryRes.error;
+      }
 
       if (error) throw error;
 

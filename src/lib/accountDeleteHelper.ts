@@ -15,6 +15,7 @@ export async function deleteUserProfileAccount(
   try {
     await supabase.from('islemler').update({ yapan_user_id: null }).eq('yapan_user_id', userId);
     await supabase.from('gelir_giderler').update({ yapan_user_id: null }).eq('yapan_user_id', userId);
+    await supabase.from('profiles').update({ ana_hesap_id: null }).eq('ana_hesap_id', userId);
 
     const { error } = await supabase.from('profiles').delete().eq('id', userId);
     if (error) {
@@ -64,6 +65,9 @@ export async function deleteFirmaAndAccounts(
 
     // 2. Kendi profilini silmeden önce diğer profilleri sil (kendi firmasını silen hesapta RLS get_my_firma_id() kopmasın)
     if (currentUserId) {
+      await supabase.from('profiles').update({ ana_hesap_id: null }).eq('firma_id', firmaId);
+      await supabase.from('profiles').update({ ana_hesap_id: null }).eq('ana_hesap_id', currentUserId);
+
       const { error: otherProfErr } = await supabase
         .from('profiles')
         .delete()
@@ -93,7 +97,9 @@ export async function deleteFirmaAndAccounts(
       throw firmaFirstErr;
     }
 
-    // 3. Süper Admin başka firmayı siliyorsa önce tüm firma profillerini sonra firmayı sil
+    // 3. Süper Admin başka firmayı siliyorsa önce bağlı ana_hesap_id referanslarını temizle, sonra profilleri ve firmayı sil
+    await supabase.from('profiles').update({ ana_hesap_id: null }).eq('firma_id', firmaId);
+
     const { error: profErr } = await supabase.from('profiles').delete().eq('firma_id', firmaId);
     if (profErr) throw profErr;
 

@@ -1053,7 +1053,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       <div className="p-4 rounded-xl bg-[#0a0e13] border border-amber-500/30 space-y-3">
                         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                           <p className="text-[11px] text-gray-300 leading-relaxed">
-                            Daha önce eklediğiniz plasiyerler ana hesapta görünmüyorsa veya plasiyer girişinde cariler boş geliyorsa, bu SQL kodunu{' '}
+                            Daha önce eklediğiniz veya silip yeniden plasiyer yaptığınız hesaplarda yetki/FK hatası alıyorsanız, plasiyerler listede görünmüyorsa ya da cariler boş geliyorsa, bu SQL kodunu{' '}
                             <strong className="text-amber-300">Supabase Dashboard &gt; SQL Editor</strong> kısmında bir kez çalıştırın.
                           </p>
                           <button

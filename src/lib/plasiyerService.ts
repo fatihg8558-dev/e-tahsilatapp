@@ -3,9 +3,9 @@ import { supabase, handleSupabaseError } from './supabase';
 import { Profile } from '../types/database';
 
 const supabaseUrl =
-  import.meta.env.VITE_SUPABASE_URL || 'https://joxnbnclogasumkfzyqt.supabase.co';
+  import.meta.env?.VITE_SUPABASE_URL || 'https://joxnbnclogasumkfzyqt.supabase.co';
 const supabaseAnonKey =
-  import.meta.env.VITE_SUPABASE_ANON_KEY || 'sb_publishable_PzJOpsBlvVm9MoxTx_PFkw_X66otRCQ';
+  import.meta.env?.VITE_SUPABASE_ANON_KEY || 'sb_publishable_PzJOpsBlvVm9MoxTx_PFkw_X66otRCQ';
 
 /**
  * Ana hesabın aktif oturumunu (localStorage) etkilemeden
@@ -27,7 +27,7 @@ export interface CreatePlasiyerParams {
   password: string;
   telefon?: string;
   firma_id: string;
-  ana_hesap_id: string;
+  ana_hesap_id?: string | null;
   firma_unvan?: string;
 }
 
@@ -69,11 +69,36 @@ AS $$
   SELECT rol::text FROM public.profiles WHERE id = auth.uid() LIMIT 1;
 $$;
 
--- 2. Daha önce trigger yüzünden yanlış firmada 'ana' kalmış plasiyerleri onar
+-- 2. Silinmiş ana hesaplara bakan bozuk ana_hesap_id referanslarını temizle ve FK kuralını güvenli hale getir
+UPDATE public.profiles p
+SET ana_hesap_id = NULL
+WHERE p.ana_hesap_id IS NOT NULL
+  AND NOT EXISTS (
+    SELECT 1 FROM public.profiles ap WHERE ap.id = p.ana_hesap_id
+  );
+
+ALTER TABLE public.profiles
+  DROP CONSTRAINT IF EXISTS profiles_ana_hesap_id_fkey;
+
+ALTER TABLE public.profiles
+  ADD CONSTRAINT profiles_ana_hesap_id_fkey
+  FOREIGN KEY (ana_hesap_id)
+  REFERENCES public.profiles(id)
+  ON DELETE SET NULL;
+
+-- 2b. Daha önce trigger yüzünden yanlış firmada 'ana' kalmış plasiyerleri onar
 UPDATE public.profiles p
 SET
   firma_id = (u.raw_user_meta_data->>'firma_id')::uuid,
-  ana_hesap_id = NULLIF(u.raw_user_meta_data->>'ana_hesap_id', '')::uuid,
+  ana_hesap_id = CASE
+    WHEN NULLIF(u.raw_user_meta_data->>'ana_hesap_id', '') IS NOT NULL
+      AND EXISTS (
+        SELECT 1 FROM public.profiles ap
+        WHERE ap.id = (u.raw_user_meta_data->>'ana_hesap_id')::uuid
+      )
+    THEN (u.raw_user_meta_data->>'ana_hesap_id')::uuid
+    ELSE NULL
+  END,
   rol = 'plasiyer'
 FROM auth.users u
 WHERE u.id = p.id
@@ -92,6 +117,14 @@ CREATE POLICY "profiles_same_firma_select" ON public.profiles FOR SELECT
   USING (
     id = auth.uid()
     OR firma_id = public.get_my_firma_id()
+    OR public.get_my_rol() = 'superadmin'
+  );
+
+DROP POLICY IF EXISTS "profiles_self_or_ana_insert" ON public.profiles;
+CREATE POLICY "profiles_self_or_ana_insert" ON public.profiles FOR INSERT
+  WITH CHECK (
+    id = auth.uid()
+    OR (public.get_my_rol() = 'ana' AND firma_id = public.get_my_firma_id())
     OR public.get_my_rol() = 'superadmin'
   );
 
@@ -167,18 +200,126 @@ CREATE POLICY "faturalar_firma_delete" ON public.faturalar FOR DELETE
   );
 `;
 
-async function syncProfileWithClient(
-  client: ReturnType<typeof createIsolatedAuthClient> | typeof supabase,
-  payload: {
-    id: string;
-    firma_id: string;
-    ana_hesap_id: string;
-    rol: 'plasiyer';
-    ad_soyad: string;
-    telefon: string | null;
-    email: string;
-    aktif: boolean;
+export interface PlasiyerProfilePayload {
+  id: string;
+  firma_id: string;
+  ana_hesap_id: string | null;
+  rol: 'plasiyer';
+  ad_soyad: string;
+  telefon: string | null;
+  email: string;
+  aktif: boolean;
+}
+
+export function isAnaHesapForeignKeyError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const e = error as { code?: unknown; message?: unknown; details?: unknown; hint?: unknown };
+  const code = String(e.code || '').trim();
+  const combined = `${e.message || ''} ${e.details || ''} ${e.hint || ''}`.toLowerCase();
+  if (combined.includes('profiles_ana_hesap_id_fkey')) return true;
+  if ((code === '23503' || combined.includes('foreign key constraint')) && combined.includes('ana_hesap_id')) {
+    return true;
   }
+  return false;
+}
+
+export function buildSafePlasiyerProfilePayload(params: {
+  id: string;
+  firma_id: string;
+  ana_hesap_id?: string | null;
+  ad_soyad: string;
+  telefon: string | null;
+  email: string;
+}): PlasiyerProfilePayload {
+  const cleanAnaId = params.ana_hesap_id?.trim() || null;
+  return {
+    id: params.id,
+    firma_id: params.firma_id,
+    ana_hesap_id: cleanAnaId,
+    rol: 'plasiyer',
+    ad_soyad: params.ad_soyad,
+    telefon: params.telefon,
+    email: params.email,
+    aktif: true,
+  };
+}
+
+export function formatPlasiyerWriteError(
+  lastWriteError: unknown,
+  verifyErr: unknown
+): { error: string; rlsWarning: boolean } {
+  const primaryErr = lastWriteError || verifyErr;
+  const errMsg = lastWriteError
+    ? handleSupabaseError(lastWriteError)
+    : verifyErr
+    ? handleSupabaseError(verifyErr)
+    : 'Plasiyer profili firmanıza bağlanamadı (Supabase profiles RLS veya e-posta onay ayarı engelliyor olabilir).';
+
+  if (isAnaHesapForeignKeyError(primaryErr)) {
+    return {
+      rlsWarning: true,
+      error: `${errMsg} — Bağlanmak istenen ana hesap kaydı (ana_hesap_id) profiles tablosunda silinmiş veya eksik olduğu için veritabanı yabancı anahtar (FK) kuralı işlemi durdurdu. Aşağıdaki SQL onarım kodunu Supabase SQL Editor'de bir kez çalıştırıp tekrar deneyiniz.`,
+    };
+  }
+
+  const lower = errMsg.toLowerCase();
+  const isRlsOrTrigger =
+    !primaryErr ||
+    lower.includes('row-level') ||
+    lower.includes('rls') ||
+    lower.includes('yetki') ||
+    lower.includes('permission') ||
+    lower.includes('trigger');
+
+  if (isRlsOrTrigger) {
+    return {
+      rlsWarning: true,
+      error: `${errMsg} — Veritabanı tarafında plasiyer kaydı trigger tarafından farklı firmaya atanmış veya RLS ekleme/güncellemeyi engellemiş olabilir. Aşağıdaki SQL kodunu Supabase SQL Editor'de bir kez çalıştırıp tekrar deneyiniz.`,
+    };
+  }
+
+  return {
+    rlsWarning: false,
+    error: errMsg,
+  };
+}
+
+async function resolveValidAnaHesapId(
+  client: ReturnType<typeof createIsolatedAuthClient> | typeof supabase,
+  requestedAnaHesapId: string | null | undefined,
+  firmaId: string,
+  excludedUserId?: string | null
+): Promise<string | null> {
+  const candidate = requestedAnaHesapId?.trim() || null;
+  if (candidate && candidate !== excludedUserId) {
+    const { data: exactMatch } = await client
+      .from('profiles')
+      .select('id')
+      .eq('id', candidate)
+      .maybeSingle();
+    if (exactMatch?.id) {
+      return exactMatch.id;
+    }
+  }
+
+  const { data: firmaAna } = await client
+    .from('profiles')
+    .select('id')
+    .eq('firma_id', firmaId)
+    .eq('rol', 'ana')
+    .limit(1)
+    .maybeSingle();
+
+  if (firmaAna?.id && firmaAna.id !== excludedUserId) {
+    return firmaAna.id;
+  }
+
+  return null;
+}
+
+async function attemptProfileWrite(
+  client: ReturnType<typeof createIsolatedAuthClient> | typeof supabase,
+  payload: PlasiyerProfilePayload
 ): Promise<{ profile: Profile | null; error: unknown }> {
   // Önce UPDATE dene (trigger satırı zaten oluşturmuşsa firma_id ve rol'ü düzeltir)
   const { data: updated, error: updateErr } = await client
@@ -205,7 +346,11 @@ async function syncProfileWithClient(
     return { profile: updated as Profile, error: null };
   }
 
-  // Trigger satır oluşturmadıysa UPSERT dene
+  if (updateErr && isAnaHesapForeignKeyError(updateErr)) {
+    return { profile: null, error: updateErr };
+  }
+
+  // Trigger satır oluşturmadıysa veya daha önce silindiyse UPSERT dene
   const { data: upserted, error: upsertErr } = await client
     .from('profiles')
     .upsert(payload, { onConflict: 'id' })
@@ -222,6 +367,34 @@ async function syncProfileWithClient(
   }
 
   return { profile: null, error: upsertErr || updateErr };
+}
+
+async function syncProfileWithClient(
+  client: ReturnType<typeof createIsolatedAuthClient> | typeof supabase,
+  payload: PlasiyerProfilePayload
+): Promise<{ profile: Profile | null; error: unknown; clearedInvalidAnaHesapId?: boolean }> {
+  const firstAttempt = await attemptProfileWrite(client, payload);
+  if (firstAttempt.profile) {
+    return firstAttempt;
+  }
+
+  if (payload.ana_hesap_id && isAnaHesapForeignKeyError(firstAttempt.error)) {
+    const fallbackPayload: PlasiyerProfilePayload = {
+      ...payload,
+      ana_hesap_id: null,
+    };
+    const retryAttempt = await attemptProfileWrite(client, fallbackPayload);
+    if (retryAttempt.profile) {
+      return {
+        profile: retryAttempt.profile,
+        error: null,
+        clearedInvalidAnaHesapId: true,
+      };
+    }
+    return retryAttempt;
+  }
+
+  return firstAttempt;
 }
 
 /**
@@ -246,21 +419,27 @@ export async function createPlasiyer(
       return { success: false, error: 'Plasiyer şifresi en az 6 karakter olmalıdır.' };
     }
 
-    const userMetaData = {
+    let validAnaHesapId = await resolveValidAnaHesapId(
+      supabase,
+      params.ana_hesap_id,
+      params.firma_id
+    );
+
+    const buildUserMetaData = (anaId: string | null) => ({
       ad_soyad: cleanAdSoyad,
       telefon: cleanTelefon,
       rol: 'plasiyer',
       firma_id: params.firma_id,
-      ana_hesap_id: params.ana_hesap_id,
+      ana_hesap_id: anaId,
       firma_unvan: params.firma_unvan || undefined,
-    };
+    });
 
     // 1. İzole istemci ile Supabase Auth kullanıcısı oluştur
     const { data: signUpData, error: authErr } = await isolatedClient.auth.signUp({
       email: cleanEmail,
       password: cleanPassword,
       options: {
-        data: userMetaData,
+        data: buildUserMetaData(validAnaHesapId),
       },
     });
 
@@ -322,9 +501,19 @@ export async function createPlasiyer(
         }
       }
 
+      // Kendi kendine ana_hesap_id atanmasını önle
+      if (validAnaHesapId === userId) {
+        validAnaHesapId = await resolveValidAnaHesapId(
+          supabase,
+          null,
+          params.firma_id,
+          userId
+        );
+      }
+
       // Auth metadata'yı plasiyer ve doğru firma_id olarak güncelle
       await isolatedClient.auth.updateUser({
-        data: userMetaData,
+        data: buildUserMetaData(validAnaHesapId),
       });
     } else if (authErr) {
       return { success: false, error: handleSupabaseError(authErr) };
@@ -339,25 +528,25 @@ export async function createPlasiyer(
       await new Promise((r) => setTimeout(r, 450));
     }
 
-    const profilePayload = {
+    const profilePayload = buildSafePlasiyerProfilePayload({
       id: userId,
       firma_id: params.firma_id,
-      ana_hesap_id: params.ana_hesap_id,
-      rol: 'plasiyer' as const,
+      ana_hesap_id: validAnaHesapId === userId ? null : validAnaHesapId,
       ad_soyad: cleanAdSoyad,
       telefon: cleanTelefon,
       email: cleanEmail,
-      aktif: true,
-    };
+    });
 
     // 2. Önce plasiyerin kendi izole oturumuyla (auth.uid() = userId) profiles satırını güncelle
     let isolatedSaved: Profile | null = null;
     let lastWriteError: unknown = null;
+    let clearedInvalidAnaHesap = false;
 
     if (isolatedHasSession) {
       const res = await syncProfileWithClient(isolatedClient, profilePayload);
       isolatedSaved = res.profile;
       if (res.error) lastWriteError = res.error;
+      if (res.clearedInvalidAnaHesapId) clearedInvalidAnaHesap = true;
     }
 
     // 3. İzole oturum yoksa (ör. e-posta onayı açıksa) veya yazma başarısız olduysa ana hesap oturumuyla dene
@@ -366,6 +555,17 @@ export async function createPlasiyer(
       const res = await syncProfileWithClient(supabase, profilePayload);
       anaSaved = res.profile;
       if (res.error) lastWriteError = res.error;
+      if (res.clearedInvalidAnaHesapId) clearedInvalidAnaHesap = true;
+    }
+
+    if (clearedInvalidAnaHesap && isolatedHasSession) {
+      try {
+        await isolatedClient.auth.updateUser({
+          data: buildUserMetaData(null),
+        });
+      } catch {
+        // ignore metadata cleanup error
+      }
     }
 
     // 4. Ana hesap oturumuyla bu plasiyerin listede görünüp görünemediğini DOĞRULA
@@ -395,16 +595,11 @@ export async function createPlasiyer(
       };
     }
 
-    const errMsg = lastWriteError
-      ? handleSupabaseError(lastWriteError)
-      : verifyErr
-      ? handleSupabaseError(verifyErr)
-      : 'Plasiyer profili firmanıza bağlanamadı (Supabase profiles RLS veya e-posta onay ayarı engelliyor olabilir).';
-
+    const formatted = formatPlasiyerWriteError(lastWriteError, verifyErr);
     return {
       success: false,
-      rlsWarning: true,
-      error: `${errMsg} — Veritabanı tarafında plasiyer kaydı trigger tarafından farklı firmaya atanmış ve RLS güncellemeyi engellemiş olabilir. Aşağıdaki SQL kodunu Supabase SQL Editor'de bir kez çalıştırıp tekrar deneyiniz.`,
+      rlsWarning: formatted.rlsWarning,
+      error: formatted.error,
     };
   } catch (err: unknown) {
     const msg = handleSupabaseError(err, 'Plasiyer oluşturulurken bir hata oluştu.');
