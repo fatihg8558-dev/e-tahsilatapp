@@ -421,6 +421,7 @@ export const CariExcelImportModal: React.FC<CariExcelImportModalProps> = ({
               ref={fileInputRef}
               type="file"
               accept=".xlsx,.xls,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/csv"
+              onClick={(e) => e.stopPropagation()}
               onChange={(e) => {
                 const f = e.target.files?.[0];
                 if (f) handleFileSelected(f);

@@ -149,8 +149,6 @@ export const UblImportModal: React.FC<UblImportModalProps> = ({
     }
   }, [isOpen, firma?.id]);
 
-  if (!isOpen) return null;
-
   const findMatchingCariId = (party: UblPartyInfo): string => {
     const normVkn = normalizeTaxId(party.vkn);
     if (normVkn) {
@@ -296,6 +294,11 @@ export const UblImportModal: React.FC<UblImportModalProps> = ({
           }
         }
         return merged;
+      });
+    } catch (err: unknown) {
+      setFeedback({
+        type: 'error',
+        text: err instanceof Error ? err.message : 'XML dosyaları işlenirken beklenmeyen bir hata oluştu.',
       });
     } finally {
       setParsing(false);
@@ -746,6 +749,8 @@ ALTER TABLE public.faturalar ADD COLUMN IF NOT EXISTS ubl_detay jsonb;
     setTimeout(() => setCopiedSql(false), 2000);
   };
 
+  if (!isOpen) return null;
+
   return (
     <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4 overflow-y-auto">
       <div className="bg-[#111820] border border-white/10 rounded-2xl w-full max-w-4xl max-h-[92vh] flex flex-col shadow-2xl overflow-hidden my-auto">
@@ -885,6 +890,7 @@ ALTER TABLE public.faturalar ADD COLUMN IF NOT EXISTS ubl_detay jsonb;
               type="file"
               accept=".xml,.ubl,text/xml,application/xml"
               multiple
+              onClick={(e) => e.stopPropagation()}
               onChange={(e) => {
                 if (e.target.files?.length) {
                   processFiles(e.target.files);

@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import fs from 'node:fs';
+import path from 'node:path';
 import {
   decodeBase64Utf8,
   formatInvoiceScenarioLabel,
@@ -273,3 +275,40 @@ test('createCompactCloudDetay omits heavy renderedGibHtml and hydrateParsedFromC
   assert.equal(hydrated.hasEmbeddedXslt, true);
   assert.equal(hydrated.renderedGibHtml, undefined);
 });
+
+test('cari import/preview modals never call React hooks after an early return null', () => {
+  const modalFiles = [
+    'src/components/cari/UblImportModal.tsx',
+    'src/components/cari/CariExcelImportModal.tsx',
+    'src/components/cari/UblInvoicePreviewModal.tsx',
+  ];
+
+  for (const relPath of modalFiles) {
+    const source = fs.readFileSync(path.resolve(process.cwd(), relPath), 'utf8');
+    const earlyReturnMatch = source.match(/^\s*if\s*\([^\n]*!isOpen[^\n]*\)\s*return\s+null;/m);
+    assert.ok(earlyReturnMatch && earlyReturnMatch.index !== undefined, `${relPath} should guard !isOpen`);
+    const afterEarlyReturn = source.slice(earlyReturnMatch.index + earlyReturnMatch[0].length);
+    const hookAfterReturn = afterEarlyReturn.match(
+      /\b(?:React\.)?(?:useState|useEffect|useMemo|useCallback|useRef)\s*(?:<[^>]+>)?\s*\(/
+    );
+    assert.equal(
+      hookAfterReturn,
+      null,
+      `${relPath} calls a React hook (${hookAfterReturn?.[0]}) after early return null!`
+    );
+  }
+});
+
+test('UblImportModal preserves dropzone, file input propagation guard, and missing-cari prompt panel', () => {
+  const source = fs.readFileSync(
+    path.resolve(process.cwd(), 'src/components/cari/UblImportModal.tsx'),
+    'utf8'
+  );
+  assert.ok(source.includes('data-testid="ubl_dropzone"'));
+  assert.ok(source.includes('data-testid="ubl_file_input"'));
+  assert.ok(source.includes('onClick={(e) => e.stopPropagation()}'));
+  assert.ok(source.includes('data-testid="ubl_missing_cari_prompt_panel"'));
+  assert.ok(source.includes('data-testid="ubl_preview_invoice_btn"'));
+});
+
+
