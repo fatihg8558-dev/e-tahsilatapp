@@ -1,6 +1,7 @@
 import { supabase, handleSupabaseError } from './supabase';
 import { Cari, Fatura, FaturaYon, Islem } from '../types/database';
 import { removeIslemsFromKasa } from './kasaSyncService';
+import { removeFaturaFromKasa } from './faturaExpenseService';
 import { removeUblInvoiceSnapshotAsync } from './ublInvoiceStore';
 
 export interface CariDeletionInspection {
@@ -241,6 +242,7 @@ export async function deleteCariWithLinkedRecords(params: {
 
         for (const f of faturaRows) {
           await removeUblInvoiceSnapshotAsync(firmaId, f.fatura_no, f.yon);
+          await removeFaturaFromKasa(f.fatura_no, firmaId);
         }
       }
     }
@@ -375,8 +377,9 @@ export async function deleteFaturaRecord(params: {
       }
     }
 
-    // 4. Tarayıcı önbelleğindeki UBL görsel kaydını da temizle
+    // 4. Tarayıcı önbelleğindeki UBL görsel kaydını ve varsa kasadaki fatura giderini temizle
     await removeUblInvoiceSnapshotAsync(firmaId, fatura.fatura_no, fatura.yon);
+    await removeFaturaFromKasa(fatura.fatura_no, firmaId);
 
     return { deleted: true };
   } catch (err: unknown) {

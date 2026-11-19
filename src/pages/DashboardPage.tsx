@@ -19,7 +19,6 @@ import {
   FileCheck,
   CheckCircle2,
   TrendingUp,
-  LayoutGrid,
   RefreshCw,
   MessageCircle,
 } from 'lucide-react';
@@ -32,6 +31,7 @@ import {
 } from '../lib/receiptQueryService';
 import { buildVadeHatirlatmaMesaji } from '../lib/whatsappTemplates';
 import { resolvePortfoyDurumu } from '../lib/portfoyService';
+import { isWebPlatform } from '../lib/platform';
 import { WhatsAppReminderModal } from '../components/common/WhatsAppReminderModal';
 
 export type { VadeItem };
@@ -180,17 +180,6 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
                 </button>
               </>
             )}
-            {typeof window !== 'undefined' && typeof window.AndroidBridge?.requestPinHomeWidget === 'function' && (
-              <button
-                type="button"
-                onClick={() => window.AndroidBridge?.requestPinHomeWidget?.()}
-                data-testid="pin_home_widget_btn"
-                className="bg-sky-500/15 hover:bg-sky-500/25 text-sky-300 border border-sky-500/35 font-bold text-xs px-4 py-2.5 rounded-xl transition flex items-center gap-2"
-              >
-                <LayoutGrid className="w-4 h-4 text-sky-400" />
-                <span>Ana Ekrana Widget Ekle</span>
-              </button>
-            )}
           </div>
         )}
       </div>
@@ -335,14 +324,16 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
                         {vadesiYaklasanlar.length} Adet
                       </span>
                     )}
-                    <button
-                      type="button"
-                      onClick={() => onNavigate('portfoy')}
-                      data-testid="dashboard_open_portfoy_btn"
-                      className="text-[11px] font-bold text-teal-400 hover:text-teal-300 underline ml-1"
-                    >
-                      Portföyü Aç →
-                    </button>
+                    {isWebPlatform() && (
+                      <button
+                        type="button"
+                        onClick={() => onNavigate('portfoy')}
+                        data-testid="dashboard_open_portfoy_btn"
+                        className="text-[11px] font-bold text-teal-400 hover:text-teal-300 underline ml-1"
+                      >
+                        Portföyü Aç →
+                      </button>
+                    )}
                   </div>
                   <p className="text-[11px] text-gray-400 mt-0.5">
                     Önümüzdeki {vadeAraligiGun} gün içinde vadesi gelen veya vadesi geçmiş portföy hareketleri

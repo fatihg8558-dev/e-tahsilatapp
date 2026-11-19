@@ -63,14 +63,31 @@ import {
   Wifi,
   Smartphone,
   ExternalLink,
+  LayoutGrid,
+  FileCode2,
+  Wallet,
 } from 'lucide-react';
 import { openExternalLink, openWhatsApp } from '../../lib/linkHelper';
 import { StandaloneEkPlasiyerPanel } from '../paketler/StandaloneEkPlasiyerPanel';
+import { isWebPlatform } from '../../lib/platform';
+import { Kasa } from '../../types/database';
+import { GIB_GIDER_KATEGORILERI } from '../../lib/faturaExpenseService';
+import {
+  fetchCloudGibSettings,
+  getLocalGibSettings,
+  GIB_EDGE_DEPLOY_COMMANDS,
+  GIB_PORTAL_SQL_SNIPPET,
+  GibEnvironment,
+  GibSettings,
+  resolveGibFunctionUrl,
+  saveCloudGibSettings,
+  testGibConnection,
+} from '../../lib/gibService';
 
 interface SettingsModalProps {
   isOpen: boolean;
   onClose: () => void;
-  initialTab?: 'firma' | 'plasiyer' | 'pos';
+  initialTab?: 'firma' | 'plasiyer' | 'pos' | 'gib';
   onNavigateToPackages?: () => void;
 }
 
@@ -81,7 +98,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   onNavigateToPackages,
 }) => {
   const { profile, firma, entitlements, user, isSuperAdmin, periodInfo, refreshProfileAndFirma, signOut } = useAuth();
-  const [activeTab, setActiveTab] = useState<'firma' | 'plasiyer' | 'pos'>(initialTab);
+  const [activeTab, setActiveTab] = useState<'firma' | 'plasiyer' | 'pos' | 'gib'>(
+    initialTab === 'gib' && !isWebPlatform() ? 'firma' : initialTab
+  );
 
   // Logo Yükleme Durumu
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -137,22 +156,54 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
   // Kopyalama bildirim durumu
   const [copiedEmail, setCopiedEmail] = useState<string | null>(null);
+  const [widgetFeedback, setWidgetFeedback] = useState<string | null>(null);
+
+  // GİB Portal Ayarları (Sadece Web)
+  const [gibSettings, setGibSettings] = useState<GibSettings>(() => getLocalGibSettings(firma?.id));
+  const [gibPasswordInput, setGibPasswordInput] = useState('');
+  const [showGibPassword, setShowGibPassword] = useState(false);
+  const [gibSaving, setGibSaving] = useState(false);
+  const [gibTesting, setGibTesting] = useState(false);
+  const [gibMsg, setGibMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [showGibSetup, setShowGibSetup] = useState(false);
+  const [copiedGibSnippet, setCopiedGibSnippet] = useState<'sql' | 'cli' | null>(null);
+  const [gibKasalar, setGibKasalar] = useState<Kasa[]>([]);
 
   const isAnaHesap = profile?.rol === 'ana' || isSuperAdmin;
+  const canManageGib = isAnaHesap || profile?.rol === 'muhasebeci';
+  const showGibTab = isWebPlatform();
 
-  // Modal açıldığında veya firma değiştiğinde aktif sekme, firma formu ve POS konfigürasyonunu senkronize et
+  // Modal açıldığında veya firma değiştiğinde aktif sekme, firma formu, POS ve GİB konfigürasyonunu senkronize et
   useEffect(() => {
     if (isOpen) {
-      setActiveTab(initialTab);
+      setActiveTab(initialTab === 'gib' && !isWebPlatform() ? 'firma' : initialTab);
       setShowEkPlasiyerPurchase(false);
       setGatewayStatus(null);
+      setWidgetFeedback(null);
+      setGibMsg(null);
+      setGibPasswordInput('');
     }
     if (firma?.id) {
       setPosConfig(getPosConfig(firma.id));
+      setGibSettings(getLocalGibSettings(firma.id));
       if (isOpen) {
         void fetchCloudPosConfig(firma.id).then((merged) => {
           setPosConfig(merged);
         });
+        if (isWebPlatform()) {
+          void fetchCloudGibSettings(firma.id).then((mergedGib) => {
+            setGibSettings(mergedGib);
+          });
+          void supabase
+            .from('kasalar')
+            .select('*')
+            .eq('firma_id', firma.id)
+            .eq('aktif', true)
+            .order('created_at', { ascending: true })
+            .then(({ data }) => {
+              if (data) setGibKasalar(data as Kasa[]);
+            });
+        }
       }
     }
     if (isOpen && firma) {
@@ -560,8 +611,99 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     });
   };
 
+  const handleSaveGibSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!firma?.id) return;
+    setGibMsg(null);
+
+    if (!gibSettings.kullaniciKodu.trim()) {
+      setGibMsg({ type: 'error', text: 'Lütfen GİB kullanıcı kodunuzu giriniz.' });
+      return;
+    }
+
+    if (!gibPasswordInput.trim() && !gibSettings.sifreSet) {
+      setGibMsg({ type: 'error', text: 'Lütfen GİB portal şifrenizi giriniz.' });
+      return;
+    }
+
+    setGibSaving(true);
+    try {
+      const res = await saveCloudGibSettings({
+        firmaId: firma.id,
+        settings: gibSettings,
+        rawPassword: gibPasswordInput,
+      });
+
+      if (res.error) {
+        setGibMsg({ type: 'error', text: res.error });
+        return;
+      }
+
+      if (res.missingCredentialsTable) {
+        setShowGibSetup(true);
+        setGibMsg({
+          type: 'error',
+          text: 'Tercihler kaydedildi ancak şifrelerin bulutta saklanması için aşağıdaki GİB SQL kodunu Supabase SQL Editor üzerinde bir kez çalıştırmanız gerekiyor.',
+        });
+        return;
+      }
+
+      setGibSettings((prev) => ({
+        ...prev,
+        sifreSet: Boolean(gibPasswordInput.trim()) || prev.sifreSet,
+      }));
+      setGibPasswordInput('');
+      setGibMsg({
+        type: 'success',
+        text: 'GİB kullanıcı kodu, şifre ve varsayılan giderleştirme ayarları başarıyla kaydedildi!',
+      });
+    } finally {
+      setGibSaving(false);
+    }
+  };
+
+  const handleTestGibConnection = async () => {
+    if (!firma?.id) return;
+    setGibTesting(true);
+    setGibMsg(null);
+
+    try {
+      if (gibSettings.kullaniciKodu.trim() && gibPasswordInput.trim()) {
+        await saveCloudGibSettings({
+          firmaId: firma.id,
+          settings: gibSettings,
+          rawPassword: gibPasswordInput,
+        });
+      }
+
+      const res = await testGibConnection({
+        firmaId: firma.id,
+        settings: gibSettings,
+        overrideKullaniciKodu: gibSettings.kullaniciKodu,
+        overrideSifre: gibPasswordInput,
+      });
+
+      if (res.notDeployed) {
+        setShowGibSetup(true);
+      }
+
+      setGibSettings((prev) => ({
+        ...prev,
+        sonBaglantiDurumu: res.ok ? 'basarili' : 'hata',
+        sonBaglantiMesaji: res.message,
+      }));
+
+      setGibMsg({
+        type: res.ok ? 'success' : 'error',
+        text: res.message,
+      });
+    } finally {
+      setGibTesting(false);
+    }
+  };
+
   return (
-    <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-3 sm:p-5">
+    <div className="fixed inset-0 z-[65] bg-black/80 backdrop-blur-sm flex items-center justify-center p-3 sm:p-5">
       <div className="bg-[#111820] border border-white/10 rounded-2xl w-full max-w-3xl max-h-[92vh] flex flex-col shadow-2xl overflow-hidden">
         {/* MODAL BAŞLIK */}
         <div className="p-4 sm:p-5 border-b border-white/[0.08] flex items-center justify-between bg-black/30">
@@ -632,6 +774,24 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
             )}
           </button>
+
+          {showGibTab && (
+            <button
+              onClick={() => setActiveTab('gib')}
+              data-testid="settings_tab_gib"
+              className={`flex items-center gap-2 px-4 py-2.5 border-b-2 text-xs font-bold transition whitespace-nowrap ${
+                activeTab === 'gib'
+                  ? 'border-teal-400 text-teal-400 bg-teal-500/5'
+                  : 'border-transparent text-gray-400 hover:text-white'
+              }`}
+            >
+              <FileCode2 className="w-4 h-4" />
+              <span>GİB E-Fatura / E-Arşiv</span>
+              {gibSettings.kullaniciKodu && gibSettings.sifreSet && (
+                <span className="w-2 h-2 rounded-full bg-emerald-400" />
+              )}
+            </button>
+          )}
         </div>
 
         {/* İÇERİK ALANI */}
@@ -1435,6 +1595,47 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 </p>
               </div>
 
+              {/* ANDROİD ANA EKRAN WİDGET'I (ANA SAYFADAN AYARLARA TAŞINDI) */}
+              {typeof window !== 'undefined' &&
+                typeof window.AndroidBridge?.requestPinHomeWidget === 'function' && (
+                  <div
+                    data-testid="settings_android_widget_section"
+                    className="p-4 rounded-xl bg-sky-500/10 border border-sky-500/30 space-y-3"
+                  >
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                      <div>
+                        <h4 className="text-xs font-extrabold text-sky-300 uppercase tracking-wider flex items-center gap-1.5">
+                          <LayoutGrid className="w-4 h-4" />
+                          <span>Android Ana Ekran Widget&apos;ı</span>
+                        </h4>
+                        <p className="text-[11px] text-gray-300 mt-1 leading-relaxed">
+                          Telefonunuzun ana ekranına hızlı tahsilat ve günlük özet widget&apos;ını tek dokunuşla sabitleyebilirsiniz.
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          window.AndroidBridge?.requestPinHomeWidget?.();
+                          setWidgetFeedback(
+                            'Android ana ekran widget sabitleme penceresi açıldı.'
+                          );
+                        }}
+                        data-testid="pin_home_widget_btn"
+                        className="shrink-0 min-h-[44px] px-4 py-2.5 rounded-xl bg-sky-500/20 hover:bg-sky-500/30 text-sky-200 border border-sky-400/40 text-xs font-extrabold flex items-center gap-2 transition"
+                      >
+                        <LayoutGrid className="w-4 h-4 text-sky-300" />
+                        <span>Ana Ekrana Widget Ekle</span>
+                      </button>
+                    </div>
+                    {widgetFeedback && (
+                      <div className="text-[11px] text-emerald-300 flex items-center gap-1.5">
+                        <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                        <span>{widgetFeedback}</span>
+                      </div>
+                    )}
+                  </div>
+                )}
+
               {/* HESABI / FİRMAYI KALICI SİLME ALANI (ANA HESAP) */}
               {isAnaHesap && firma?.id && (
                 <div className="p-4 rounded-xl bg-red-500/5 border border-red-500/25 space-y-3">
@@ -2147,6 +2348,277 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                           </div>
                         </div>
                       )}
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          )}
+
+          {/* TAB 4: GİB E-FATURA / E-ARŞİV ENTEGRASYONU (SADECE WEB) */}
+          {activeTab === 'gib' && showGibTab && (
+            <div className="space-y-5 text-xs" data-testid="settings_gib_panel">
+              {!canManageGib ? (
+                <div className="p-6 text-center text-xs text-gray-400 bg-black/20 rounded-xl border border-white/5">
+                  <Shield className="w-8 h-8 text-amber-400 mx-auto mb-2" />
+                  <p className="font-semibold text-white">Yetkisiz Erişim</p>
+                  <p className="mt-1">
+                    GİB Portal bilgilerini yalnızca Ana Hesap ve Muhasebeci tanımlayabilir.
+                  </p>
+                </div>
+              ) : (
+                <>
+                  <div className="p-4 rounded-xl bg-gradient-to-r from-teal-500/10 via-transparent to-orange-500/10 border border-teal-500/20 space-y-1.5">
+                    <div className="flex items-center justify-between gap-2 flex-wrap">
+                      <div className="flex items-center gap-2">
+                        <FileCode2 className="w-5 h-5 text-teal-400" />
+                        <h3 className="text-sm font-bold text-white">
+                          GİB e-Arşiv / e-Fatura Portal Entegrasyonu (Web)
+                        </h3>
+                      </div>
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-teal-500/15 text-teal-300 border border-teal-500/30">
+                        Sadece Web
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-gray-300 leading-relaxed">
+                      İnteraktif / Dijital Vergi Dairesi (GİB e-Arşiv Portal) kullanıcı kodu ve şifrenizi kaydederek web üzerinden{' '}
+                      <strong className="text-white">adınıza kesilen (gelen)</strong> ve{' '}
+                      <strong className="text-white">düzenlediğiniz (kesilen)</strong> faturaları doğrudan çekebilirsiniz. e-Fatura mükellefleri aynı modal üzerinden GİB&apos;den indirdikleri toplu <code className="text-teal-300">.zip</code> / <code className="text-teal-300">.xml</code> dosyalarını da yükleyebilir.
+                    </p>
+                  </div>
+
+                  {gibMsg && (
+                    <div
+                      data-testid="gib_settings_feedback"
+                      className={`p-3.5 rounded-xl text-xs flex items-start gap-2 ${
+                        gibMsg.type === 'success'
+                          ? 'bg-emerald-500/10 border border-emerald-500/25 text-emerald-300'
+                          : 'bg-red-500/10 border border-red-500/25 text-red-300'
+                      }`}
+                    >
+                      {gibMsg.type === 'success' ? (
+                        <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5" />
+                      ) : (
+                        <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                      )}
+                      <span className="leading-relaxed">{gibMsg.text}</span>
+                    </div>
+                  )}
+
+                  <form onSubmit={handleSaveGibSubmit} className="space-y-4">
+                    <div className="p-4 rounded-xl bg-black/30 border border-white/[0.08] space-y-4">
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                        <div>
+                          <label className="block text-gray-300 font-semibold mb-1">
+                            GİB Kullanıcı Kodu *
+                          </label>
+                          <div className="relative">
+                            <User className="w-4 h-4 absolute left-3 top-3 text-gray-500" />
+                            <input
+                              type="text"
+                              required
+                              data-testid="gib_kullanici_kodu_input"
+                              value={gibSettings.kullaniciKodu}
+                              onChange={(e) =>
+                                setGibSettings({ ...gibSettings, kullaniciKodu: e.target.value })
+                              }
+                              placeholder="Örn: 33201234"
+                              className="w-full min-h-[42px] bg-[#0a0e13] border border-white/10 rounded-xl pl-9 pr-3 py-2 text-white font-mono placeholder-gray-500 focus:outline-none focus:border-teal-400"
+                            />
+                          </div>
+                        </div>
+
+                        <div>
+                          <label className="block text-gray-300 font-semibold mb-1">
+                            GİB Portal Şifresi {gibSettings.sifreSet ? '(Kayıtlı — değiştirmek için yazın)' : '*'}
+                          </label>
+                          <div className="relative">
+                            <Lock className="w-4 h-4 absolute left-3 top-3 text-gray-500" />
+                            <input
+                              type={showGibPassword ? 'text' : 'password'}
+                              required={!gibSettings.sifreSet}
+                              data-testid="gib_sifre_input"
+                              value={gibPasswordInput}
+                              onChange={(e) => setGibPasswordInput(e.target.value)}
+                              placeholder={gibSettings.sifreSet ? '•••••••• (Kayıtlı şifre korunur)' : 'GİB Portal Şifreniz'}
+                              className="w-full min-h-[42px] bg-[#0a0e13] border border-white/10 rounded-xl pl-9 pr-9 py-2 text-white font-mono placeholder-gray-500 focus:outline-none focus:border-teal-400"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => setShowGibPassword((v) => !v)}
+                              className="absolute right-2.5 top-3 text-gray-400 hover:text-white"
+                              aria-label="GİB şifresini göster"
+                            >
+                              {showGibPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                            </button>
+                          </div>
+                        </div>
+
+                        <div>
+                          <label className="block text-gray-300 font-semibold mb-1">
+                            GİB Portal Ortamı
+                          </label>
+                          <select
+                            data-testid="gib_ortam_select"
+                            value={gibSettings.ortam}
+                            onChange={(e) =>
+                              setGibSettings({
+                                ...gibSettings,
+                                ortam: e.target.value as GibEnvironment,
+                              })
+                            }
+                            className="w-full min-h-[42px] bg-[#0a0e13] border border-white/10 rounded-xl px-3 py-2 text-white focus:outline-none focus:border-teal-400"
+                          >
+                            <option value="prod">Canlı GİB e-Arşiv Portal (earsivportal.gib.gov.tr)</option>
+                            <option value="test">GİB Test Portalı (earsivportaltest.gib.gov.tr)</option>
+                          </select>
+                        </div>
+
+                        <div>
+                          <label className="block text-gray-300 font-semibold mb-1 flex items-center gap-1.5">
+                            <Wallet className="w-3.5 h-3.5 text-orange-400" />
+                            <span>Varsayılan Giderleştirme Kasası</span>
+                          </label>
+                          <select
+                            data-testid="gib_default_kasa_select"
+                            value={gibSettings.varsayilanGiderKasaId}
+                            onChange={(e) =>
+                              setGibSettings({
+                                ...gibSettings,
+                                varsayilanGiderKasaId: e.target.value,
+                              })
+                            }
+                            className="w-full min-h-[42px] bg-[#0a0e13] border border-white/10 rounded-xl px-3 py-2 text-white focus:outline-none focus:border-teal-400"
+                          >
+                            <option value="">Otomatik (İlk Aktif Nakit / Banka Kasa)</option>
+                            {gibKasalar.map((k) => (
+                              <option key={k.id} value={k.id}>
+                                {k.ad} ({k.tur.toUpperCase()})
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+
+                        <div>
+                          <label className="block text-gray-300 font-semibold mb-1">
+                            Varsayılan Gider Kategorisi
+                          </label>
+                          <select
+                            data-testid="gib_default_kategori_select"
+                            value={gibSettings.varsayilanGiderKategori}
+                            onChange={(e) =>
+                              setGibSettings({
+                                ...gibSettings,
+                                varsayilanGiderKategori: e.target.value,
+                              })
+                            }
+                            className="w-full min-h-[42px] bg-[#0a0e13] border border-white/10 rounded-xl px-3 py-2 text-white focus:outline-none focus:border-teal-400"
+                          >
+                            {GIB_GIDER_KATEGORILERI.map((kat) => (
+                              <option key={kat} value={kat}>
+                                {kat}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+
+                        <div>
+                          <label className="block text-gray-300 font-semibold mb-1">
+                            GİB Proxy Edge Function URL (Opsiyonel)
+                          </label>
+                          <input
+                            type="url"
+                            value={gibSettings.edgeFunctionUrl || ''}
+                            onChange={(e) =>
+                              setGibSettings({ ...gibSettings, edgeFunctionUrl: e.target.value })
+                            }
+                            placeholder={resolveGibFunctionUrl(null)}
+                            className="w-full min-h-[42px] bg-[#0a0e13] border border-white/10 rounded-xl px-3 py-2 text-[11px] font-mono text-white placeholder-gray-500 focus:outline-none focus:border-teal-400"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="pt-2 border-t border-white/[0.06] flex flex-wrap items-center justify-between gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setShowGibSetup((v) => !v)}
+                          className="text-[11px] text-amber-300 hover:text-amber-200 font-bold flex items-center gap-1.5"
+                        >
+                          <Code2 className="w-3.5 h-3.5" />
+                          <span>
+                            {showGibSetup ? 'SQL & Proxy Kurulum Kodunu Gizle' : 'SQL & Edge Function Kurulum Kodu'}
+                          </span>
+                        </button>
+
+                        <div className="flex flex-wrap items-center gap-2 ml-auto">
+                          <button
+                            type="button"
+                            disabled={gibTesting}
+                            onClick={() => void handleTestGibConnection()}
+                            data-testid="gib_test_connection_btn"
+                            className="min-h-[42px] px-4 py-2 rounded-xl bg-indigo-500/20 hover:bg-indigo-500/30 border border-indigo-400/35 text-indigo-200 font-bold text-xs flex items-center gap-1.5 transition disabled:opacity-50"
+                          >
+                            <RefreshCw className={`w-3.5 h-3.5 ${gibTesting ? 'animate-spin' : ''}`} />
+                            <span>{gibTesting ? 'Test Ediliyor...' : 'GİB Bağlantısını Test Et'}</span>
+                          </button>
+
+                          <button
+                            type="submit"
+                            disabled={gibSaving}
+                            data-testid="gib_save_btn"
+                            className="min-h-[42px] px-5 py-2 rounded-xl bg-teal-400 hover:bg-teal-300 text-[#0a0e13] font-extrabold text-xs flex items-center gap-1.5 shadow-lg transition disabled:opacity-50"
+                          >
+                            <Save className="w-4 h-4" />
+                            <span>{gibSaving ? 'Kaydediliyor...' : 'GİB Ayarlarını Kaydet'}</span>
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </form>
+
+                  {showGibSetup && (
+                    <div className="p-4 rounded-xl bg-black/40 border border-amber-400/30 space-y-3">
+                      <div className="flex items-center justify-between text-[11px]">
+                        <span className="text-amber-300 font-bold">
+                          1. Supabase SQL Editor Tablosu (firma_gib_ayarlari)
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            void navigator.clipboard.writeText(GIB_PORTAL_SQL_SNIPPET);
+                            setCopiedGibSnippet('sql');
+                            setTimeout(() => setCopiedGibSnippet(null), 2000);
+                          }}
+                          className="px-2.5 py-1 rounded bg-amber-400 text-slate-950 font-extrabold flex items-center gap-1"
+                        >
+                          {copiedGibSnippet === 'sql' ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
+                          <span>{copiedGibSnippet === 'sql' ? 'Kopyalandı' : 'SQL Kopyala'}</span>
+                        </button>
+                      </div>
+                      <pre className="p-2.5 rounded-lg bg-[#070b10] border border-white/10 text-[10px] font-mono text-gray-300 overflow-x-auto max-h-40">
+                        {GIB_PORTAL_SQL_SNIPPET}
+                      </pre>
+
+                      <div className="flex items-center justify-between text-[11px]">
+                        <span className="text-cyan-300 font-bold">
+                          2. Supabase Edge Function Dağıtım Komutu (gib-portal-proxy)
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            void navigator.clipboard.writeText(GIB_EDGE_DEPLOY_COMMANDS);
+                            setCopiedGibSnippet('cli');
+                            setTimeout(() => setCopiedGibSnippet(null), 2000);
+                          }}
+                          className="px-2.5 py-1 rounded bg-white/10 hover:bg-white/20 text-white font-bold flex items-center gap-1"
+                        >
+                          {copiedGibSnippet === 'cli' ? <Check className="w-3 h-3 text-emerald-300" /> : <Copy className="w-3 h-3" />}
+                          <span>{copiedGibSnippet === 'cli' ? 'Kopyalandı' : 'Komut Kopyala'}</span>
+                        </button>
+                      </div>
+                      <pre className="p-2.5 rounded-lg bg-[#070b10] border border-white/10 text-[10px] font-mono text-cyan-200 overflow-x-auto">
+                        {GIB_EDGE_DEPLOY_COMMANDS}
+                      </pre>
                     </div>
                   )}
                 </>

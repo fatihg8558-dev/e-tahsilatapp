@@ -3,6 +3,8 @@ import {
   X,
   Upload,
   FileCode2,
+  FileArchive,
+  CloudDownload,
   CheckCircle2,
   AlertCircle,
   UserPlus,
@@ -15,15 +17,19 @@ import {
   ArrowDownLeft,
   Info,
   Eye,
+  Receipt,
+  Settings,
+  RefreshCw,
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { supabase, handleSupabaseError } from '../../lib/supabase';
-import { Cari, CariTur, FaturaYon } from '../../types/database';
-import { formatCurrency, formatDate } from '../../lib/formatters';
+import { Cari, CariTur, FaturaYon, Kasa } from '../../types/database';
+import { formatCurrency, formatDate, getTodayIsoLocal } from '../../lib/formatters';
 import {
   parseUblInvoiceXml,
   ParsedUblInvoice,
   normalizeTaxId,
+  sanitizeRenderedGibHtml,
   UblPartyInfo,
 } from '../../lib/ublParser';
 import { isWebPlatform } from '../../lib/platform';
@@ -36,6 +42,20 @@ import {
   evaluateCariRiskStatus,
   getEffectiveCariRiskLimit,
 } from '../../lib/cariRiskAndMutabakat';
+import { extractXmlFilesFromZip } from '../../lib/zipExtractor';
+import {
+  fetchCloudGibSettings,
+  fetchGibInvoices,
+  GibDirectionFilter,
+  GibFetchedInvoice,
+  GibSettings,
+} from '../../lib/gibService';
+import {
+  fetchExpenseSyncedFaturaNos,
+  GIB_GIDER_KATEGORILERI,
+  normalizeFaturaNoKey,
+  postFaturaAsKasaGider,
+} from '../../lib/faturaExpenseService';
 
 interface UblImportModalProps {
   isOpen: boolean;
@@ -65,6 +85,7 @@ interface MissingCariDraft {
 interface ImportRow {
   id: string;
   fileName: string;
+  source: 'xml' | 'zip' | 'gib_portal';
   parsed?: ParsedUblInvoice;
   error?: string;
   yon: FaturaYon;
@@ -74,6 +95,10 @@ interface ImportRow {
   tutarTL: number;
   include: boolean;
   isDuplicate: boolean;
+  giderlestir: boolean;
+  kasaId: string;
+  giderKategori: string;
+  alreadyExpenseSynced: boolean;
 }
 
 const AUTO_CREATE_VALUE = '__auto_create__';
@@ -84,19 +109,44 @@ function buildPartyDedupKey(party: UblPartyInfo): string {
   return (party.unvan || '').trim().toLocaleLowerCase('tr-TR').replace(/\s+/g, ' ');
 }
 
+function getDefaultGibStartDate(): string {
+  const d = new Date();
+  d.setDate(d.getDate() - 30);
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
 export const UblImportModal: React.FC<UblImportModalProps> = ({
   isOpen,
   onClose,
   cariler,
   onImported,
 }) => {
-  const { firma, isPeriodExpired } = useAuth();
+  const { firma, profile, isPeriodExpired } = useAuth();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const missingPanelRef = useRef<HTMLDivElement | null>(null);
 
+  const [modeTab, setModeTab] = useState<'upload' | 'gib'>('upload');
   const [rows, setRows] = useState<ImportRow[]>([]);
   const [missingCariDrafts, setMissingCariDrafts] = useState<Record<string, MissingCariDraft>>({});
   const [sessionCreatedCaris, setSessionCreatedCaris] = useState<Cari[]>([]);
   const [existingInvoices, setExistingInvoices] = useState<ExistingFaturaKey[]>([]);
+  const [expenseSyncedNos, setExpenseSyncedNos] = useState<Set<string>>(new Set());
+  const [kasalar, setKasalar] = useState<Kasa[]>([]);
+  const [gibSettings, setGibSettings] = useState<GibSettings | null>(null);
+
+  // Toplu giderleştirme varsayılanları
+  const [bulkGiderKasaId, setBulkGiderKasaId] = useState('');
+  const [bulkGiderKategori, setBulkGiderKategori] = useState('Mal / Hizmet Alımı');
+
+  // GİB Portal filtreleri
+  const [gibStartDate, setGibStartDate] = useState(getDefaultGibStartDate);
+  const [gibEndDate, setGibEndDate] = useState(getTodayIsoLocal);
+  const [gibDirection, setGibDirection] = useState<GibDirectionFilter>('all');
+  const [fetchingGib, setFetchingGib] = useState(false);
+
   const [isDragging, setIsDragging] = useState(false);
   const [parsing, setParsing] = useState(false);
   const [importing, setImporting] = useState(false);
@@ -111,7 +161,7 @@ export const UblImportModal: React.FC<UblImportModalProps> = ({
     parsed: ParsedUblInvoice;
     yon: FaturaYon;
   } | null>(null);
-  const missingPanelRef = useRef<HTMLDivElement | null>(null);
+
   const showInvoicePreview = isWebPlatform();
 
   const allCariler = React.useMemo(() => {
@@ -137,12 +187,42 @@ export const UblImportModal: React.FC<UblImportModalProps> = ({
     return list;
   };
 
+  const loadModalDependencies = async () => {
+    if (!firma?.id) return;
+    const [, syncedSet, kasaRes, cloudGib] = await Promise.all([
+      loadExistingInvoices(),
+      fetchExpenseSyncedFaturaNos(firma.id),
+      supabase
+        .from('kasalar')
+        .select('*')
+        .eq('firma_id', firma.id)
+        .eq('aktif', true)
+        .order('created_at', { ascending: true }),
+      fetchCloudGibSettings(firma.id),
+    ]);
+
+    setExpenseSyncedNos(syncedSet);
+    const activeKasalar = (!kasaRes.error && Array.isArray(kasaRes.data) ? (kasaRes.data as Kasa[]) : []);
+    setKasalar(activeKasalar);
+    setGibSettings(cloudGib);
+
+    const preferredKasa =
+      (cloudGib.varsayilanGiderKasaId &&
+        activeKasalar.find((k) => k.id === cloudGib.varsayilanGiderKasaId)?.id) ||
+      activeKasalar.find((k) => k.tur === 'nakit')?.id ||
+      activeKasalar[0]?.id ||
+      '';
+    setBulkGiderKasaId(preferredKasa);
+    setBulkGiderKategori(cloudGib.varsayilanGiderKategori || 'Mal / Hizmet Alımı');
+  };
+
   useEffect(() => {
     if (isOpen && firma?.id) {
       setFeedback(null);
-      loadExistingInvoices();
+      loadModalDependencies();
     }
     if (!isOpen) {
+      setModeTab('upload');
       setRows([]);
       setMissingCariDrafts({});
       setSessionCreatedCaris([]);
@@ -150,6 +230,7 @@ export const UblImportModal: React.FC<UblImportModalProps> = ({
       setIsDragging(false);
       setShowSqlHelp(false);
       setPreviewRow(null);
+      setFetchingGib(false);
     }
   }, [isOpen, firma?.id]);
 
@@ -197,10 +278,49 @@ export const UblImportModal: React.FC<UblImportModalProps> = ({
     yon: FaturaYon,
     knownInvoices: ExistingFaturaKey[]
   ): boolean => {
-    const cleanNo = faturaNo.trim().toUpperCase();
+    const cleanNo = normalizeFaturaNoKey(faturaNo);
     return knownInvoices.some(
-      (f) => f.fatura_no.trim().toUpperCase() === cleanNo && f.yon === yon
+      (f) => normalizeFaturaNoKey(f.fatura_no) === cleanNo && f.yon === yon
     );
+  };
+
+  const mergeRowsDeduplicated = (newRows: ImportRow[]) => {
+    setRows((prev) => {
+      const merged = [...prev];
+      for (const nr of newRows) {
+        const existsInBatch =
+          nr.parsed &&
+          merged.some(
+            (m) =>
+              m.parsed &&
+              normalizeFaturaNoKey(m.parsed.faturaNo) === normalizeFaturaNoKey(nr.parsed!.faturaNo) &&
+              m.yon === nr.yon
+          );
+        if (!existsInBatch) {
+          merged.push(nr);
+        }
+      }
+      return merged;
+    });
+  };
+
+  const syncDuplicateSnapshotsIfNeeded = async (newRows: ImportRow[]) => {
+    if (!firma?.id || !showInvoicePreview) return;
+    const parsedSnapshots = newRows
+      .filter((r): r is ImportRow & { parsed: ParsedUblInvoice } => Boolean(r.parsed))
+      .map((r) => ({ yon: r.yon, parsed: r.parsed }));
+    if (parsedSnapshots.length > 0) {
+      await saveUblInvoiceSnapshotsAsync(firma.id, parsedSnapshots);
+    }
+
+    const duplicateSnapshots = newRows
+      .filter((r): r is ImportRow & { parsed: ParsedUblInvoice } =>
+        Boolean(r.isDuplicate && r.parsed)
+      )
+      .map((r) => ({ yon: r.yon, parsed: r.parsed }));
+    if (duplicateSnapshots.length > 0) {
+      await syncUblDetayToSupabase(firma.id, duplicateSnapshots);
+    }
   };
 
   const processFiles = async (fileList: FileList | File[]) => {
@@ -211,15 +331,82 @@ export const UblImportModal: React.FC<UblImportModalProps> = ({
     setFeedback(null);
 
     try {
-      const latestInvoices = await loadExistingInvoices();
+      const [latestInvoices, latestSyncedNos] = await Promise.all([
+        loadExistingInvoices(),
+        firma?.id ? fetchExpenseSyncedFaturaNos(firma.id) : Promise.resolve(expenseSyncedNos),
+      ]);
+      setExpenseSyncedNos(latestSyncedNos);
+
+      const xmlEntries: Array<{ fileName: string; text: string; source: 'xml' | 'zip' }> = [];
       const newRows: ImportRow[] = [];
-      const nextDrafts: Record<string, MissingCariDraft> = { ...missingCariDrafts };
 
       for (const file of files) {
-        const rowId = `${file.name}-${file.size}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-        try {
+        const lowerName = file.name.toLowerCase();
+        const isZip =
+          lowerName.endsWith('.zip') ||
+          file.type === 'application/zip' ||
+          file.type === 'application/x-zip-compressed';
+
+        if (isZip) {
+          try {
+            const buffer = await file.arrayBuffer();
+            const extracted = await extractXmlFilesFromZip(buffer);
+            if (extracted.length === 0) {
+              newRows.push({
+                id: `zip-empty-${file.name}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+                fileName: file.name,
+                source: 'zip',
+                error: `${file.name}: ZIP arşivi içinde .xml veya .ubl fatura dosyası bulunamadı.`,
+                yon: 'alis',
+                selectedCariId: '',
+                exchangeRate: 1,
+                tutarTL: 0,
+                include: false,
+                isDuplicate: false,
+                giderlestir: false,
+                kasaId: bulkGiderKasaId,
+                giderKategori: bulkGiderKategori,
+                alreadyExpenseSynced: false,
+              });
+            } else {
+              for (const item of extracted) {
+                xmlEntries.push({
+                  fileName: `${file.name} › ${item.name}`,
+                  text: item.text,
+                  source: 'zip',
+                });
+              }
+            }
+          } catch (zipErr: unknown) {
+            newRows.push({
+              id: `zip-err-${file.name}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+              fileName: file.name,
+              source: 'zip',
+              error: zipErr instanceof Error ? zipErr.message : `${file.name} ZIP arşivi açılamadı.`,
+              yon: 'alis',
+              selectedCariId: '',
+              exchangeRate: 1,
+              tutarTL: 0,
+              include: false,
+              isDuplicate: false,
+              giderlestir: false,
+              kasaId: bulkGiderKasaId,
+              giderKategori: bulkGiderKategori,
+              alreadyExpenseSynced: false,
+            });
+          }
+        } else {
           const text = await file.text();
-          const parsed = parseUblInvoiceXml(text, file.name, firma?.vergi_no, allCariler);
+          xmlEntries.push({ fileName: file.name, text, source: 'xml' });
+        }
+      }
+
+      const nextDrafts: Record<string, MissingCariDraft> = { ...missingCariDrafts };
+
+      for (const entry of xmlEntries) {
+        const rowId = `${entry.fileName}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+        try {
+          const parsed = parseUblInvoiceXml(entry.text, entry.fileName, firma?.vergi_no, allCariler);
           const yon = parsed.detectedYon;
           const counterparty = yon === 'satis' ? parsed.customer : parsed.supplier;
           const selectedCariId = findMatchingCariId(counterparty);
@@ -228,10 +415,12 @@ export const UblImportModal: React.FC<UblImportModalProps> = ({
               ? ensureDraftForRow(nextDrafts, counterparty, yon)
               : undefined;
           const duplicate = isDuplicateFatura(parsed.faturaNo, yon, latestInvoices);
+          const alreadySynced = latestSyncedNos.has(normalizeFaturaNoKey(parsed.faturaNo));
 
           newRows.push({
             id: rowId,
-            fileName: file.name,
+            fileName: entry.fileName,
+            source: entry.source,
             parsed,
             yon,
             selectedCariId,
@@ -240,12 +429,17 @@ export const UblImportModal: React.FC<UblImportModalProps> = ({
             tutarTL: parsed.tutarTL,
             isDuplicate: duplicate,
             include: !duplicate && parsed.tutarTL > 0 && Boolean(selectedCariId),
+            giderlestir: false,
+            kasaId: bulkGiderKasaId,
+            giderKategori: bulkGiderKategori,
+            alreadyExpenseSynced: alreadySynced,
           });
         } catch (err: unknown) {
-          const msg = err instanceof Error ? err.message : `${file.name} okunamadı.`;
+          const msg = err instanceof Error ? err.message : `${entry.fileName} okunamadı.`;
           newRows.push({
             id: rowId,
-            fileName: file.name,
+            fileName: entry.fileName,
+            source: entry.source,
             error: msg,
             yon: 'alis',
             selectedCariId: '',
@@ -253,62 +447,221 @@ export const UblImportModal: React.FC<UblImportModalProps> = ({
             tutarTL: 0,
             isDuplicate: false,
             include: false,
+            giderlestir: false,
+            kasaId: bulkGiderKasaId,
+            giderKategori: bulkGiderKategori,
+            alreadyExpenseSynced: false,
           });
         }
       }
 
       setMissingCariDrafts(nextDrafts);
-
-      if (firma?.id && showInvoicePreview) {
-        const parsedSnapshots = newRows
-          .filter((r): r is ImportRow & { parsed: ParsedUblInvoice } => Boolean(r.parsed))
-          .map((r) => ({ yon: r.yon, parsed: r.parsed }));
-        if (parsedSnapshots.length > 0) {
-          await saveUblInvoiceSnapshotsAsync(firma.id, parsedSnapshots);
-        }
-
-        const duplicateSnapshots = newRows
-          .filter((r): r is ImportRow & { parsed: ParsedUblInvoice } =>
-            Boolean(r.isDuplicate && r.parsed)
-          )
-          .map((r) => ({ yon: r.yon, parsed: r.parsed }));
-        if (duplicateSnapshots.length > 0) {
-          await syncUblDetayToSupabase(firma.id, duplicateSnapshots);
-          setFeedback({
-            type: 'success',
-            text: `Zaten kayıtlı (mükerrer) olan ${duplicateSnapshots.length} faturanın görsel önizlemesi ve GİB XSLT verisi güncellendi. Ekstreden tam görüntüsünü açabilirsiniz.`,
-          });
-        }
-      }
-
-      setRows((prev) => {
-        // Aynı dosya adı + fatura no tekrar eklenmesini engelle
-        const merged = [...prev];
-        for (const nr of newRows) {
-          const existsInBatch =
-            nr.parsed &&
-            merged.some(
-              (m) =>
-                m.parsed &&
-                m.parsed.faturaNo.trim().toUpperCase() === nr.parsed!.faturaNo.trim().toUpperCase() &&
-                m.yon === nr.yon
-            );
-          if (!existsInBatch) {
-            merged.push(nr);
-          }
-        }
-        return merged;
-      });
+      await syncDuplicateSnapshotsIfNeeded(newRows);
+      mergeRowsDeduplicated(newRows);
     } catch (err: unknown) {
       setFeedback({
         type: 'error',
-        text: err instanceof Error ? err.message : 'XML dosyaları işlenirken beklenmeyen bir hata oluştu.',
+        text: err instanceof Error ? err.message : 'Dosyalar işlenirken beklenmeyen bir hata oluştu.',
       });
     } finally {
       setParsing(false);
       if (fileInputRef.current) {
         fileInputRef.current.value = '';
       }
+    }
+  };
+
+  const buildParsedFromGibItem = (inv: GibFetchedInvoice): ParsedUblInvoice => {
+    const fileLabel = `GİB-${inv.belgeNumarasi || inv.ettn}`;
+    if (inv.xmlContent && inv.xmlContent.trim()) {
+      try {
+        const parsed = parseUblInvoiceXml(
+          inv.xmlContent,
+          `${fileLabel}.xml`,
+          firma?.vergi_no,
+          allCariler
+        );
+        parsed.detectedYon = inv.yon;
+        parsed.detectionReason =
+          inv.yon === 'alis'
+            ? 'GİB Portal Adıma Kesilen (Gelen) Fatura'
+            : 'GİB Portal Düzenlenen (Kesilen) Fatura';
+        if (inv.htmlContent && !parsed.renderedGibHtml) {
+          parsed.renderedGibHtml = sanitizeRenderedGibHtml(inv.htmlContent);
+        }
+        return parsed;
+      } catch {
+        // XML ayrıştırma başarısız olursa özet alanlardan oluşturmaya düş
+      }
+    }
+
+    const currencyCode = (inv.paraBirimi || 'TRY').toUpperCase();
+    const tutar = Math.round((Number(inv.toplamTutar) || 0) * 100) / 100;
+    const ownParty: UblPartyInfo = {
+      vkn: normalizeTaxId(firma?.vergi_no),
+      unvan: firma?.unvan || 'Firmamız',
+      telefon: firma?.telefon || '',
+      email: firma?.email || '',
+    };
+    const otherParty: UblPartyInfo = {
+      vkn: normalizeTaxId(inv.vkn),
+      unvan: inv.unvan?.trim() || 'Bilinmeyen Cari',
+      telefon: '',
+      email: '',
+    };
+
+    return {
+      fileName: fileLabel,
+      faturaNo: inv.belgeNumarasi || inv.ettn,
+      uuid: inv.ettn,
+      profileId: 'EARSIVFATURA',
+      tarih: inv.tarih || getTodayIsoLocal(),
+      issueTime: '',
+      invoiceTypeCode: (inv.tip || 'SATIS').toUpperCase(),
+      currencyCode,
+      exchangeRate: 1,
+      originalAmount: tutar,
+      tutarTL: tutar,
+      supplier: inv.yon === 'satis' ? ownParty : otherParty,
+      customer: inv.yon === 'satis' ? otherParty : ownParty,
+      detectedYon: inv.yon,
+      detectionReason:
+        inv.yon === 'alis'
+          ? 'GİB Portal Adıma Kesilen (Gelen) Fatura'
+          : 'GİB Portal Düzenlenen (Kesilen) Fatura',
+      notes: inv.onayDurumu ? [`GİB Durumu: ${inv.onayDurumu}`] : [],
+      lines: [],
+      totals: {
+        lineExtensionAmount: tutar,
+        allowanceTotalAmount: 0,
+        taxExclusiveAmount: tutar,
+        taxTotalAmount: 0,
+        withholdingTaxAmount: 0,
+        taxInclusiveAmount: tutar,
+        payableAmount: tutar,
+        taxSubtotals: [],
+      },
+      hasEmbeddedXslt: Boolean(inv.htmlContent),
+      renderedGibHtml: inv.htmlContent ? sanitizeRenderedGibHtml(inv.htmlContent) : undefined,
+    };
+  };
+
+  const handleOpenGibSettings = () => {
+    window.dispatchEvent(new CustomEvent('openSettingsModal', { detail: { tab: 'gib' } }));
+  };
+
+  const handleFetchGibInvoices = async () => {
+    if (!firma?.id) return;
+    setFeedback(null);
+
+    const freshSettings = await fetchCloudGibSettings(firma.id);
+    setGibSettings(freshSettings);
+
+    if (!freshSettings.kullaniciKodu || !freshSettings.sifreSet) {
+      setFeedback({
+        type: 'error',
+        text: 'GİB Portal kullanıcı kodu veya şifresi tanımlı değil. Ayarlar > GİB E-Fatura / E-Arşiv sekmesinden bilgilerinizi kaydediniz.',
+      });
+      return;
+    }
+
+    if (!gibStartDate || !gibEndDate || gibStartDate > gibEndDate) {
+      setFeedback({
+        type: 'error',
+        text: 'Lütfen geçerli bir başlangıç ve bitiş tarihi seçiniz.',
+      });
+      return;
+    }
+
+    setFetchingGib(true);
+    try {
+      const [latestInvoices, latestSyncedNos, gibRes] = await Promise.all([
+        loadExistingInvoices(),
+        fetchExpenseSyncedFaturaNos(firma.id),
+        fetchGibInvoices({
+          firmaId: firma.id,
+          settings: freshSettings,
+          startDate: gibStartDate,
+          endDate: gibEndDate,
+          direction: gibDirection,
+          includeXml: true,
+        }),
+      ]);
+      setExpenseSyncedNos(latestSyncedNos);
+
+      if (!gibRes.ok) {
+        setFeedback({
+          type: 'error',
+          text:
+            gibRes.error ||
+            'GİB Portaldan faturalar çekilemedi. GİB Portaldan indirdiğiniz .zip/.xml dosyalarını "XML / ZIP Yükle" sekmesinden aktarabilirsiniz.',
+        });
+        return;
+      }
+
+      if (gibRes.invoices.length === 0) {
+        setFeedback({
+          type: 'success',
+          text:
+            gibRes.warnings?.length
+              ? `Seçili tarih aralığında fatura bulunamadı. (${gibRes.warnings.join(' ')})`
+              : 'Seçili tarih aralığında GİB Portalda fatura bulunamadı.',
+        });
+        return;
+      }
+
+      const nextDrafts: Record<string, MissingCariDraft> = { ...missingCariDrafts };
+      const newRows: ImportRow[] = gibRes.invoices.map((inv, idx) => {
+        const parsed = buildParsedFromGibItem(inv);
+        const yon = inv.yon;
+        const counterparty = yon === 'satis' ? parsed.customer : parsed.supplier;
+        const selectedCariId = findMatchingCariId(counterparty);
+        const missingCariKey =
+          selectedCariId === AUTO_CREATE_VALUE
+            ? ensureDraftForRow(nextDrafts, counterparty, yon)
+            : undefined;
+        const duplicate = isDuplicateFatura(parsed.faturaNo, yon, latestInvoices);
+        const alreadySynced = latestSyncedNos.has(normalizeFaturaNoKey(parsed.faturaNo));
+
+        return {
+          id: `gib-${inv.ettn || inv.belgeNumarasi}-${idx}-${Date.now()}`,
+          fileName: parsed.fileName,
+          source: 'gib_portal',
+          parsed,
+          yon,
+          selectedCariId,
+          missingCariKey,
+          exchangeRate: parsed.exchangeRate,
+          tutarTL: parsed.tutarTL,
+          isDuplicate: duplicate,
+          include: !duplicate && parsed.tutarTL > 0 && Boolean(selectedCariId),
+          giderlestir: false,
+          kasaId: bulkGiderKasaId,
+          giderKategori: bulkGiderKategori,
+          alreadyExpenseSynced: alreadySynced,
+        };
+      });
+
+      setMissingCariDrafts(nextDrafts);
+      await syncDuplicateSnapshotsIfNeeded(newRows);
+      mergeRowsDeduplicated(newRows);
+
+      setFeedback({
+        type: 'success',
+        text: `GİB Portaldan ${newRows.length} adet fatura çekildi.${
+          gibRes.warnings?.length ? ` Not: ${gibRes.warnings.join(' ')}` : ''
+        }`,
+      });
+    } catch (err: unknown) {
+      setFeedback({
+        type: 'error',
+        text:
+          err instanceof Error
+            ? err.message
+            : 'GİB Portaldan faturalar getirilirken beklenmeyen bir hata oluştu.',
+      });
+    } finally {
+      setFetchingGib(false);
     }
   };
 
@@ -331,6 +684,7 @@ export const UblImportModal: React.FC<UblImportModalProps> = ({
           missingCariKey,
           isDuplicate: dup,
           include: !dup && row.tutarTL > 0 && Boolean(matchedCariId),
+          giderlestir: newYon === 'alis' ? row.giderlestir : false,
         };
       })
     );
@@ -351,7 +705,7 @@ export const UblImportModal: React.FC<UblImportModalProps> = ({
           ...row,
           selectedCariId: cariId,
           missingCariKey: cariId === AUTO_CREATE_VALUE ? nextKey : undefined,
-          include: cariId ? (!row.isDuplicate ? true : row.include) : false,
+          include: cariId ? (!row.isDuplicate ? true : false) : false,
         };
       })
     );
@@ -385,7 +739,65 @@ export const UblImportModal: React.FC<UblImportModalProps> = ({
 
   const handleToggleInclude = (rowId: string) => {
     setRows((prev) =>
-      prev.map((row) => (row.id === rowId ? { ...row, include: !row.include } : row))
+      prev.map((row) => {
+        if (row.id !== rowId) return row;
+        if (row.isDuplicate) return { ...row, include: false };
+        return { ...row, include: !row.include };
+      })
+    );
+  };
+
+  const handleToggleGiderlestir = (rowId: string) => {
+    setRows((prev) =>
+      prev.map((row) => {
+        if (row.id !== rowId || row.yon !== 'alis' || row.alreadyExpenseSynced) return row;
+        const nextGider = !row.giderlestir;
+        return {
+          ...row,
+          giderlestir: nextGider,
+          kasaId: row.kasaId || bulkGiderKasaId,
+          giderKategori: row.giderKategori || bulkGiderKategori,
+          // Yeni fatura giderleştiriliyorsa cari kaydını da otomatik açık tut
+          include: !row.isDuplicate && nextGider && Boolean(row.selectedCariId) ? true : row.include,
+        };
+      })
+    );
+  };
+
+  const handleRowGiderPatch = (
+    rowId: string,
+    patch: Partial<Pick<ImportRow, 'kasaId' | 'giderKategori'>>
+  ) => {
+    setRows((prev) => prev.map((row) => (row.id === rowId ? { ...row, ...patch } : row)));
+  };
+
+  const handleBulkToggleGiderlestir = (enable: boolean) => {
+    setRows((prev) =>
+      prev.map((row) => {
+        if (row.error || !row.parsed || row.yon !== 'alis' || row.alreadyExpenseSynced) {
+          return row;
+        }
+        return {
+          ...row,
+          giderlestir: enable,
+          kasaId: bulkGiderKasaId || row.kasaId,
+          giderKategori: bulkGiderKategori || row.giderKategori,
+          include:
+            !row.isDuplicate && enable && Boolean(row.selectedCariId) ? true : row.include,
+        };
+      })
+    );
+  };
+
+  const handleApplyBulkKasaAndKategori = (nextKasaId: string, nextKategori: string) => {
+    setBulkGiderKasaId(nextKasaId);
+    setBulkGiderKategori(nextKategori);
+    setRows((prev) =>
+      prev.map((row) =>
+        row.yon === 'alis' && !row.alreadyExpenseSynced
+          ? { ...row, kasaId: nextKasaId, giderKategori: nextKategori }
+          : row
+      )
     );
   };
 
@@ -393,13 +805,33 @@ export const UblImportModal: React.FC<UblImportModalProps> = ({
     setRows((prev) => prev.filter((r) => r.id !== rowId));
   };
 
-  const selectedRows = rows.filter((r) => r.include && !r.error && r.parsed && r.selectedCariId);
+  const cariRowsToInsert = rows.filter(
+    (r) => r.include && !r.isDuplicate && !r.error && r.parsed && r.selectedCariId
+  );
 
-  // Aktif olarak listede eksik cari durumunda bekleyen taslakları ve bağlı fatura numaralarını hesapla
+  const giderRowsToPost = rows.filter(
+    (r) =>
+      !r.error &&
+      r.parsed &&
+      r.yon === 'alis' &&
+      r.giderlestir &&
+      !r.alreadyExpenseSynced &&
+      r.tutarTL > 0 &&
+      (r.include || r.isDuplicate)
+  );
+
+  const incomingEligibleRows = rows.filter(
+    (r) => !r.error && r.parsed && r.yon === 'alis' && !r.alreadyExpenseSynced
+  );
+  const allIncomingGiderChecked =
+    incomingEligibleRows.length > 0 && incomingEligibleRows.every((r) => r.giderlestir);
+
   const activeMissingCaris = React.useMemo(() => {
     const grouped = new Map<string, { draft: MissingCariDraft; invoiceNos: string[] }>();
     for (const row of rows) {
-      if (row.error || !row.parsed || row.selectedCariId !== AUTO_CREATE_VALUE) continue;
+      if (row.error || !row.parsed || row.selectedCariId !== AUTO_CREATE_VALUE || row.isDuplicate) {
+        continue;
+      }
       const party = row.yon === 'satis' ? row.parsed.customer : row.parsed.supplier;
       const key = row.missingCariKey || buildPartyDedupKey(party);
       if (!key) continue;
@@ -424,7 +856,7 @@ export const UblImportModal: React.FC<UblImportModalProps> = ({
 
   const unapprovedSelectedMissingKeys = React.useMemo(() => {
     const keys = new Set<string>();
-    for (const row of selectedRows) {
+    for (const row of cariRowsToInsert) {
       if (row.selectedCariId !== AUTO_CREATE_VALUE || !row.parsed) continue;
       const party = row.yon === 'satis' ? row.parsed.customer : row.parsed.supplier;
       const key = row.missingCariKey || buildPartyDedupKey(party);
@@ -435,11 +867,11 @@ export const UblImportModal: React.FC<UblImportModalProps> = ({
       }
     }
     return Array.from(keys);
-  }, [selectedRows, missingCariDrafts]);
+  }, [cariRowsToInsert, missingCariDrafts]);
 
   const approvedNewCariCount = React.useMemo(() => {
     const keys = new Set<string>();
-    for (const row of selectedRows) {
+    for (const row of cariRowsToInsert) {
       if (row.selectedCariId !== AUTO_CREATE_VALUE || !row.parsed) continue;
       const party = row.yon === 'satis' ? row.parsed.customer : row.parsed.supplier;
       const key = row.missingCariKey || buildPartyDedupKey(party);
@@ -449,7 +881,7 @@ export const UblImportModal: React.FC<UblImportModalProps> = ({
       }
     }
     return keys.size;
-  }, [selectedRows, missingCariDrafts]);
+  }, [cariRowsToInsert, missingCariDrafts]);
 
   const updateMissingDraft = (key: string, patch: Partial<MissingCariDraft>) => {
     setMissingCariDrafts((prev) => {
@@ -550,10 +982,10 @@ export const UblImportModal: React.FC<UblImportModalProps> = ({
       return;
     }
 
-    if (selectedRows.length === 0) {
+    if (cariRowsToInsert.length === 0 && giderRowsToPost.length === 0) {
       setFeedback({
         type: 'error',
-        text: 'İşlenecek geçerli bir fatura seçilmedi.',
+        text: 'İşlenecek geçerli bir fatura veya giderleştirme seçilmedi.',
       });
       return;
     }
@@ -571,11 +1003,11 @@ export const UblImportModal: React.FC<UblImportModalProps> = ({
     setFeedback(null);
 
     try {
-      // 1. Onaylanan yeni carileri VKN/key bazında tekilleştirerek kullanıcının düzenlediği alanlarla oluştur
       const createdCariByKey = new Map<string, Cari>();
       let createdCount = 0;
 
-      for (const row of selectedRows) {
+      // 1. Onaylanan yeni carileri oluştur
+      for (const row of cariRowsToInsert) {
         if (row.selectedCariId !== AUTO_CREATE_VALUE || !row.parsed) continue;
         const party = row.yon === 'satis' ? row.parsed.customer : row.parsed.supplier;
         const dedupKey = row.missingCariKey || buildPartyDedupKey(party);
@@ -618,7 +1050,7 @@ export const UblImportModal: React.FC<UblImportModalProps> = ({
         }
       }
 
-      // 2. Etkilenen carilerin mevcut bakiyelerini ve beklenen değişimi hesapla
+      // 2. Cari fatura kayıtları
       const resolvedPayloads: Array<{
         firma_id: string;
         cari_id: string;
@@ -627,10 +1059,9 @@ export const UblImportModal: React.FC<UblImportModalProps> = ({
         tutar: number;
         yon: FaturaYon;
       }> = [];
-
       const expectedDeltaByCari = new Map<string, number>();
 
-      for (const row of selectedRows) {
+      for (const row of cariRowsToInsert) {
         if (!row.parsed) continue;
         let targetCariId = row.selectedCariId;
 
@@ -654,7 +1085,6 @@ export const UblImportModal: React.FC<UblImportModalProps> = ({
           yon: row.yon,
         });
 
-        // Satış faturası cariyi bize borçlandırır (+tutar), Alış faturası bizi alacaklandırır/borçlandırır (-tutar)
         const signedDelta = row.yon === 'satis' ? tutar : -tutar;
         expectedDeltaByCari.set(
           targetCariId,
@@ -662,63 +1092,128 @@ export const UblImportModal: React.FC<UblImportModalProps> = ({
         );
       }
 
-      const affectedCariIds = Array.from(expectedDeltaByCari.keys());
-      const beforeBalanceMap = new Map<string, number>();
-      if (affectedCariIds.length > 0) {
-        const { data: beforeCaris } = await supabase
-          .from('cariler')
-          .select('id, bakiye')
-          .in('id', affectedCariIds);
-        (beforeCaris || []).forEach((c: { id: string; bakiye: number }) => {
-          beforeBalanceMap.set(c.id, Number(c.bakiye) || 0);
-        });
-      }
+      if (resolvedPayloads.length > 0) {
+        const affectedCariIds = Array.from(expectedDeltaByCari.keys());
+        const beforeBalanceMap = new Map<string, number>();
+        if (affectedCariIds.length > 0) {
+          const { data: beforeCaris } = await supabase
+            .from('cariler')
+            .select('id, bakiye')
+            .in('id', affectedCariIds);
+          (beforeCaris || []).forEach((c: { id: string; bakiye: number }) => {
+            beforeBalanceMap.set(c.id, Number(c.bakiye) || 0);
+          });
+        }
 
-      // 3. Faturaları kaydet
-      const { error: faturaErr } = await supabase.from('faturalar').insert(resolvedPayloads);
-      if (faturaErr) throw faturaErr;
+        const { error: faturaErr } = await supabase.from('faturalar').insert(resolvedPayloads);
+        if (faturaErr) throw faturaErr;
 
-      // 4. Veritabanı trigger'ı cariler.bakiye'yi güncelledi mi kontrol et; trigger yoksa istemciden güncelle
-      if (affectedCariIds.length > 0) {
-        const { data: afterCaris } = await supabase
-          .from('cariler')
-          .select('id, bakiye')
-          .in('id', affectedCariIds);
+        if (affectedCariIds.length > 0) {
+          const { data: afterCaris } = await supabase
+            .from('cariler')
+            .select('id, bakiye')
+            .in('id', affectedCariIds);
 
-        for (const c of (afterCaris || []) as Array<{ id: string; bakiye: number }>) {
-          const beforeVal = beforeBalanceMap.get(c.id) ?? 0;
-          const afterVal = Number(c.bakiye) || 0;
-          const expectedDelta = expectedDeltaByCari.get(c.id) || 0;
+          for (const c of (afterCaris || []) as Array<{ id: string; bakiye: number }>) {
+            const beforeVal = beforeBalanceMap.get(c.id) ?? 0;
+            const afterVal = Number(c.bakiye) || 0;
+            const expectedDelta = expectedDeltaByCari.get(c.id) || 0;
 
-          // Eğer trigger çalışmadıysa afterVal === beforeVal kalmıştır; çift sayımı önlemek için sadece değişmemişse güncelle
-          if (Math.abs(afterVal - beforeVal) < 0.005 && Math.abs(expectedDelta) >= 0.005) {
-            const nextBakiye = Math.round((beforeVal + expectedDelta) * 100) / 100;
-            await supabase
-              .from('cariler')
-              .update({ bakiye: nextBakiye })
-              .eq('id', c.id)
-              .eq('firma_id', firma.id);
+            if (Math.abs(afterVal - beforeVal) < 0.005 && Math.abs(expectedDelta) >= 0.005) {
+              const nextBakiye = Math.round((beforeVal + expectedDelta) * 100) / 100;
+              await supabase
+                .from('cariler')
+                .update({ bakiye: nextBakiye })
+                .eq('id', c.id)
+                .eq('firma_id', firma.id);
+            }
           }
+        }
+
+        if (firma.id && showInvoicePreview) {
+          const snapshots = cariRowsToInsert
+            .filter((r): r is ImportRow & { parsed: ParsedUblInvoice } => Boolean(r.parsed))
+            .map((r) => ({ yon: r.yon, parsed: r.parsed }));
+          await saveUblInvoiceSnapshotsAsync(firma.id, snapshots);
+          await syncUblDetayToSupabase(firma.id, snapshots);
         }
       }
 
-      if (firma.id && showInvoicePreview) {
-        const snapshots = selectedRows
-          .filter((r): r is ImportRow & { parsed: ParsedUblInvoice } => Boolean(r.parsed))
-          .map((r) => ({ yon: r.yon, parsed: r.parsed }));
-        await saveUblInvoiceSnapshotsAsync(firma.id, snapshots);
-        await syncUblDetayToSupabase(firma.id, snapshots);
+      // 3. Seçilen gelen (alış) faturalarını Kasa & Gelir-Gider tarafına "Giderleştir"
+      let postedGiderCount = 0;
+      let skippedGiderDupCount = 0;
+      const giderErrors: string[] = [];
+      let missingKasaTable = false;
+
+      for (const row of giderRowsToPost) {
+        if (!row.parsed) continue;
+        const matchedCari =
+          allCariler.find((c) => c.id === row.selectedCariId) ||
+          (row.selectedCariId === AUTO_CREATE_VALUE
+            ? createdCariByKey.get(
+                row.missingCariKey || buildPartyDedupKey(row.parsed.supplier)
+              )
+            : undefined);
+
+        const cariUnvan = matchedCari?.unvan || row.parsed.supplier.unvan || 'Tedarikçi';
+        const res = await postFaturaAsKasaGider({
+          firmaId: firma.id,
+          faturaNo: row.parsed.faturaNo,
+          cariUnvan,
+          tutar: row.tutarTL,
+          tarih: row.parsed.tarih,
+          kasaId: row.kasaId || bulkGiderKasaId || null,
+          kategori: row.giderKategori || bulkGiderKategori,
+          userId: profile?.id || null,
+          knownKasalar: kasalar,
+        });
+
+        if (res.posted) {
+          postedGiderCount++;
+        } else if (res.skippedDuplicate) {
+          skippedGiderDupCount++;
+        } else if (res.reason === 'kasa_table_missing') {
+          missingKasaTable = true;
+        } else if (res.error) {
+          giderErrors.push(`${row.parsed.faturaNo}: ${res.error}`);
+        }
       }
 
       await onImported();
-      setFeedback({
-        type: 'success',
-        text: `${resolvedPayloads.length} adet fatura vergi numarasına göre ilgili cari hesaplara başarıyla işlendi.${
-          createdCount > 0 ? ` (${createdCount} yeni cari onaylanarak açıldı.)` : ''
-        }`,
-      });
-      setRows([]);
-      setMissingCariDrafts({});
+
+      const parts: string[] = [];
+      if (resolvedPayloads.length > 0) {
+        parts.push(
+          `${resolvedPayloads.length} fatura cari hesaba işlendi${
+            createdCount > 0 ? ` (${createdCount} yeni cari açıldı)` : ''
+          }`
+        );
+      }
+      if (postedGiderCount > 0) {
+        parts.push(`${postedGiderCount} fatura seçilen kasaya gider olarak eklendi`);
+      }
+      if (skippedGiderDupCount > 0) {
+        parts.push(`${skippedGiderDupCount} fatura daha önce giderleştirildiği için atlandı`);
+      }
+
+      if (missingKasaTable) {
+        setFeedback({
+          type: 'error',
+          text: `${parts.join(' • ')}. Ancak Kasa / Gelir-Gider tabloları veritabanında henüz kurulmadığı için kasaya gider eklenemedi.`,
+        });
+      } else if (giderErrors.length > 0) {
+        setFeedback({
+          type: 'error',
+          text: `${parts.join(' • ')}. Bazı gider kayıtlarında hata oluştu: ${giderErrors.join(' | ')}`,
+        });
+      } else {
+        setFeedback({
+          type: 'success',
+          text: `${parts.join(' • ')}.`,
+        });
+        setRows([]);
+        setMissingCariDrafts({});
+      }
     } catch (err: unknown) {
       const msg = handleSupabaseError(err, 'Faturalar işlenirken hata oluştu.', {
         isFirmaUnlimited: Boolean(firma?.sinirsiz),
@@ -755,6 +1250,9 @@ ALTER TABLE public.faturalar ADD COLUMN IF NOT EXISTS ubl_detay jsonb;
 
   if (!isOpen) return null;
 
+  const confirmDisabled =
+    importing || (cariRowsToInsert.length === 0 && giderRowsToPost.length === 0);
+
   return (
     <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4 overflow-y-auto">
       <div className="bg-[#111820] border border-white/10 rounded-2xl w-full max-w-4xl max-h-[92vh] flex flex-col shadow-2xl overflow-hidden my-auto">
@@ -766,11 +1264,12 @@ ALTER TABLE public.faturalar ADD COLUMN IF NOT EXISTS ubl_detay jsonb;
             </div>
             <div>
               <h3 className="text-sm sm:text-base font-extrabold text-white">
-                UBL / XML Fatura Yükle &amp; VKN ile Cariye İşle
+                UBL / XML / ZIP Fatura &amp; GİB Portal Aktarımı
               </h3>
               <p className="text-[11px] text-gray-400 mt-0.5">
-                E-Fatura / E-Arşiv <code className="text-teal-300">.xml</code> veya{' '}
-                <code className="text-teal-300">.ubl</code> dosyalarını seçin; vergi numarası otomatik eşleştirilip cariye işlensin.
+                E-Fatura / E-Arşiv <code className="text-teal-300">.xml</code>,{' '}
+                <code className="text-teal-300">.ubl</code>,{' '}
+                <code className="text-teal-300">.zip</code> yükleyin veya GİB Portaldan çekip cariye ve kasaya gider işleyin.
               </p>
             </div>
           </div>
@@ -799,16 +1298,47 @@ ALTER TABLE public.faturalar ADD COLUMN IF NOT EXISTS ubl_detay jsonb;
 
         {/* GÖVDE */}
         <div className="flex-1 overflow-y-auto p-4 sm:p-5 space-y-4">
+          {/* MOD SEKMELERİ */}
+          <div className="grid grid-cols-2 gap-2 p-1 rounded-xl bg-black/35 border border-white/10">
+            <button
+              type="button"
+              onClick={() => setModeTab('upload')}
+              data-testid="ubl_tab_upload"
+              className={`px-3 py-2.5 rounded-lg text-xs font-extrabold flex items-center justify-center gap-2 transition ${
+                modeTab === 'upload'
+                  ? 'bg-teal-400 text-[#0a0e13] shadow-sm'
+                  : 'text-gray-300 hover:text-white hover:bg-white/5'
+              }`}
+            >
+              <FileArchive className="w-4 h-4" />
+              <span>XML / UBL / Toplu ZIP Yükle</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setModeTab('gib')}
+              data-testid="ubl_tab_gib"
+              className={`px-3 py-2.5 rounded-lg text-xs font-extrabold flex items-center justify-center gap-2 transition ${
+                modeTab === 'gib'
+                  ? 'bg-teal-400 text-[#0a0e13] shadow-sm'
+                  : 'text-gray-300 hover:text-white hover:bg-white/5'
+              }`}
+            >
+              <CloudDownload className="w-4 h-4" />
+              <span>GİB Portaldan Çek (Gelen / Kesilen)</span>
+            </button>
+          </div>
+
           {/* FİRMA VKN BİLGİ ŞERİDİ */}
           <div className="p-3 rounded-xl bg-blue-500/10 border border-blue-500/20 flex items-start gap-2.5 text-[11px] text-blue-200">
             <Info className="w-4 h-4 text-blue-400 shrink-0 mt-0.5" />
             <div className="leading-relaxed">
               Firmanızın Vergi/TC No bilgisi:{' '}
               <strong className="font-mono text-white">{firma?.vergi_no || 'Tanımsız'}</strong>.
-              Yüklediğiniz XML içindeki <strong>Satıcı VKN</strong> firmanızla eşleşirse{' '}
+              Satıcı VKN firmanızla eşleşirse{' '}
               <span className="text-teal-300 font-bold">Satış Faturası</span> (müşteri borçlanır),
-              <strong>Alıcı VKN</strong> firmanızla eşleşirse{' '}
-              <span className="text-orange-300 font-bold">Alış Faturası</span> (tedarikçi alacaklanır) olarak otomatik seçilir.
+              Alıcı VKN firmanızla eşleşirse{' '}
+              <span className="text-orange-300 font-bold">Alış Faturası</span> (tedarikçi alacaklanır) olarak işlenir; gelen faturaları tek tıkla{' '}
+              <span className="text-amber-300 font-bold">Giderleştir</span> ile seçtiğiniz kasadan gider olarak düşebilirsiniz.
             </div>
           </div>
 
@@ -822,7 +1352,7 @@ ALTER TABLE public.faturalar ADD COLUMN IF NOT EXISTS ubl_detay jsonb;
                     <span>Supabase faturalar Trigger &amp; RLS SQL</span>
                   </h4>
                   <p className="text-[11px] text-gray-400 mt-0.5">
-                    Supabase SQL Editor&apos;de bu komutu bir kez çalıştırırsanız sunucu tarafında da bakiye &amp; güvenlik politikaları garantiye alınır.
+                    Supabase SQL Editor&apos;de bu komutu çalıştırarak fatura kalem detay desteğini açabilirsiniz.
                   </p>
                 </div>
                 <button
@@ -849,13 +1379,35 @@ ALTER TABLE public.faturalar ADD COLUMN IF NOT EXISTS ubl_detay jsonb;
                   : 'bg-red-500/10 border-red-500/30 text-red-300'
               }`}
             >
-              <div className="flex items-start gap-2">
-                {feedback.type === 'success' ? (
-                  <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5" />
-                ) : (
-                  <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+              <div className="space-y-2 flex-1">
+                <div className="flex items-start gap-2">
+                  {feedback.type === 'success' ? (
+                    <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5" />
+                  ) : (
+                    <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                  )}
+                  <span className="leading-relaxed">{feedback.text}</span>
+                </div>
+                {feedback.type === 'error' && modeTab === 'gib' && (
+                  <div className="flex flex-wrap items-center gap-2 pl-6">
+                    <button
+                      type="button"
+                      onClick={handleOpenGibSettings}
+                      className="px-2.5 py-1 rounded-lg bg-white/10 hover:bg-white/15 text-[11px] font-bold text-white flex items-center gap-1 transition"
+                    >
+                      <Settings className="w-3 h-3" />
+                      <span>GİB Ayarlarını Aç</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setModeTab('upload')}
+                      className="px-2.5 py-1 rounded-lg bg-teal-400/20 hover:bg-teal-400/30 text-[11px] font-bold text-teal-300 flex items-center gap-1 transition"
+                    >
+                      <FileArchive className="w-3 h-3" />
+                      <span>ZIP / XML Yüklemeye Geç</span>
+                    </button>
+                  </div>
                 )}
-                <span className="leading-relaxed">{feedback.text}</span>
               </div>
               <button
                 type="button"
@@ -867,55 +1419,147 @@ ALTER TABLE public.faturalar ADD COLUMN IF NOT EXISTS ubl_detay jsonb;
             </div>
           )}
 
-          {/* DOSYA YÜKLEME ALANI (DROPZONE) */}
-          <div
-            onDragOver={(e) => {
-              e.preventDefault();
-              setIsDragging(true);
-            }}
-            onDragLeave={() => setIsDragging(false)}
-            onDrop={(e) => {
-              e.preventDefault();
-              setIsDragging(false);
-              if (e.dataTransfer.files?.length) {
-                processFiles(e.dataTransfer.files);
-              }
-            }}
-            onClick={() => fileInputRef.current?.click()}
-            data-testid="ubl_dropzone"
-            className={`border-2 border-dashed rounded-2xl p-6 text-center cursor-pointer transition ${
-              isDragging
-                ? 'border-teal-400 bg-teal-400/10'
-                : 'border-white/15 bg-black/20 hover:border-teal-400/50 hover:bg-black/30'
-            }`}
-          >
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept=".xml,.ubl,text/xml,application/xml"
-              multiple
-              onClick={(e) => e.stopPropagation()}
-              onChange={(e) => {
-                if (e.target.files?.length) {
-                  processFiles(e.target.files);
+          {/* SEÇİLİ MOD 1: DOSYA / TOPLU ZIP DROPZONE */}
+          {modeTab === 'upload' ? (
+            <div
+              onDragOver={(e) => {
+                e.preventDefault();
+                setIsDragging(true);
+              }}
+              onDragLeave={() => setIsDragging(false)}
+              onDrop={(e) => {
+                e.preventDefault();
+                setIsDragging(false);
+                if (e.dataTransfer.files?.length) {
+                  processFiles(e.dataTransfer.files);
                 }
               }}
-              className="hidden"
-              data-testid="ubl_file_input"
-            />
-            <div className="w-12 h-12 rounded-2xl bg-teal-400/15 text-teal-400 flex items-center justify-center mx-auto mb-3">
-              <Upload className="w-6 h-6" />
+              onClick={() => fileInputRef.current?.click()}
+              data-testid="ubl_dropzone"
+              className={`border-2 border-dashed rounded-2xl p-6 text-center cursor-pointer transition ${
+                isDragging
+                  ? 'border-teal-400 bg-teal-400/10'
+                  : 'border-white/15 bg-black/20 hover:border-teal-400/50 hover:bg-black/30'
+              }`}
+            >
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".xml,.ubl,.zip,text/xml,application/xml,application/zip"
+                multiple
+                onClick={(e) => e.stopPropagation()}
+                onChange={(e) => {
+                  if (e.target.files?.length) {
+                    processFiles(e.target.files);
+                  }
+                }}
+                className="hidden"
+                data-testid="ubl_file_input"
+              />
+              <div className="w-12 h-12 rounded-2xl bg-teal-400/15 text-teal-400 flex items-center justify-center mx-auto mb-3">
+                <Upload className="w-6 h-6" />
+              </div>
+              <div className="text-xs sm:text-sm font-bold text-white">
+                {parsing
+                  ? 'Faturalar çözümleniyor...'
+                  : 'XML / UBL veya GİB Toplu ZIP Arşivi Seçin / Sürükleyin'}
+              </div>
+              <p className="text-[11px] text-gray-400 mt-1">
+                Birden fazla <span className="text-gray-200 font-semibold">.xml</span>,{' '}
+                <span className="text-gray-200 font-semibold">.ubl</span> veya GİB Portaldan toplu indirilen{' '}
+                <span className="text-teal-300 font-semibold">.zip</span> paketini doğrudan yükleyebilirsiniz.
+              </p>
             </div>
-            <div className="text-xs sm:text-sm font-bold text-white">
-              {parsing
-                ? 'XML dosyaları çözümleniyor...'
-                : 'UBL / XML Fatura Dosyalarını Seçin veya Buraya Sürükleyin'}
+          ) : (
+            /* SEÇİLİ MOD 2: GİB PORTALDAN ÇEKME PANELİ */
+            <div
+              data-testid="ubl_gib_fetch_panel"
+              className="p-4 rounded-2xl bg-black/30 border border-white/10 space-y-3.5"
+            >
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <h4 className="text-xs sm:text-sm font-extrabold text-white flex items-center gap-2">
+                    <CloudDownload className="w-4 h-4 text-teal-400" />
+                    <span>GİB E-Arşiv / İnteraktif Portal Fatura Sorgulama</span>
+                  </h4>
+                  <p className="text-[11px] text-gray-400 mt-0.5">
+                    {gibSettings?.kullaniciKodu
+                      ? `Kayıtlı Kullanıcı Kodu: ${gibSettings.kullaniciKodu} (${
+                          gibSettings.ortam === 'test' ? 'Test' : 'Canlı'
+                        })`
+                      : 'Henüz GİB kullanıcı kodu kayıtlı değil.'}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleOpenGibSettings}
+                  data-testid="ubl_open_gib_settings_btn"
+                  className="px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-xs font-bold text-gray-200 flex items-center gap-1.5 transition"
+                >
+                  <Settings className="w-3.5 h-3.5 text-teal-400" />
+                  <span>GİB Ayarları</span>
+                </button>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div>
+                  <label className="block text-[10px] font-bold uppercase text-gray-400 mb-1">
+                    Başlangıç Tarihi
+                  </label>
+                  <input
+                    type="date"
+                    value={gibStartDate}
+                    onChange={(e) => setGibStartDate(e.target.value)}
+                    data-testid="gib_start_date_input"
+                    className="w-full bg-[#0a0e13] border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-teal-400"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10px] font-bold uppercase text-gray-400 mb-1">
+                    Bitiş Tarihi
+                  </label>
+                  <input
+                    type="date"
+                    value={gibEndDate}
+                    onChange={(e) => setGibEndDate(e.target.value)}
+                    data-testid="gib_end_date_input"
+                    className="w-full bg-[#0a0e13] border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-teal-400"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10px] font-bold uppercase text-gray-400 mb-1">
+                    Fatura Yönü
+                  </label>
+                  <select
+                    value={gibDirection}
+                    onChange={(e) => setGibDirection(e.target.value as GibDirectionFilter)}
+                    data-testid="gib_direction_select"
+                    className="w-full bg-[#0a0e13] border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-teal-400"
+                  >
+                    <option value="all">Tümü (Gelen + Kesilen)</option>
+                    <option value="alis">Adıma Kesilen (Gelen / Gider)</option>
+                    <option value="satis">Düzenlenen (Kesilen / Satış)</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+                <span className="text-[11px] text-gray-400">
+                  Adıma kesilen faturaları çektikten sonra aşağıdan <strong className="text-amber-300">Giderleştir</strong> ile seçtiğiniz kasaya gider ekleyebilirsiniz.
+                </span>
+                <button
+                  type="button"
+                  disabled={fetchingGib}
+                  onClick={handleFetchGibInvoices}
+                  data-testid="gib_fetch_invoices_btn"
+                  className="px-4 py-2.5 rounded-xl bg-teal-400 hover:bg-teal-300 disabled:opacity-50 text-[#0a0e13] text-xs font-extrabold flex items-center gap-2 transition"
+                >
+                  <RefreshCw className={`w-4 h-4 ${fetchingGib ? 'animate-spin' : ''}`} />
+                  <span>{fetchingGib ? 'GİB Portaldan Çekiliyor...' : "GİB'den Faturaları Getir"}</span>
+                </button>
+              </div>
             </div>
-            <p className="text-[11px] text-gray-400 mt-1">
-              Birden fazla <span className="text-gray-200 font-semibold">.xml</span> veya{' '}
-              <span className="text-gray-200 font-semibold">.ubl</span> dosyasını aynı anda yükleyebilirsiniz.
-            </p>
-          </div>
+          )}
 
           {/* SİSTEMDE OLMAYAN CARİLER İÇİN DÜZENLENEBİLİR ONAY PANELİ */}
           {activeMissingCaris.length > 0 && (
@@ -934,7 +1578,7 @@ ALTER TABLE public.faturalar ADD COLUMN IF NOT EXISTS ubl_detay jsonb;
                       Sistemde Kayıtlı Olmayan Cariler Bulundu ({activeMissingCaris.length} adet)
                     </h4>
                     <p className="text-[11px] text-amber-100/80 mt-0.5">
-                      Faturadaki bilgilerle yeni cari açmak ister misiniz? Bilgileri aşağıdan düzenleyip onaylayabilir veya tek tıkla hemen açabilirsiniz.
+                      Faturadaki bilgilerle yeni cari açmak için bilgileri kontrol edip onaylayın veya tek tıkla hemen açın.
                     </p>
                   </div>
                 </div>
@@ -1073,12 +1717,85 @@ ALTER TABLE public.faturalar ADD COLUMN IF NOT EXISTS ubl_detay jsonb;
             </div>
           )}
 
+          {/* TOPLU GİDERLEŞTİRME ARAÇ ÇUBUĞU (GELEN / ALIŞ FATURALARI VARSA) */}
+          {incomingEligibleRows.length > 0 && (
+            <div
+              data-testid="ubl_bulk_gider_toolbar"
+              className="p-3.5 rounded-2xl bg-orange-500/[0.07] border border-orange-400/30 flex flex-col lg:flex-row lg:items-center justify-between gap-3"
+            >
+              <div className="flex items-start gap-2.5">
+                <div className="w-8 h-8 rounded-xl bg-orange-400/20 border border-orange-400/35 text-orange-300 flex items-center justify-center shrink-0">
+                  <Receipt className="w-4 h-4" />
+                </div>
+                <div>
+                  <div className="text-xs font-extrabold text-orange-200">
+                    Gelen Faturaları Giderleştir (Cari + Seçilen Kasaya Gider)
+                  </div>
+                  <p className="text-[11px] text-gray-300 mt-0.5">
+                    İşaretlenen alış faturaları cariye işlenirken aynı anda seçilen kasadan gider düşülür.
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                <select
+                  value={bulkGiderKasaId}
+                  onChange={(e) =>
+                    handleApplyBulkKasaAndKategori(e.target.value, bulkGiderKategori)
+                  }
+                  data-testid="ubl_default_gider_kasa_select"
+                  className="bg-[#0a0e13] border border-white/15 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-orange-400"
+                >
+                  {kasalar.length === 0 ? (
+                    <option value="">Otomatik Varsayılan Nakit Kasa</option>
+                  ) : (
+                    kasalar.map((k) => (
+                      <option key={k.id} value={k.id}>
+                        Kasa: {k.ad} ({formatCurrency(Number(k.guncel_bakiye) || 0)})
+                      </option>
+                    ))
+                  )}
+                </select>
+
+                <select
+                  value={bulkGiderKategori}
+                  onChange={(e) =>
+                    handleApplyBulkKasaAndKategori(bulkGiderKasaId, e.target.value)
+                  }
+                  data-testid="ubl_default_gider_kategori_select"
+                  className="bg-[#0a0e13] border border-white/15 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-orange-400"
+                >
+                  {GIB_GIDER_KATEGORILERI.map((kat) => (
+                    <option key={kat} value={kat}>
+                      Kategori: {kat}
+                    </option>
+                  ))}
+                </select>
+
+                <button
+                  type="button"
+                  onClick={() => handleBulkToggleGiderlestir(!allIncomingGiderChecked)}
+                  data-testid="ubl_bulk_giderlestir_btn"
+                  className={`px-3 py-1.5 rounded-lg text-xs font-extrabold transition ${
+                    allIncomingGiderChecked
+                      ? 'bg-orange-400 text-[#0a0e13]'
+                      : 'bg-orange-400/20 hover:bg-orange-400/30 border border-orange-400/40 text-orange-200'
+                  }`}
+                >
+                  {allIncomingGiderChecked
+                    ? 'Tüm Giderleştirmeleri Kaldır'
+                    : `Gelen Faturaları Giderleştir (${incomingEligibleRows.length})`}
+                </button>
+              </div>
+            </div>
+          )}
+
           {/* ÇÖZÜMLENEN FATURALAR LİSTESİ */}
           {rows.length > 0 && (
             <div className="space-y-3">
               <div className="flex items-center justify-between gap-2 flex-wrap">
                 <h4 className="text-xs font-extrabold uppercase tracking-wider text-gray-300">
-                  Önizleme ve Cari Eşleştirme ({rows.length} dosya)
+                  Önizleme ve Cari Eşleştirme ({rows.length} kayıt)
                 </h4>
                 <button
                   type="button"
@@ -1123,25 +1840,27 @@ ALTER TABLE public.faturalar ADD COLUMN IF NOT EXISTS ubl_detay jsonb;
                   const missingDraft = missingKey ? missingCariDrafts[missingKey] : undefined;
                   const isMissingApproved = Boolean(missingDraft?.approved);
                   const isForeign = p.currencyCode !== 'TRY' && p.currencyCode !== 'TL';
+                  const rowActive = row.include || (row.yon === 'alis' && row.giderlestir);
 
                   return (
                     <div
                       key={row.id}
                       className={`p-3.5 sm:p-4 rounded-xl border transition space-y-3 ${
-                        row.include
+                        rowActive
                           ? 'bg-[#0a0e13] border-teal-500/30'
-                          : 'bg-black/20 border-white/[0.06] opacity-70'
+                          : 'bg-black/20 border-white/[0.06] opacity-75'
                       }`}
                     >
-                      {/* Satır Üst Başlık: Checkbox, Fatura No, Tarih, Yön, Durum */}
+                      {/* Satır Üst Başlık */}
                       <div className="flex flex-wrap items-center justify-between gap-2">
                         <div className="flex items-center gap-2.5 min-w-0">
                           <input
                             type="checkbox"
                             checked={row.include}
+                            disabled={row.isDuplicate}
                             onChange={() => handleToggleInclude(row.id)}
-                            aria-label={`${p.faturaNo} faturasını içe aktar`}
-                            className="w-4 h-4 accent-teal-400 rounded cursor-pointer"
+                            aria-label={`${p.faturaNo} faturasını cariye aktar`}
+                            className="w-4 h-4 accent-teal-400 rounded cursor-pointer disabled:opacity-40"
                           />
                           <div>
                             <div className="flex items-center gap-2 flex-wrap">
@@ -1151,6 +1870,16 @@ ALTER TABLE public.faturalar ADD COLUMN IF NOT EXISTS ubl_detay jsonb;
                               <span className="text-[11px] text-gray-400">
                                 {formatDate(p.tarih)}
                               </span>
+                              {row.source === 'zip' && (
+                                <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-indigo-500/15 text-indigo-300 border border-indigo-500/30">
+                                  ZIP
+                                </span>
+                              )}
+                              {row.source === 'gib_portal' && (
+                                <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-sky-500/15 text-sky-300 border border-sky-500/30">
+                                  GİB
+                                </span>
+                              )}
                               {p.invoiceTypeCode === 'IADE' && (
                                 <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30">
                                   İADE FATURASI
@@ -1158,12 +1887,17 @@ ALTER TABLE public.faturalar ADD COLUMN IF NOT EXISTS ubl_detay jsonb;
                               )}
                               {row.isDuplicate && (
                                 <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-red-500/15 text-red-300 border border-red-500/30">
-                                  Mükerrer (Zaten Kayıtlı)
+                                  Cariye Kayıtlı
+                                </span>
+                              )}
+                              {row.alreadyExpenseSynced && (
+                                <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+                                  Kasaya Gider İşli
                                 </span>
                               )}
                             </div>
                             <div className="text-[10px] text-gray-500 truncate mt-0.5">
-                              Dosya: {row.fileName} • {p.detectionReason}
+                              Kaynak: {row.fileName} • {p.detectionReason}
                             </div>
                           </div>
                         </div>
@@ -1182,7 +1916,6 @@ ALTER TABLE public.faturalar ADD COLUMN IF NOT EXISTS ubl_detay jsonb;
                             </button>
                           )}
 
-                          {/* Yön Seçici */}
                           <div className="inline-flex rounded-lg bg-black/50 p-0.5 border border-white/10">
                             <button
                               type="button"
@@ -1221,12 +1954,11 @@ ALTER TABLE public.faturalar ADD COLUMN IF NOT EXISTS ubl_detay jsonb;
                         </div>
                       </div>
 
-                      {/* Satır Detay: Karşı Taraf VKN/Ünvan + Cari Eşleştirme + Tutar */}
+                      {/* Satır Detay: Karşı Taraf + Cari + Tutar */}
                       <div className="grid grid-cols-1 md:grid-cols-12 gap-3 items-start pt-2 border-t border-white/[0.05]">
-                        {/* XML'den okunan karşı taraf */}
                         <div className="md:col-span-4 space-y-1">
                           <div className="text-[10px] uppercase font-bold text-gray-400">
-                            XML {row.yon === 'satis' ? 'Alıcı (Müşteri)' : 'Satıcı (Tedarikçi)'}
+                            {row.yon === 'satis' ? 'Alıcı (Müşteri)' : 'Satıcı (Tedarikçi)'}
                           </div>
                           <div className="text-xs font-bold text-white leading-snug">
                             {counterparty.unvan}
@@ -1236,7 +1968,6 @@ ALTER TABLE public.faturalar ADD COLUMN IF NOT EXISTS ubl_detay jsonb;
                           </div>
                         </div>
 
-                        {/* İşleneceği Cari Hesap */}
                         <div className="md:col-span-5 space-y-1">
                           <div className="flex items-center justify-between gap-2">
                             <span className="text-[10px] uppercase font-bold text-gray-400">
@@ -1263,9 +1994,10 @@ ALTER TABLE public.faturalar ADD COLUMN IF NOT EXISTS ubl_detay jsonb;
                           </div>
                           <select
                             value={row.selectedCariId}
+                            disabled={row.isDuplicate}
                             onChange={(e) => handleCariChange(row.id, e.target.value)}
-                            className={`w-full bg-[#111820] border rounded-lg px-2.5 py-2 text-xs text-white focus:outline-none focus:border-teal-400 ${
-                              isAutoCreate && !isMissingApproved
+                            className={`w-full bg-[#111820] border rounded-lg px-2.5 py-2 text-xs text-white focus:outline-none focus:border-teal-400 disabled:opacity-50 ${
+                              isAutoCreate && !isMissingApproved && !row.isDuplicate
                                 ? 'border-amber-400/50'
                                 : 'border-white/10'
                             }`}
@@ -1284,7 +2016,6 @@ ALTER TABLE public.faturalar ADD COLUMN IF NOT EXISTS ubl_detay jsonb;
                           </select>
                         </div>
 
-                        {/* Tutar / Kur */}
                         <div className="md:col-span-3 space-y-1">
                           <div className="flex items-center justify-between">
                             <span className="text-[10px] uppercase font-bold text-gray-400">
@@ -1330,7 +2061,7 @@ ALTER TABLE public.faturalar ADD COLUMN IF NOT EXISTS ubl_detay jsonb;
                             />
                           )}
                           <div className="text-[10px] text-right text-gray-400">
-                            Etki:{' '}
+                            Cari Etki:{' '}
                             <span
                               className={
                                 row.yon === 'satis' ? 'text-teal-400 font-bold' : 'text-red-400 font-bold'
@@ -1365,6 +2096,62 @@ ALTER TABLE public.faturalar ADD COLUMN IF NOT EXISTS ubl_detay jsonb;
                           })()}
                         </div>
                       </div>
+
+                      {/* GELEN (ALIŞ) FATURA İÇİN GİDERLEŞTİR SEÇENEĞİ */}
+                      {row.yon === 'alis' && !row.alreadyExpenseSynced && (
+                        <div className="pt-2 border-t border-white/[0.06] flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 bg-orange-500/[0.04] rounded-xl px-3 py-2">
+                          <label className="inline-flex items-center gap-2 cursor-pointer text-xs font-bold text-orange-200">
+                            <input
+                              type="checkbox"
+                              checked={row.giderlestir}
+                              onChange={() => handleToggleGiderlestir(row.id)}
+                              data-testid={`ubl_row_giderlestir_${row.id}`}
+                              className="w-4 h-4 accent-orange-400 rounded cursor-pointer"
+                            />
+                            <Receipt className="w-3.5 h-3.5 text-orange-400" />
+                            <span>
+                              Giderleştir ({row.isDuplicate ? 'Sadece Seçilen Kasaya Gider' : 'Cari + Seçilen Kasaya Gider'})
+                            </span>
+                          </label>
+
+                          {row.giderlestir && (
+                            <div className="flex flex-wrap items-center gap-2">
+                              <select
+                                value={row.kasaId || bulkGiderKasaId}
+                                onChange={(e) =>
+                                  handleRowGiderPatch(row.id, { kasaId: e.target.value })
+                                }
+                                data-testid={`ubl_row_kasa_${row.id}`}
+                                className="bg-[#111820] border border-orange-400/35 rounded-lg px-2 py-1 text-[11px] text-white focus:outline-none focus:border-orange-400"
+                              >
+                                {kasalar.length === 0 ? (
+                                  <option value="">Varsayılan Nakit Kasa</option>
+                                ) : (
+                                  kasalar.map((k) => (
+                                    <option key={k.id} value={k.id}>
+                                      {k.ad}
+                                    </option>
+                                  ))
+                                )}
+                              </select>
+                              <select
+                                value={row.giderKategori || bulkGiderKategori}
+                                onChange={(e) =>
+                                  handleRowGiderPatch(row.id, { giderKategori: e.target.value })
+                                }
+                                data-testid={`ubl_row_kategori_${row.id}`}
+                                className="bg-[#111820] border border-orange-400/35 rounded-lg px-2 py-1 text-[11px] text-white focus:outline-none focus:border-orange-400"
+                              >
+                                {GIB_GIDER_KATEGORILERI.map((kat) => (
+                                  <option key={kat} value={kat}>
+                                    {kat}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                          )}
+                        </div>
+                      )}
                     </div>
                   );
                 })}
@@ -1376,23 +2163,28 @@ ALTER TABLE public.faturalar ADD COLUMN IF NOT EXISTS ubl_detay jsonb;
         {/* ALT BİLGİ & KAYDET */}
         <div className="p-4 sm:p-5 border-t border-white/[0.08] bg-black/25 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div className="text-xs text-gray-400">
-            {selectedRows.length > 0 ? (
+            {cariRowsToInsert.length > 0 || giderRowsToPost.length > 0 ? (
               <span>
-                <strong className="text-white">{selectedRows.length} fatura</strong> işlenecek
+                {cariRowsToInsert.length > 0 && (
+                  <>
+                    <strong className="text-white">{cariRowsToInsert.length} fatura</strong> cariye işlenecek
+                  </>
+                )}
+                {cariRowsToInsert.length > 0 && giderRowsToPost.length > 0 && ' • '}
+                {giderRowsToPost.length > 0 && (
+                  <strong className="text-orange-300">
+                    {giderRowsToPost.length} fatura kasaya gider işlenecek
+                  </strong>
+                )}
                 {approvedNewCariCount > 0 && (
                   <>
-                    {' '}
-                    •{' '}
-                    <strong className="text-emerald-300">
-                      {approvedNewCariCount} onaylı yeni cari
-                    </strong>{' '}
-                    açılacak
+                    {' • '}
+                    <strong className="text-emerald-300">{approvedNewCariCount} yeni cari</strong> açılacak
                   </>
                 )}
                 {unapprovedSelectedMissingKeys.length > 0 && (
                   <>
-                    {' '}
-                    •{' '}
+                    {' • '}
                     <strong className="text-amber-300">
                       {unapprovedSelectedMissingKeys.length} yeni cari onay bekliyor
                     </strong>
@@ -1400,7 +2192,7 @@ ALTER TABLE public.faturalar ADD COLUMN IF NOT EXISTS ubl_detay jsonb;
                 )}
               </span>
             ) : (
-              <span>Yüklemek için yukarıdan .xml veya .ubl fatura seçiniz.</span>
+              <span>Yüklemek için yukarıdan .xml, .ubl, .zip seçiniz veya GİB Portaldan faturaları getiriniz.</span>
             )}
           </div>
 
@@ -1414,7 +2206,7 @@ ALTER TABLE public.faturalar ADD COLUMN IF NOT EXISTS ubl_detay jsonb;
             </button>
             <button
               type="button"
-              disabled={importing || selectedRows.length === 0}
+              disabled={confirmDisabled}
               onClick={handleImportConfirm}
               data-testid="ubl_import_confirm_button"
               className="px-5 py-2.5 rounded-xl bg-teal-400 hover:bg-teal-300 disabled:opacity-40 text-[#0a0e13] font-extrabold text-xs flex items-center gap-2 shadow-[0_0_20px_rgba(45,212,191,0.25)] transition"
@@ -1422,8 +2214,12 @@ ALTER TABLE public.faturalar ADD COLUMN IF NOT EXISTS ubl_detay jsonb;
               <CheckCircle2 className="w-4 h-4" />
               <span>
                 {importing
-                  ? 'Carilere İşleniyor...'
-                  : `${selectedRows.length} Faturayı Cariye İşle`}
+                  ? 'İşleniyor...'
+                  : cariRowsToInsert.length > 0 && giderRowsToPost.length > 0
+                  ? `${cariRowsToInsert.length} Cari + ${giderRowsToPost.length} Gider İşle`
+                  : giderRowsToPost.length > 0
+                  ? `${giderRowsToPost.length} Faturayı Kasaya Gider İşle`
+                  : `${cariRowsToInsert.length} Faturayı Cariye İşle`}
               </span>
             </button>
           </div>

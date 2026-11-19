@@ -30,6 +30,7 @@ import {
   FileCheck2,
 } from 'lucide-react';
 import { SettingsModal } from '../settings/SettingsModal';
+import { isWebPlatform } from '../../lib/platform';
 import {
   dismissFridayBackupReminder,
   isFridayBackupReminderDue,
@@ -60,8 +61,22 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
   const [pendingNotificationCount, setPendingNotificationCount] = useState(0);
   const [pendingGunSonuCount, setPendingGunSonuCount] = useState(0);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [settingsInitialTab, setSettingsInitialTab] = useState<'firma' | 'plasiyer'>('plasiyer');
+  const [settingsInitialTab, setSettingsInitialTab] = useState<'firma' | 'plasiyer' | 'pos' | 'gib'>('plasiyer');
   const [fridayReminderDue, setFridayReminderDue] = useState(false);
+
+  const canManageFirmaSettings = profile?.rol === 'ana' || isSuperAdmin;
+  const defaultSettingsTab: 'firma' | 'plasiyer' = canManageFirmaSettings ? 'plasiyer' : 'firma';
+
+  useEffect(() => {
+    const handleOpenSettings = (e: Event) => {
+      const detail = (e as CustomEvent<{ tab?: 'firma' | 'plasiyer' | 'pos' | 'gib' }>).detail;
+      const requested = detail?.tab || defaultSettingsTab;
+      setSettingsInitialTab(requested === 'gib' && !isWebPlatform() ? 'firma' : requested);
+      setIsSettingsOpen(true);
+    };
+    window.addEventListener('openSettingsModal', handleOpenSettings);
+    return () => window.removeEventListener('openSettingsModal', handleOpenSettings);
+  }, [defaultSettingsTab]);
 
   const handleConfirmSignOut = () => {
     if (window.confirm('Güvenli çıkış yapmak istediğinize emin misiniz?')) {
@@ -266,18 +281,20 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
                     <span>İşlemler</span>
                   </button>
 
-                  <button
-                    onClick={() => onSelectTab('portfoy')}
-                    data-testid="nav_portfoy_desktop"
-                    className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl text-sm font-medium transition-all ${
-                      currentTab === 'portfoy'
-                        ? 'bg-teal-400 text-[#0a0e13] font-semibold shadow-sm'
-                        : 'text-gray-300 hover:text-white hover:bg-white/[0.05]'
-                    }`}
-                  >
-                    <FileCheck2 className={`w-4 h-4 ${currentTab === 'portfoy' ? 'text-[#0a0e13]' : 'text-teal-400'}`} />
-                    <span>Çek &amp; Senet Portföyü</span>
-                  </button>
+                  {isWebPlatform() && (
+                    <button
+                      onClick={() => onSelectTab('portfoy')}
+                      data-testid="nav_portfoy_desktop"
+                      className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl text-sm font-medium transition-all ${
+                        currentTab === 'portfoy'
+                          ? 'bg-teal-400 text-[#0a0e13] font-semibold shadow-sm'
+                          : 'text-gray-300 hover:text-white hover:bg-white/[0.05]'
+                      }`}
+                    >
+                      <FileCheck2 className={`w-4 h-4 ${currentTab === 'portfoy' ? 'text-[#0a0e13]' : 'text-teal-400'}`} />
+                      <span>Çek &amp; Senet Portföyü</span>
+                    </button>
+                  )}
 
                   <button
                     onClick={() => onSelectTab('performans')}
@@ -400,21 +417,22 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
                 )}
               </button>
 
-              {/* Sadece Ana Hesap ve Süper Admin Görür */}
-              {(profile?.rol === 'ana' || isSuperAdmin) && (
+              {/* Ayarlar (Ana Hesap tüm sekmeleri, diğer roller Firma/Widget bölümünü görür) */}
+              {(canManageFirmaSettings || typeof window !== 'undefined' && typeof window.AndroidBridge?.requestPinHomeWidget === 'function') && (
                 <button
                   onClick={() => {
-                    setSettingsInitialTab('plasiyer');
+                    setSettingsInitialTab(defaultSettingsTab);
                     setIsSettingsOpen(true);
                   }}
+                  data-testid="nav_settings_desktop"
                   className="w-full flex items-center justify-between px-3 py-2 rounded-xl text-sm font-medium text-gray-300 hover:text-white hover:bg-white/[0.05] transition-all"
                 >
                   <div className="flex items-center gap-3">
                     <UserCog className="w-4 h-4 text-teal-400" />
-                    <span>Plasiyer & Ayarlar</span>
+                    <span>{canManageFirmaSettings ? 'Plasiyer & Ayarlar' : 'Ayarlar & Widget'}</span>
                   </div>
                   <span className="text-[10px] bg-teal-500/10 text-teal-400 px-1.5 py-0.5 rounded border border-teal-500/20 font-bold">
-                    Yönet
+                    {canManageFirmaSettings ? 'Yönet' : 'Aç'}
                   </span>
                 </button>
               )}
@@ -462,13 +480,13 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
                 {roleLabel}
               </div>
             </div>
-            {(profile?.rol === 'ana' || isSuperAdmin) && (
+            {(canManageFirmaSettings || (typeof window !== 'undefined' && typeof window.AndroidBridge?.requestPinHomeWidget === 'function')) && (
               <button
                 onClick={() => {
-                  setSettingsInitialTab('plasiyer');
+                  setSettingsInitialTab(defaultSettingsTab);
                   setIsSettingsOpen(true);
                 }}
-                title="Plasiyer & Firma Ayarları"
+                title="Firma ve Uygulama Ayarları"
                 className="p-1.5 text-gray-400 hover:text-teal-400 hover:bg-teal-500/10 rounded-lg transition"
               >
                 <Settings className="w-4 h-4" />
@@ -568,14 +586,15 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
               </button>
             )}
 
-            {(profile?.rol === 'ana' || isSuperAdmin) && (
+            {(canManageFirmaSettings || (typeof window !== 'undefined' && typeof window.AndroidBridge?.requestPinHomeWidget === 'function')) && (
               <button
                 type="button"
                 onClick={() => {
-                  setSettingsInitialTab('plasiyer');
+                  setSettingsInitialTab(defaultSettingsTab);
                   setIsSettingsOpen(true);
                 }}
-                title="Plasiyer ve Firma Ayarları"
+                data-testid="header_settings_button"
+                title="Ayarlar"
                 className="hidden sm:flex min-w-[44px] min-h-[44px] p-2.5 text-slate-200 hover:text-teal-400 bg-slate-800/80 active:bg-slate-700 rounded-xl items-center justify-center border border-slate-700/50 shadow-sm transition"
                 aria-label="Ayarlar"
               >
@@ -721,21 +740,23 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
                         <span>İşlemler</span>
                       </button>
 
-                      <button
-                        onClick={() => {
-                          onSelectTab('portfoy');
-                          setMobileMenuOpen(false);
-                        }}
-                        data-testid="nav_portfoy_mobile"
-                        className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium ${
-                          currentTab === 'portfoy'
-                            ? 'bg-teal-400 text-slate-950 font-bold'
-                            : 'text-gray-200 hover:bg-white/5'
-                        }`}
-                      >
-                        <FileCheck2 className={`w-4 h-4 ${currentTab === 'portfoy' ? 'text-slate-950' : 'text-teal-400'}`} />
-                        <span>Çek &amp; Senet Portföyü</span>
-                      </button>
+                      {isWebPlatform() && (
+                        <button
+                          onClick={() => {
+                            onSelectTab('portfoy');
+                            setMobileMenuOpen(false);
+                          }}
+                          data-testid="nav_portfoy_mobile"
+                          className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium ${
+                            currentTab === 'portfoy'
+                              ? 'bg-teal-400 text-slate-950 font-bold'
+                              : 'text-gray-200 hover:bg-white/5'
+                          }`}
+                        >
+                          <FileCheck2 className={`w-4 h-4 ${currentTab === 'portfoy' ? 'text-slate-950' : 'text-teal-400'}`} />
+                          <span>Çek &amp; Senet Portföyü</span>
+                        </button>
+                      )}
 
                       <button
                         onClick={() => {
@@ -840,17 +861,18 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
                     )}
                   </button>
 
-                  {(profile?.rol === 'ana' || isSuperAdmin) && (
+                  {(canManageFirmaSettings || (typeof window !== 'undefined' && typeof window.AndroidBridge?.requestPinHomeWidget === 'function')) && (
                     <button
                       onClick={() => {
-                        setSettingsInitialTab('plasiyer');
+                        setSettingsInitialTab(defaultSettingsTab);
                         setIsSettingsOpen(true);
                         setMobileMenuOpen(false);
                       }}
+                      data-testid="nav_settings_mobile"
                       className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-teal-300 hover:bg-teal-500/10"
                     >
                       <UserCog className="w-4 h-4 text-teal-400" />
-                      <span>Plasiyer & Ayarlar</span>
+                      <span>{canManageFirmaSettings ? 'Plasiyer & Ayarlar' : 'Ayarlar & Widget'}</span>
                     </button>
                   )}
 

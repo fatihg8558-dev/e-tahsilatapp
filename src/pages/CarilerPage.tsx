@@ -781,42 +781,44 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
         </div>
 
         <div className="flex flex-wrap items-center gap-2 self-start sm:self-auto">
-          <button
-            type="button"
-            onClick={() => {
-              if (!entitlements.canUseUblImport) {
-                onNavigate('paketler');
-                return;
+          {isWebPlatform() && (
+            <button
+              type="button"
+              onClick={() => {
+                if (!entitlements.canUseUblImport) {
+                  onNavigate('paketler');
+                  return;
+                }
+                setIsUblModalOpen(true);
+              }}
+              data-testid="open_ubl_import_button"
+              title={
+                entitlements.canUseUblImport
+                  ? 'UBL / XML / ZIP Fatura Yükle & GİB Portaldan Çek'
+                  : 'Kurumsal (Pro) pakette açılır — yükseltmek için tıklayın'
               }
-              setIsUblModalOpen(true);
-            }}
-            data-testid="open_ubl_import_button"
-            title={
-              entitlements.canUseUblImport
-                ? 'UBL / XML Fatura İçe Aktar'
-                : 'Kurumsal (Pro) pakette açılır — yükseltmek için tıklayın'
-            }
-            className={`font-bold text-xs px-4 py-2.5 rounded-xl transition flex items-center gap-2 border ${
-              entitlements.canUseUblImport
-                ? 'bg-amber-400/15 hover:bg-amber-400/25 border-amber-400/35 text-amber-300'
-                : 'bg-amber-500/10 hover:bg-amber-500/20 border-amber-400/40 text-amber-200'
-            }`}
-          >
-            {entitlements.canUseUblImport ? (
-              <Upload className="w-4 h-4" />
-            ) : (
-              <Lock className="w-4 h-4 text-amber-300" />
-            )}
-            <span>UBL / XML Fatura Yükle</span>
-            {!entitlements.canUseUblImport && (
-              <span
-                data-testid="ubl_lock_badge"
-                className="px-1.5 py-0.5 rounded-md bg-amber-400/20 border border-amber-400/40 text-amber-300 text-[10px] font-extrabold"
-              >
-                Kurumsal
-              </span>
-            )}
-          </button>
+              className={`font-bold text-xs px-4 py-2.5 rounded-xl transition flex items-center gap-2 border ${
+                entitlements.canUseUblImport
+                  ? 'bg-amber-400/15 hover:bg-amber-400/25 border-amber-400/35 text-amber-300'
+                  : 'bg-amber-500/10 hover:bg-amber-500/20 border-amber-400/40 text-amber-200'
+              }`}
+            >
+              {entitlements.canUseUblImport ? (
+                <Upload className="w-4 h-4" />
+              ) : (
+                <Lock className="w-4 h-4 text-amber-300" />
+              )}
+              <span>UBL / XML &amp; GİB Fatura</span>
+              {!entitlements.canUseUblImport && (
+                <span
+                  data-testid="ubl_lock_badge"
+                  className="px-1.5 py-0.5 rounded-md bg-amber-400/20 border border-amber-400/40 text-amber-300 text-[10px] font-extrabold"
+                >
+                  Kurumsal
+                </span>
+              )}
+            </button>
+          )}
 
           {isWebPlatform() && (
             <button
@@ -2064,13 +2066,15 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
         }}
       />
 
-      {/* UBL / XML FATURA YÜKLEME MODALI */}
-      <UblImportModal
-        isOpen={isUblModalOpen && entitlements.canUseUblImport}
-        onClose={() => setIsUblModalOpen(false)}
-        cariler={cariler}
-        onImported={fetchCariler}
-      />
+      {/* SADECE WEB: UBL / XML / ZIP & GİB FATURA MERKEZİ MODALI */}
+      {isWebPlatform() && (
+        <UblImportModal
+          isOpen={isUblModalOpen && entitlements.canUseUblImport}
+          onClose={() => setIsUblModalOpen(false)}
+          cariler={cariler}
+          onImported={fetchCariler}
+        />
+      )}
 
       {/* SADECE WEB: EXCEL / CSV TOPLU CARİ YÜKLEME MODALI */}
       {isWebPlatform() && (

@@ -17,6 +17,7 @@ import { MakbuzModal } from './components/makbuz/MakbuzModal';
 import { NotificationsModal } from './components/notifications/NotificationsModal';
 import { PosPaymentLinkPage } from './components/pos/PosPaymentLinkPage';
 import { parsePosPayParams, PosPayLinkParams } from './lib/posService';
+import { isWebPlatform } from './lib/platform';
 import { Islem } from './types/database';
 
 const VALID_TABS = new Set([
@@ -39,9 +40,11 @@ const isTabAuthorized = (
   tab: string,
   role: string | undefined,
   isSuperAdmin: boolean,
-  hasEditingIslem: boolean
+  hasEditingIslem: boolean,
+  isWeb: boolean = isWebPlatform()
 ): boolean => {
   if (!VALID_TABS.has(tab)) return false;
+  if (tab === 'portfoy' && !isWeb) return false;
   if (tab === 'superadmin') return isSuperAdmin;
   if (tab === 'kasa' && role === 'plasiyer') return false;
   if ((tab === 'tahsilat' || tab === 'tediye' || tab === 'islem_duzenle') && role === 'muhasebeci') {
@@ -57,7 +60,7 @@ export const App: React.FC = () => {
     if (typeof window !== 'undefined' && window.__ANDROID_PENDING_TAB__) {
       const initial = window.__ANDROID_PENDING_TAB__.trim();
       delete window.__ANDROID_PENDING_TAB__;
-      if (initial) return initial;
+      if (initial && !(initial === 'portfoy' && !isWebPlatform())) return initial;
     }
     return 'dashboard';
   });
@@ -186,7 +189,7 @@ export const App: React.FC = () => {
         delete window.__ANDROID_PENDING_TAB__;
         if (pending) {
           setEditingIslem(null);
-          setCurrentTab(pending);
+          setCurrentTab(pending === 'portfoy' && !isWebPlatform() ? 'dashboard' : pending);
         }
       }
     };
@@ -198,8 +201,9 @@ export const App: React.FC = () => {
         if (typeof window !== 'undefined') {
           delete window.__ANDROID_PENDING_TAB__;
         }
+        const cleanTab = tab.trim();
         setEditingIslem(null);
-        setCurrentTab(tab.trim());
+        setCurrentTab(cleanTab === 'portfoy' && !isWebPlatform() ? 'dashboard' : cleanTab);
       }
     };
     window.addEventListener('androidOpenTab', handleAndroidOpenTab);
@@ -405,7 +409,7 @@ export const App: React.FC = () => {
           />
         )}
 
-        {effectiveTab === 'portfoy' && (
+        {effectiveTab === 'portfoy' && isWebPlatform() && (
           <CekSenetPortfoyPage
             onOpenMakbuz={(islem) => setActiveMakbuz(islem)}
             onNavigate={handleNavigate}
