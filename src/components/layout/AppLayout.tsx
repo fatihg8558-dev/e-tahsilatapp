@@ -26,12 +26,15 @@ import {
   FileJson,
   CalendarClock,
   Download,
+  ClipboardCheck,
+  FileCheck2,
 } from 'lucide-react';
 import { SettingsModal } from '../settings/SettingsModal';
 import {
   dismissFridayBackupReminder,
   isFridayBackupReminderDue,
 } from '../../lib/backupService';
+import { fetchPendingGunSonuApprovalCount } from '../../lib/gunSonuApprovalService';
 
 interface AppLayoutProps {
   workspaceMode?: 'tahsilat' | 'kasa';
@@ -55,6 +58,7 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
   const { user, profile, firma, isSuperAdmin, signOut } = useAuth();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [pendingNotificationCount, setPendingNotificationCount] = useState(0);
+  const [pendingGunSonuCount, setPendingGunSonuCount] = useState(0);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [settingsInitialTab, setSettingsInitialTab] = useState<'firma' | 'plasiyer'>('plasiyer');
   const [fridayReminderDue, setFridayReminderDue] = useState(false);
@@ -88,7 +92,7 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
     }
   }, [firma?.id, profile?.firma_id, profile?.id, user?.id, notificationRefreshKey, currentTab]);
 
-  // Bekleyen bildirim sayısını dinle
+  // Bekleyen bildirim ve gün sonu onay sayısını dinle
   useEffect(() => {
     if (!firma?.id) return;
 
@@ -100,12 +104,19 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
         .eq('durum', 'bekliyor');
 
       setPendingNotificationCount(count || 0);
+
+      if (profile?.rol !== 'plasiyer') {
+        const gsCount = await fetchPendingGunSonuApprovalCount(firma.id);
+        setPendingGunSonuCount(gsCount);
+      } else {
+        setPendingGunSonuCount(0);
+      }
     };
 
     fetchPendingNotifications();
     const interval = setInterval(fetchPendingNotifications, 30000);
     return () => clearInterval(interval);
-  }, [firma?.id, notificationRefreshKey]);
+  }, [firma?.id, profile?.rol, notificationRefreshKey]);
 
   const roleLabel = {
     ana: 'Ana Hesap',
@@ -121,8 +132,10 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
     tediye: 'Yeni Tediye Makbuzu',
     islem_duzenle: 'Makbuz Güncelle',
     islemler: 'İşlem Listesi',
+    portfoy: 'Çek & Senet Portföyü',
     kasa: 'Kasa & Gelir-Gider',
     performans: 'Plasiyer Performans Raporu',
+    gun_sonu: 'Plasiyer Gün Sonu',
     yedekleme: 'Yedekleme & Geri Yükleme',
     paketler: 'Abonelik & Paketler',
     superadmin: 'Süper Admin Paneli',
@@ -254,6 +267,19 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
                   </button>
 
                   <button
+                    onClick={() => onSelectTab('portfoy')}
+                    data-testid="nav_portfoy_desktop"
+                    className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl text-sm font-medium transition-all ${
+                      currentTab === 'portfoy'
+                        ? 'bg-teal-400 text-[#0a0e13] font-semibold shadow-sm'
+                        : 'text-gray-300 hover:text-white hover:bg-white/[0.05]'
+                    }`}
+                  >
+                    <FileCheck2 className={`w-4 h-4 ${currentTab === 'portfoy' ? 'text-[#0a0e13]' : 'text-teal-400'}`} />
+                    <span>Çek &amp; Senet Portföyü</span>
+                  </button>
+
+                  <button
                     onClick={() => onSelectTab('performans')}
                     className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl text-sm font-medium transition-all ${
                       currentTab === 'performans'
@@ -263,6 +289,33 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
                   >
                     <TrendingUp className="w-4 h-4 text-emerald-400" />
                     <span>{profile?.rol === 'plasiyer' ? 'Performans Raporum' : 'Plasiyer Raporları'}</span>
+                  </button>
+
+                  <button
+                    onClick={() => onSelectTab('gun_sonu')}
+                    data-testid="nav_gun_sonu_desktop"
+                    className={`w-full flex items-center justify-between px-3 py-2 rounded-xl text-sm font-medium transition-all ${
+                      currentTab === 'gun_sonu'
+                        ? 'bg-amber-400 text-[#0a0e13] font-semibold shadow-sm'
+                        : 'text-amber-300/90 hover:text-amber-200 hover:bg-amber-500/10'
+                    }`}
+                  >
+                    <span className="flex items-center gap-3">
+                      <ClipboardCheck className={`w-4 h-4 ${currentTab === 'gun_sonu' ? 'text-[#0a0e13]' : 'text-amber-400'}`} />
+                      <span>Plasiyer Gün Sonu</span>
+                    </span>
+                    {pendingGunSonuCount > 0 && profile?.rol !== 'plasiyer' && (
+                      <span
+                        data-testid="nav_gun_sonu_badge_desktop"
+                        className={`text-[10px] px-1.5 py-0.5 rounded-full font-black ${
+                          currentTab === 'gun_sonu'
+                            ? 'bg-slate-950/20 text-slate-950'
+                            : 'bg-amber-400 text-slate-950'
+                        }`}
+                      >
+                        {pendingGunSonuCount}
+                      </span>
+                    )}
                   </button>
 
                   {!onChangeWorkspaceMode && profile?.rol !== 'plasiyer' && (
@@ -670,6 +723,22 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
 
                       <button
                         onClick={() => {
+                          onSelectTab('portfoy');
+                          setMobileMenuOpen(false);
+                        }}
+                        data-testid="nav_portfoy_mobile"
+                        className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium ${
+                          currentTab === 'portfoy'
+                            ? 'bg-teal-400 text-slate-950 font-bold'
+                            : 'text-gray-200 hover:bg-white/5'
+                        }`}
+                      >
+                        <FileCheck2 className={`w-4 h-4 ${currentTab === 'portfoy' ? 'text-slate-950' : 'text-teal-400'}`} />
+                        <span>Çek &amp; Senet Portföyü</span>
+                      </button>
+
+                      <button
+                        onClick={() => {
                           onSelectTab('performans');
                           setMobileMenuOpen(false);
                         }}
@@ -677,6 +746,36 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
                       >
                         <TrendingUp className="w-4 h-4 text-emerald-400" />
                         <span>{profile?.rol === 'plasiyer' ? 'Performans Raporum' : 'Plasiyer Raporları'}</span>
+                      </button>
+
+                      <button
+                        onClick={() => {
+                          onSelectTab('gun_sonu');
+                          setMobileMenuOpen(false);
+                        }}
+                        data-testid="nav_gun_sonu_mobile"
+                        className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-sm font-medium ${
+                          currentTab === 'gun_sonu'
+                            ? 'bg-amber-400 text-slate-950 font-bold'
+                            : 'text-amber-300 hover:bg-amber-500/10'
+                        }`}
+                      >
+                        <span className="flex items-center gap-3">
+                          <ClipboardCheck className={`w-4 h-4 ${currentTab === 'gun_sonu' ? 'text-slate-950' : 'text-amber-400'}`} />
+                          <span>Plasiyer Gün Sonu</span>
+                        </span>
+                        {pendingGunSonuCount > 0 && profile?.rol !== 'plasiyer' && (
+                          <span
+                            data-testid="nav_gun_sonu_badge_mobile"
+                            className={`text-[10px] px-1.5 py-0.5 rounded-full font-black ${
+                              currentTab === 'gun_sonu'
+                                ? 'bg-slate-950/20 text-slate-950'
+                                : 'bg-amber-400 text-slate-950'
+                            }`}
+                          >
+                            {pendingGunSonuCount}
+                          </span>
+                        )}
                       </button>
 
                       {!onChangeWorkspaceMode && profile?.rol !== 'plasiyer' && (

@@ -1,5 +1,90 @@
 import { supabase, handleSupabaseError } from './supabase';
 import { Islem, IslemDurum, IslemTip } from '../types/database';
+import { getTodayIsoLocal, normalizeDateKey } from './formatters';
+import { resolvePortfoyDurumu } from './portfoyService';
+
+export type DateRangeFilter = 'today' | 'week' | 'month' | 'year' | 'all' | 'custom';
+
+export function computeDateRangeKeys(
+  filter: DateRangeFilter,
+  customStart?: string,
+  customEnd?: string,
+  now: Date = new Date()
+): { startKey: string | null; endKey: string | null } {
+  const todayKey = getTodayIsoLocal(now);
+
+  if (filter === 'today') {
+    return { startKey: todayKey, endKey: todayKey };
+  }
+  if (filter === 'week') {
+    const dayOfWeek = now.getDay() || 7; // 1 = Pazartesi, 7 = Pazar
+    const start = new Date(now.getFullYear(), now.getMonth(), now.getDate() - dayOfWeek + 1);
+    return { startKey: getTodayIsoLocal(start), endKey: todayKey };
+  }
+  if (filter === 'month') {
+    const start = new Date(now.getFullYear(), now.getMonth(), 1);
+    const end = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+    return { startKey: getTodayIsoLocal(start), endKey: getTodayIsoLocal(end) };
+  }
+  if (filter === 'year') {
+    return { startKey: `${now.getFullYear()}-01-01`, endKey: `${now.getFullYear()}-12-31` };
+  }
+  if (filter === 'custom') {
+    return {
+      startKey: customStart ? normalizeDateKey(customStart) || null : null,
+      endKey: customEnd ? normalizeDateKey(customEnd) || null : null,
+    };
+  }
+  return { startKey: null, endKey: null };
+}
+
+export function isDateKeyInRange(
+  tarih: string | null | undefined,
+  startKey: string | null,
+  endKey: string | null
+): boolean {
+  if (!startKey && !endKey) return true;
+  const itemKey = normalizeDateKey(tarih);
+  if (!itemKey) return false;
+  if (startKey && itemKey < startKey) return false;
+  if (endKey && itemKey > endKey) return false;
+  return true;
+}
+
+export function computeDashboardReceiptTotals(
+  rows: Array<{
+    tip: string;
+    tutar: number | string | null | undefined;
+    tarih?: string | null;
+    iptal?: boolean | null;
+  }>,
+  todayStr: string = getTodayIsoLocal()
+): {
+  toplamTahsilat: number;
+  toplamTediye: number;
+  bugunTahsilat: number;
+  bugunTediye: number;
+} {
+  let toplamTahsilat = 0;
+  let toplamTediye = 0;
+  let bugunTahsilat = 0;
+  let bugunTediye = 0;
+
+  for (const islem of rows) {
+    if (islem.iptal) continue;
+    const tutar = Number(islem.tutar) || 0;
+    if (islem.tip === 'tahsilat') toplamTahsilat += tutar;
+    else if (islem.tip === 'tediye') toplamTediye += tutar;
+
+    const itemDateKey = normalizeDateKey(islem.tarih);
+    if (itemDateKey && itemDateKey === todayStr) {
+      if (islem.tip === 'tahsilat') bugunTahsilat += tutar;
+      else if (islem.tip === 'tediye') bugunTediye += tutar;
+    }
+  }
+
+  return { toplamTahsilat, toplamTediye, bugunTahsilat, bugunTediye };
+}
 
 export interface VadeItem {
   islem: Islem;
@@ -110,8 +195,17 @@ export async function fetchDashboardReceiptsSnapshot(params: {
       query = query.eq('yapan_user_id', params.userId);
     }
 
-    return query.limit(50);
+    return query.limit(8);
   };
+
+  let totalsQuery = supabase
+    .from('islemler')
+    .select('id, tip, tutar, tarih, iptal')
+    .eq('firma_id', params.firmaId);
+
+  if (params.rol === 'plasiyer' && params.userId) {
+    totalsQuery = totalsQuery.eq('yapan_user_id', params.userId);
+  }
 
   let { data: islemlerData, error: islemlerErr } = await buildRecentQuery(FULL_SELECT);
   if (islemlerErr) {
@@ -132,27 +226,21 @@ export async function fetchDashboardReceiptsSnapshot(params: {
     }
   }
 
-  const typedIslemler = ((islemlerData as unknown) as Islem[]) || [];
-  const sonIslemler = typedIslemler.slice(0, 8);
+  const sonIslemler = ((islemlerData as unknown) as Islem[]) || [];
 
-  const todayStr = new Date().toISOString().split('T')[0];
-  let toplamTahsilat = 0;
-  let toplamTediye = 0;
-  let bugunTahsilat = 0;
-  let bugunTediye = 0;
+  const { data: allTotalsRows, error: totalsErr } = await totalsQuery;
+  const rowsForTotals =
+    !totalsErr && allTotalsRows
+      ? (allTotalsRows as Array<{
+          tip: string;
+          tutar: number | string;
+          tarih?: string | null;
+          iptal?: boolean | null;
+        }>)
+      : sonIslemler;
 
-  typedIslemler.forEach((islem) => {
-    if (!islem.iptal) {
-      const tutar = Number(islem.tutar) || 0;
-      if (islem.tip === 'tahsilat') toplamTahsilat += tutar;
-      else if (islem.tip === 'tediye') toplamTediye += tutar;
-
-      if (islem.tarih && islem.tarih.startsWith(todayStr)) {
-        if (islem.tip === 'tahsilat') bugunTahsilat += tutar;
-        else if (islem.tip === 'tediye') bugunTediye += tutar;
-      }
-    }
-  });
+  const { toplamTahsilat, toplamTediye, bugunTahsilat, bugunTediye } =
+    computeDashboardReceiptTotals(rowsForTotals, getTodayIsoLocal());
 
   // 2. Vadesi Yaklaşan Çek ve Senetler
   const { data: cekSenetData, error: cekSenetErr } = await supabase
@@ -170,6 +258,14 @@ export async function fetchDashboardReceiptsSnapshot(params: {
     now.setHours(0, 0, 0, 0);
 
     ((cekSenetData as unknown) as Islem[]).forEach((item) => {
+      const portfoyDurum = resolvePortfoyDurumu(item);
+      if (
+        portfoyDurum === 'tahsil_edildi' ||
+        portfoyDurum === 'ciro_edildi' ||
+        portfoyDurum === 'karsiliksiz'
+      ) {
+        return;
+      }
       const aciklamaUpper = (item.aciklama || '').toUpperCase();
       if (
         aciklamaUpper.includes('CİRO') ||

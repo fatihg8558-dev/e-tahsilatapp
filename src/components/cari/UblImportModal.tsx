@@ -32,6 +32,10 @@ import {
   syncUblDetayToSupabase,
 } from '../../lib/ublInvoiceStore';
 import { UblInvoicePreviewModal } from './UblInvoicePreviewModal';
+import {
+  evaluateCariRiskStatus,
+  getEffectiveCariRiskLimit,
+} from '../../lib/cariRiskAndMutabakat';
 
 interface UblImportModalProps {
   isOpen: boolean;
@@ -1336,6 +1340,29 @@ ALTER TABLE public.faturalar ADD COLUMN IF NOT EXISTS ubl_detay jsonb;
                               {formatCurrency(row.tutarTL)}
                             </span>
                           </div>
+                          {matchedExisting && row.yon === 'satis' && (() => {
+                            const limit = getEffectiveCariRiskLimit(matchedExisting, firma?.id);
+                            if (!limit) return null;
+                            const risk = evaluateCariRiskStatus({
+                              currentBakiye: Number(matchedExisting.bakiye) || 0,
+                              pendingDelta: row.tutarTL,
+                              riskLimit: limit,
+                            });
+                            if (risk.level !== 'warning' && risk.level !== 'exceeded') return null;
+                            return (
+                              <div
+                                data-testid={`ubl_risk_warning_${row.id}`}
+                                className={`text-[10px] font-bold px-2 py-1 rounded-lg border text-right ${
+                                  risk.level === 'exceeded'
+                                    ? 'bg-rose-500/15 border-rose-500/30 text-rose-300'
+                                    : 'bg-amber-500/15 border-amber-500/30 text-amber-300'
+                                }`}
+                              >
+                                Risk Limiti %{risk.percent} ({formatCurrency(risk.projectedBakiye)} /{' '}
+                                {formatCurrency(risk.riskLimit)})
+                              </div>
+                            );
+                          })()}
                         </div>
                       </div>
                     </div>

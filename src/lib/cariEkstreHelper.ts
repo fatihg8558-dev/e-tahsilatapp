@@ -1,5 +1,6 @@
 import { Fatura, Islem } from '../types/database';
 import { formatCurrency, formatDate } from './formatters';
+import { stripInternalSystemTags } from './noteTagHelper';
 
 export type RawEkstreMovement = Islem | (Fatura & { tip?: string; iptal?: boolean; aciklama?: string | null; belge_no?: string | null; makbuz_no?: string | null; profiles?: { ad_soyad: string } | null; created_at?: string | null });
 
@@ -251,7 +252,7 @@ export function buildCariEkstre(params: {
     const belgeNo = String(rec.makbuz_no || rec.fatura_no || rec.belge_no || '-');
     const profilesObj = rec.profiles as { ad_soyad?: string } | null | undefined;
     const yapan = profilesObj?.ad_soyad || (item.isPayment ? 'Yönetici' : '-');
-    const aciklama = String(rec.aciklama || '-');
+    const aciklama = stripInternalSystemTags(String(rec.aciklama || '')) || '-';
 
     rows.push({
       key: `${String(rec.id || idx)}-${item.dateKey}-${idx}`,

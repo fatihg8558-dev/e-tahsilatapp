@@ -117,6 +117,73 @@ const syncCariBalancesAfterRemoval = async (
   }
 };
 
+export function computeReceiptInsertBalanceUpdate(params: {
+  beforeVal: number;
+  afterVal: number;
+  tutar: number;
+  tip: 'tahsilat' | 'tediye';
+}): { shouldUpdateClient: boolean; nextBakiye: number } {
+  const { beforeVal, afterVal, tutar, tip } = params;
+  const cleanTutar = Math.round((Number(tutar) || 0) * 100) / 100;
+  if (cleanTutar <= 0) {
+    return { shouldUpdateClient: false, nextBakiye: afterVal };
+  }
+
+  // Tahsilat cari bakiyesini azaltır (-tutar); Tediye cari bakiyesini artırır (+tutar).
+  const expectedDelta = tip === 'tahsilat' ? -cleanTutar : cleanTutar;
+  const triggerDidNotChangeBalance = Math.abs(afterVal - beforeVal) < 0.005;
+
+  if (!triggerDidNotChangeBalance) {
+    return { shouldUpdateClient: false, nextBakiye: afterVal };
+  }
+
+  const nextBakiye = Math.round((beforeVal + expectedDelta) * 100) / 100;
+  return {
+    shouldUpdateClient: true,
+    nextBakiye: Object.is(nextBakiye, -0) ? 0 : nextBakiye,
+  };
+}
+
+export async function fetchCariBalanceSnapshot(cariId: string): Promise<number | null> {
+  if (!cariId) return null;
+  const { data } = await supabase
+    .from('cariler')
+    .select('bakiye')
+    .eq('id', cariId)
+    .maybeSingle();
+  if (!data || data.bakiye === undefined || data.bakiye === null) return null;
+  return Number(data.bakiye) || 0;
+}
+
+export async function syncCariBalanceAfterInsertIfTriggerMissing(params: {
+  firmaId: string;
+  cariId: string;
+  tip: 'tahsilat' | 'tediye';
+  tutar: number;
+  beforeVal: number | null;
+}): Promise<void> {
+  const { firmaId, cariId, tip, tutar, beforeVal } = params;
+  if (beforeVal === null || !cariId || !firmaId) return;
+
+  const afterVal = await fetchCariBalanceSnapshot(cariId);
+  if (afterVal === null) return;
+
+  const { shouldUpdateClient, nextBakiye } = computeReceiptInsertBalanceUpdate({
+    beforeVal,
+    afterVal,
+    tutar,
+    tip,
+  });
+
+  if (shouldUpdateClient) {
+    await supabase
+      .from('cariler')
+      .update({ bakiye: nextBakiye })
+      .eq('id', cariId)
+      .eq('firma_id', firmaId);
+  }
+}
+
 export interface DeleteReceiptResult {
   deletedCount: number;
   isRlsBlocked?: boolean;

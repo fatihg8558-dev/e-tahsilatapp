@@ -27,6 +27,12 @@ import {
   Calendar,
   Eye,
   RefreshCw,
+  MessageCircle,
+  ShieldAlert,
+  Scale,
+  Database,
+  Copy,
+  Check,
 } from 'lucide-react';
 import { exportToExcel, printPdfReport } from '../lib/exportService';
 import {
@@ -52,6 +58,19 @@ import {
   saveUblInvoiceSnapshotsAsync,
   syncUblDetayToSupabase,
 } from '../lib/ublInvoiceStore';
+import {
+  auditAllCarilerBalances,
+  CARI_RISK_SETUP_SQL,
+  CariBalanceVerification,
+  computeCariBalanceVerification,
+  evaluateCariRiskStatus,
+  getEffectiveCariRiskLimit,
+  isMissingRiskLimitColumnError,
+  setLocalCariRiskLimit,
+  syncCariBalanceToCalculated,
+} from '../lib/cariRiskAndMutabakat';
+import { buildCariBorcHatirlatmaMesaji } from '../lib/whatsappTemplates';
+import { WhatsAppReminderModal } from '../components/common/WhatsAppReminderModal';
 
 interface CarilerPageProps {
   onNavigate: (tab: string, state?: unknown) => void;
@@ -104,7 +123,22 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
   const [formTelefon, setFormTelefon] = useState('');
   const [formEmail, setFormEmail] = useState('');
   const [formTur, setFormTur] = useState<CariTur>('alici');
+  const [formRiskLimiti, setFormRiskLimiti] = useState('');
   const [formLoading, setFormLoading] = useState(false);
+
+  // Risk Limiti & Mutabakat & WhatsApp State
+  const [showRiskSqlBanner, setShowRiskSqlBanner] = useState(false);
+  const [copiedRiskSql, setCopiedRiskSql] = useState(false);
+  const [waCariTarget, setWaCariTarget] = useState<{
+    cari: Cari;
+    defaultMessage: string;
+  } | null>(null);
+  const [isAuditModalOpen, setIsAuditModalOpen] = useState(false);
+  const [auditLoading, setAuditLoading] = useState(false);
+  const [auditResults, setAuditResults] = useState<CariBalanceVerification[]>([]);
+  const [syncingAuditCariId, setSyncingAuditCariId] = useState<string | null>(null);
+  const [syncingDetailBalance, setSyncingDetailBalance] = useState(false);
+  const [detailVerifyFeedback, setDetailVerifyFeedback] = useState<string | null>(null);
 
   // Delete State
   const [cariToDelete, setCariToDelete] = useState<Cari | null>(null);
@@ -147,6 +181,7 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
     setFormTelefon('');
     setFormEmail('');
     setFormTur('alici');
+    setFormRiskLimiti('');
     setIsModalOpen(true);
   };
 
@@ -157,7 +192,16 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
     setFormTelefon(cari.telefon || '');
     setFormEmail(cari.email || '');
     setFormTur(cari.tur);
+    const existingLimit = getEffectiveCariRiskLimit(cari, effectiveFirmaId);
+    setFormRiskLimiti(existingLimit ? String(existingLimit) : '');
     setIsModalOpen(true);
+  };
+
+  const parseRiskLimitInput = (raw: string): number | null => {
+    const cleaned = raw.trim().replace(/\./g, '').replace(',', '.');
+    if (!cleaned) return null;
+    const n = Number(cleaned);
+    return Number.isFinite(n) && n > 0 ? Math.round(n * 100) / 100 : null;
   };
 
   const handleSaveCari = async (e: React.FormEvent) => {
@@ -168,40 +212,75 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
       return;
     }
 
+    const parsedRisk = parseRiskLimitInput(formRiskLimiti);
     setFormLoading(true);
     setError(null);
 
     try {
       if (editingCari) {
         // Düzenle (bakiye güncellenmez!)
+        const basePatch = {
+          unvan: formUnvan.trim(),
+          vergi_tc_no: formVergiTcNo.trim() || null,
+          telefon: formTelefon.trim() || null,
+          email: formEmail.trim() || null,
+          tur: formTur,
+        };
         const { error: updateErr } = await supabase
           .from('cariler')
           .update({
-            unvan: formUnvan.trim(),
-            vergi_tc_no: formVergiTcNo.trim() || null,
-            telefon: formTelefon.trim() || null,
-            email: formEmail.trim() || null,
-            tur: formTur,
+            ...basePatch,
+            risk_limiti: parsedRisk,
           })
           .eq('id', editingCari.id)
           .eq('firma_id', effectiveFirmaId);
 
-        if (updateErr) throw updateErr;
+        if (updateErr) {
+          if (!isMissingRiskLimitColumnError(updateErr)) throw updateErr;
+          const { error: fbErr } = await supabase
+            .from('cariler')
+            .update(basePatch)
+            .eq('id', editingCari.id)
+            .eq('firma_id', effectiveFirmaId);
+          if (fbErr) throw fbErr;
+          if (parsedRisk !== null) setShowRiskSqlBanner(true);
+        }
+        setLocalCariRiskLimit(effectiveFirmaId, editingCari.id, parsedRisk);
       } else {
         // Ekle (bakiye 0 başlar, trigger yönetir)
-        const { error: insertErr } = await supabase
+        const baseInsert = {
+          firma_id: effectiveFirmaId,
+          unvan: formUnvan.trim(),
+          vergi_tc_no: formVergiTcNo.trim() || null,
+          telefon: formTelefon.trim() || null,
+          email: formEmail.trim() || null,
+          tur: formTur,
+          bakiye: 0,
+        };
+        const { data: insertedRow, error: insertErr } = await supabase
           .from('cariler')
           .insert({
-            firma_id: effectiveFirmaId,
-            unvan: formUnvan.trim(),
-            vergi_tc_no: formVergiTcNo.trim() || null,
-            telefon: formTelefon.trim() || null,
-            email: formEmail.trim() || null,
-            tur: formTur,
-            bakiye: 0,
-          });
+            ...baseInsert,
+            risk_limiti: parsedRisk,
+          })
+          .select('id')
+          .single();
 
-        if (insertErr) throw insertErr;
+        let createdId = insertedRow?.id ? String(insertedRow.id) : '';
+        if (insertErr) {
+          if (!isMissingRiskLimitColumnError(insertErr)) throw insertErr;
+          const { data: fbRow, error: fbErr } = await supabase
+            .from('cariler')
+            .insert(baseInsert)
+            .select('id')
+            .single();
+          if (fbErr) throw fbErr;
+          if (fbRow?.id) createdId = String(fbRow.id);
+          if (parsedRisk !== null) setShowRiskSqlBanner(true);
+        }
+        if (createdId) {
+          setLocalCariRiskLimit(effectiveFirmaId, createdId, parsedRisk);
+        }
       }
 
       setIsModalOpen(false);
@@ -213,6 +292,98 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
     }
   };
 
+  const handleOpenWhatsAppForCari = (cari: Cari) => {
+    const msg = buildCariBorcHatirlatmaMesaji({
+      firmaUnvan: firma?.unvan,
+      cariUnvan: cari.unvan,
+      bakiye: Number(cari.bakiye) || 0,
+    });
+    setWaCariTarget({ cari, defaultMessage: msg });
+  };
+
+  const handleRunFirmBalanceAudit = async () => {
+    if (!effectiveFirmaId) return;
+    setIsAuditModalOpen(true);
+    setAuditLoading(true);
+    try {
+      const results = await auditAllCarilerBalances({
+        firmaId: effectiveFirmaId,
+        cariler,
+      });
+      setAuditResults(results);
+    } finally {
+      setAuditLoading(false);
+    }
+  };
+
+  const handleSyncAuditRow = async (row: CariBalanceVerification) => {
+    if (!effectiveFirmaId) return;
+    setSyncingAuditCariId(row.cariId);
+    try {
+      const { error: syncErr } = await syncCariBalanceToCalculated({
+        firmaId: effectiveFirmaId,
+        cariId: row.cariId,
+        calculatedBakiye: row.calculatedBakiye,
+      });
+      if (syncErr) {
+        setError(syncErr);
+        return;
+      }
+      setAuditResults((prev) =>
+        prev.map((item) =>
+          item.cariId === row.cariId
+            ? {
+                ...item,
+                recordedBakiye: item.calculatedBakiye,
+                diff: 0,
+                hasDiscrepancy: false,
+              }
+            : item
+        )
+      );
+      await fetchCariler();
+    } finally {
+      setSyncingAuditCariId(null);
+    }
+  };
+
+  const handleSyncAllDiscrepancies = async () => {
+    if (!effectiveFirmaId) return;
+    const mismatched = auditResults.filter((r) => r.hasDiscrepancy);
+    if (mismatched.length === 0) return;
+    setAuditLoading(true);
+    try {
+      for (const item of mismatched) {
+        await syncCariBalanceToCalculated({
+          firmaId: effectiveFirmaId,
+          cariId: item.cariId,
+          calculatedBakiye: item.calculatedBakiye,
+        });
+      }
+      setAuditResults((prev) =>
+        prev.map((item) => ({
+          ...item,
+          recordedBakiye: item.calculatedBakiye,
+          diff: 0,
+          hasDiscrepancy: false,
+        }))
+      );
+      await fetchCariler();
+    } finally {
+      setAuditLoading(false);
+    }
+  };
+
+  const handleCopyRiskSql = async () => {
+    try {
+      await navigator.clipboard.writeText(CARI_RISK_SETUP_SQL);
+      setCopiedRiskSql(true);
+      setTimeout(() => setCopiedRiskSql(false), 2000);
+    } catch {
+      // ignore
+    }
+  };
+
   // Cari Detay ve Hareketleri Yükle
   const openDetail = async (cari: Cari) => {
     const isDifferentCari = selectedCariForDetail?.id !== cari.id;
@@ -221,6 +392,7 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
       setDetailStartDate('');
       setDetailEndDate('');
       setBulkXmlFeedback(null);
+      setDetailVerifyFeedback(null);
     }
     setLoadingDetail(true);
 
@@ -446,6 +618,46 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
     [detailMovements, detailStartDate, detailEndDate, isDateRangeInvalid, selectedCariForDetail?.bakiye]
   );
 
+  const detailBalanceVerification = useMemo(() => {
+    if (!selectedCariForDetail || loadingDetail) return null;
+    const islemler: Array<Pick<Islem, 'cari_id' | 'tip' | 'tutar' | 'iptal'>> = [];
+    const faturalar: Array<Pick<Fatura, 'cari_id' | 'yon' | 'tutar'>> = [];
+    for (const m of detailMovements) {
+      if ('fatura_no' in m) {
+        faturalar.push(m as Fatura);
+      } else {
+        islemler.push(m as Islem);
+      }
+    }
+    return computeCariBalanceVerification({
+      cari: selectedCariForDetail,
+      islemler,
+      faturalar,
+    });
+  }, [selectedCariForDetail, detailMovements, loadingDetail]);
+
+  const handleSyncDetailBalance = async () => {
+    if (!effectiveFirmaId || !selectedCariForDetail || !detailBalanceVerification) return;
+    setSyncingDetailBalance(true);
+    setDetailVerifyFeedback(null);
+    try {
+      const { error: syncErr } = await syncCariBalanceToCalculated({
+        firmaId: effectiveFirmaId,
+        cariId: selectedCariForDetail.id,
+        calculatedBakiye: detailBalanceVerification.calculatedBakiye,
+      });
+      if (syncErr) {
+        setDetailVerifyFeedback(syncErr);
+        return;
+      }
+      setDetailVerifyFeedback('Cari bakiyesi ekstre toplamı ile eşitlendi.');
+      await fetchCariler();
+      await openDetail(selectedCariForDetail);
+    } finally {
+      setSyncingDetailBalance(false);
+    }
+  };
+
   const ekstrePeriodLabel = useMemo(() => {
     if (detailStartDate && detailEndDate) {
       return `${formatDate(detailStartDate)} - ${formatDate(detailEndDate)}`;
@@ -620,6 +832,16 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
           )}
 
           <button
+            type="button"
+            onClick={() => void handleRunFirmBalanceAudit()}
+            data-testid="cariler_audit_balances_btn"
+            className="font-bold text-xs px-4 py-2.5 rounded-xl transition flex items-center gap-2 border bg-sky-500/15 hover:bg-sky-500/25 border-sky-400/35 text-sky-300"
+          >
+            <Scale className="w-4 h-4" />
+            <span>Bakiye Doğrula &amp; Onar</span>
+          </button>
+
+          <button
             onClick={openAddModal}
             className="bg-teal-400 hover:bg-teal-300 text-[#0a0e13] font-bold text-xs px-4 py-2.5 rounded-xl transition shadow-[0_0_20px_rgba(45,212,191,0.25)] flex items-center gap-2"
           >
@@ -628,6 +850,42 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
           </button>
         </div>
       </div>
+
+      {showRiskSqlBanner && (
+        <div className="p-4 rounded-2xl bg-amber-500/10 border border-amber-500/30 space-y-2 text-xs">
+          <div className="flex items-start justify-between gap-2">
+            <div className="flex items-start gap-2">
+              <Database className="w-4 h-4 text-amber-300 shrink-0 mt-0.5" />
+              <div>
+                <div className="font-bold text-amber-200">
+                  Risk limiti kaydedildi (Cihaz içi yedek mod aktif)
+                </div>
+                <p className="text-[11px] text-amber-200/80 mt-0.5">
+                  Risk limitlerini bulutta tüm cihazlarla eşitlemek için aşağıdaki SQL&apos;i Supabase SQL Editor&apos;da bir kez çalıştırabilirsiniz.
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowRiskSqlBanner(false)}
+              className="text-amber-300 hover:text-white p-1"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+          <pre className="p-2.5 rounded-xl bg-black/50 border border-white/10 text-[10px] font-mono text-teal-300 overflow-x-auto">
+            {CARI_RISK_SETUP_SQL}
+          </pre>
+          <button
+            type="button"
+            onClick={handleCopyRiskSql}
+            className="px-3 py-1.5 rounded-lg bg-amber-400 text-slate-950 font-extrabold text-[11px] inline-flex items-center gap-1.5"
+          >
+            {copiedRiskSql ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+            <span>{copiedRiskSql ? 'SQL Kopyalandı' : 'SQL Kodunu Kopyala'}</span>
+          </button>
+        </div>
+      )}
 
       {error && (
         <div className="p-4 rounded-xl bg-red-500/10 border border-red-500/20 text-red-400 text-xs flex items-center justify-between">
@@ -717,6 +975,11 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
                 <tbody className="divide-y divide-white/[0.04]">
                   {filteredCariler.map((c) => {
                     const bakiye = Number(c.bakiye) || 0;
+                    const riskLimit = getEffectiveCariRiskLimit(c, effectiveFirmaId);
+                    const riskEval = evaluateCariRiskStatus({
+                      currentBakiye: bakiye,
+                      riskLimit,
+                    });
                     return (
                       <tr
                         key={c.id}
@@ -724,8 +987,39 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
                         onClick={() => openDetail(c)}
                       >
                         <td className="py-3.5 px-5">
-                          <div className="font-bold text-white group-hover:text-teal-300 transition">{c.unvan}</div>
+                          <div className="font-bold text-white group-hover:text-teal-300 transition flex items-center gap-2 flex-wrap">
+                            <span>{c.unvan}</span>
+                            {riskEval.hasLimit && (
+                              <span
+                                className={`px-1.5 py-0.5 rounded text-[10px] font-bold border ${
+                                  riskEval.level === 'exceeded'
+                                    ? 'bg-rose-500/15 text-rose-300 border-rose-500/30'
+                                    : riskEval.level === 'warning'
+                                    ? 'bg-amber-500/15 text-amber-300 border-amber-500/30'
+                                    : 'bg-emerald-500/10 text-emerald-300 border-emerald-500/20'
+                                }`}
+                              >
+                                Risk %{riskEval.percent}
+                              </span>
+                            )}
+                          </div>
                           {c.email && <div className="text-[11px] text-gray-500 mt-0.5">{c.email}</div>}
+                          {riskEval.hasLimit && (
+                            <div className="mt-1.5 max-w-[200px]">
+                              <div className="h-1.5 w-full rounded-full bg-white/10 overflow-hidden">
+                                <div
+                                  className={`h-full rounded-full ${
+                                    riskEval.level === 'exceeded'
+                                      ? 'bg-rose-500'
+                                      : riskEval.level === 'warning'
+                                      ? 'bg-amber-400'
+                                      : 'bg-emerald-400'
+                                  }`}
+                                  style={{ width: `${Math.min(100, riskEval.percent)}%` }}
+                                />
+                              </div>
+                            </div>
+                          )}
                         </td>
                         <td className="py-3.5 px-4">
                           <span
@@ -762,6 +1056,15 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
                         >
                           <div className="flex items-center justify-end gap-1.5">
                             <button
+                              type="button"
+                              onClick={() => handleOpenWhatsAppForCari(c)}
+                              data-testid={`cari_wa_btn_${c.id}`}
+                              title="WhatsApp Borç / Mutabakat Hatırlat"
+                              className="p-1.5 text-emerald-400 hover:text-emerald-300 hover:bg-emerald-500/15 rounded-lg transition"
+                            >
+                              <MessageCircle className="w-4 h-4" />
+                            </button>
+                            <button
                               onClick={() => openEditModal(c)}
                               title="Düzenle"
                               className="p-1.5 text-gray-400 hover:text-white hover:bg-white/5 rounded-lg transition"
@@ -788,6 +1091,11 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
             <div className="md:hidden divide-y divide-white/[0.04]">
               {filteredCariler.map((c) => {
                 const bakiye = Number(c.bakiye) || 0;
+                const riskLimit = getEffectiveCariRiskLimit(c, effectiveFirmaId);
+                const riskEval = evaluateCariRiskStatus({
+                  currentBakiye: bakiye,
+                  riskLimit,
+                });
                 return (
                   <div
                     key={c.id}
@@ -797,7 +1105,7 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
                     <div className="flex items-start justify-between gap-2 mb-2">
                       <div>
                         <div className="font-bold text-white text-sm">{c.unvan}</div>
-                        <div className="flex items-center gap-2 mt-1">
+                        <div className="flex items-center gap-2 mt-1 flex-wrap">
                           <span
                             className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
                               c.tur === 'alici'
@@ -809,6 +1117,19 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
                           </span>
                           {c.vergi_tc_no && (
                             <span className="font-mono text-[11px] text-gray-400">{c.vergi_tc_no}</span>
+                          )}
+                          {riskEval.hasLimit && (
+                            <span
+                              className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                                riskEval.level === 'exceeded'
+                                  ? 'bg-rose-500/15 text-rose-300'
+                                  : riskEval.level === 'warning'
+                                  ? 'bg-amber-500/15 text-amber-300'
+                                  : 'bg-emerald-500/15 text-emerald-300'
+                              }`}
+                            >
+                              Risk %{riskEval.percent}
+                            </span>
                           )}
                         </div>
                       </div>
@@ -843,16 +1164,24 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
 
                       <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
                         <button
-                          onClick={() => openEditModal(c)}
-                          className="p-1 text-gray-400 hover:text-white"
+                          type="button"
+                          onClick={() => handleOpenWhatsAppForCari(c)}
+                          title="WhatsApp Hatırlat"
+                          className="min-w-[36px] min-h-[36px] flex items-center justify-center rounded-lg bg-emerald-500/15 text-emerald-300"
                         >
-                          <Edit2 className="w-3.5 h-3.5" />
+                          <MessageCircle className="w-4 h-4" />
+                        </button>
+                        <button
+                          onClick={() => openEditModal(c)}
+                          className="min-w-[36px] min-h-[36px] flex items-center justify-center text-gray-400 hover:text-white"
+                        >
+                          <Edit2 className="w-4 h-4" />
                         </button>
                         <button
                           onClick={() => setCariToDelete(c)}
-                          className="p-1 text-gray-400 hover:text-red-400"
+                          className="min-w-[36px] min-h-[36px] flex items-center justify-center text-gray-400 hover:text-red-400"
                         >
-                          <Trash2 className="w-3.5 h-3.5" />
+                          <Trash2 className="w-4 h-4" />
                         </button>
                       </div>
                     </div>
@@ -933,6 +1262,111 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
               </div>
             </div>
 
+            {/* RİSK LİMİTİ VE BAKİYE DOĞRULAMA ÇUBUĞU */}
+            {(() => {
+              const limit = getEffectiveCariRiskLimit(selectedCariForDetail, effectiveFirmaId);
+              const riskEval = limit
+                ? evaluateCariRiskStatus({
+                    currentBakiye: Number(selectedCariForDetail.bakiye) || 0,
+                    riskLimit: limit,
+                  })
+                : null;
+              if (!riskEval && !detailBalanceVerification) return null;
+              return (
+                <div className="px-4 sm:px-5 py-3 border-b border-white/[0.06] bg-[#0d141c] flex flex-col lg:flex-row lg:items-center justify-between gap-3 text-xs">
+                  {riskEval && (
+                    <div className="flex-1 space-y-1.5 min-w-[220px]">
+                      <div className="flex items-center justify-between gap-2 text-[11px]">
+                        <span className="font-bold text-slate-300 flex items-center gap-1.5">
+                          <ShieldAlert
+                            className={`w-3.5 h-3.5 ${
+                              riskEval.level === 'exceeded'
+                                ? 'text-rose-400'
+                                : riskEval.level === 'warning'
+                                ? 'text-amber-400'
+                                : 'text-emerald-400'
+                            }`}
+                          />
+                          <span>Risk Limiti: {formatCurrency(riskEval.riskLimit)}</span>
+                        </span>
+                        <span
+                          className={`font-bold ${
+                            riskEval.level === 'exceeded'
+                              ? 'text-rose-300'
+                              : riskEval.level === 'warning'
+                              ? 'text-amber-300'
+                              : 'text-emerald-300'
+                          }`}
+                        >
+                          %{riskEval.percent} Kullanıldı (Kalan: {formatCurrency(riskEval.remainingLimit)})
+                        </span>
+                      </div>
+                      <div className="h-2 w-full rounded-full bg-white/10 overflow-hidden">
+                        <div
+                          className={`h-full rounded-full transition-all ${
+                            riskEval.level === 'exceeded'
+                              ? 'bg-rose-500'
+                              : riskEval.level === 'warning'
+                              ? 'bg-amber-400'
+                              : 'bg-emerald-400'
+                          }`}
+                          style={{ width: `${Math.min(100, riskEval.percent)}%` }}
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  {detailBalanceVerification && (
+                    <div
+                      data-testid="ekstre_balance_verification_strip"
+                      className={`px-3 py-2 rounded-xl border flex flex-wrap items-center justify-between gap-2.5 ${
+                        detailBalanceVerification.hasDiscrepancy
+                          ? 'bg-amber-500/10 border-amber-500/35 text-amber-200'
+                          : 'bg-emerald-500/10 border-emerald-500/25 text-emerald-300'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2 text-[11px]">
+                        {detailBalanceVerification.hasDiscrepancy ? (
+                          <AlertCircle className="w-4 h-4 text-amber-400 shrink-0" />
+                        ) : (
+                          <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                        )}
+                        {detailBalanceVerification.hasDiscrepancy ? (
+                          <span>
+                            Sapma tespit edildi: Kayıtlı{' '}
+                            <strong>{formatCurrency(detailBalanceVerification.recordedBakiye)}</strong> ·
+                            Hesaplanan{' '}
+                            <strong>{formatCurrency(detailBalanceVerification.calculatedBakiye)}</strong>
+                          </span>
+                        ) : (
+                          <span className="font-semibold">
+                            Bakiye Doğrulandı (Ekstre = {formatCurrency(detailBalanceVerification.calculatedBakiye)})
+                          </span>
+                        )}
+                      </div>
+                      {detailBalanceVerification.hasDiscrepancy && (
+                        <button
+                          type="button"
+                          disabled={syncingDetailBalance}
+                          onClick={() => void handleSyncDetailBalance()}
+                          data-testid="ekstre_sync_balance_btn"
+                          className="px-2.5 py-1 rounded-lg bg-amber-400 hover:bg-amber-300 disabled:opacity-50 text-slate-950 font-extrabold text-[11px] transition"
+                        >
+                          {syncingDetailBalance ? 'Eşitleniyor...' : 'Bakiyeyi Eşitle'}
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
+
+            {detailVerifyFeedback && (
+              <div className="mx-4 sm:mx-5 mt-3 px-3 py-2 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-xs font-semibold">
+                {detailVerifyFeedback}
+              </div>
+            )}
+
             {/* Hızlı Aksiyon & Dışa Aktarma Butonları */}
             <div className="px-4 sm:px-5 py-3 border-b border-white/[0.06] flex flex-wrap items-center justify-between gap-2.5 bg-black/10">
               <div className="flex flex-wrap items-center gap-2">
@@ -959,6 +1393,15 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
                 >
                   <ArrowUpRight className="w-3.5 h-3.5" />
                   <span>Tediye Gir</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleOpenWhatsAppForCari(selectedCariForDetail)}
+                  data-testid="ekstre_whatsapp_reminder_btn"
+                  className="px-3 py-1.5 rounded-lg bg-emerald-500/20 text-emerald-300 border border-emerald-500/35 font-bold text-xs flex items-center gap-1.5 hover:bg-emerald-500/30 transition"
+                >
+                  <MessageCircle className="w-3.5 h-3.5" />
+                  <span>WhatsApp Borç Hatırlat</span>
                 </button>
               </div>
 
@@ -1560,6 +2003,21 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
                 </div>
               </div>
 
+              <div>
+                <label className="block text-gray-300 font-semibold mb-1">
+                  Risk Limiti (₺ - Opsiyonel)
+                </label>
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  value={formRiskLimiti}
+                  onChange={(e) => setFormRiskLimiti(e.target.value)}
+                  data-testid="cari_risk_limit_input"
+                  placeholder="Örn: 100000 (Boş bırakılırsa limit uygulanmaz)"
+                  className="w-full bg-[#0a0e13] border border-white/10 rounded-xl px-3 py-2.5 text-white placeholder-gray-500 focus:outline-none focus:border-teal-400 font-mono"
+                />
+              </div>
+
               <div className="pt-2 flex items-center justify-end gap-2.5">
                 <button
                   type="button"
@@ -1658,6 +2116,126 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
           }}
         />
       )}
+
+      {/* FİRMA GENELİ BAKİYE DOĞRULAMA & ONARIM MODALI */}
+      {isAuditModalOpen && (
+        <div
+          className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4"
+          data-testid="cariler_audit_modal"
+        >
+          <div className="bg-[#111820] border border-white/15 rounded-2xl w-full max-w-3xl max-h-[88dvh] flex flex-col shadow-2xl overflow-hidden">
+            <div className="p-4 sm:p-5 border-b border-white/[0.07] flex items-center justify-between gap-3">
+              <div>
+                <div className="text-[10px] font-bold uppercase tracking-wider text-sky-400">
+                  Otomatik Mutabakat Denetimi
+                </div>
+                <h3 className="text-base font-extrabold text-white">
+                  Cari Bakiye Doğrulama &amp; Onarım
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsAuditModalOpen(false)}
+                className="p-2 text-slate-400 hover:text-white rounded-lg"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-4 sm:p-5 flex-1 overflow-y-auto space-y-3 text-xs">
+              {auditLoading ? (
+                <div className="py-10 text-center text-slate-400">
+                  Tüm fatura ve makbuz hareketleri carilerle karşılaştırılıyor...
+                </div>
+              ) : auditResults.length === 0 ? (
+                <div className="py-10 text-center text-slate-400">Denetlenecek cari bulunamadı.</div>
+              ) : (
+                <>
+                  {(() => {
+                    const mismatches = auditResults.filter((r) => r.hasDiscrepancy);
+                    return (
+                      <div
+                        className={`p-3.5 rounded-xl border flex flex-wrap items-center justify-between gap-2 ${
+                          mismatches.length > 0
+                            ? 'bg-amber-500/10 border-amber-500/30 text-amber-200'
+                            : 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
+                        }`}
+                      >
+                        <span className="font-bold">
+                          {mismatches.length > 0
+                            ? `${mismatches.length} caride kayıtlı bakiye ile hareket toplamı arasında sapma bulundu.`
+                            : `Tüm cariler (${auditResults.length}) hareket toplamlarıyla %100 uyumlu.`}
+                        </span>
+                        {mismatches.length > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => void handleSyncAllDiscrepancies()}
+                            data-testid="audit_sync_all_btn"
+                            className="px-3 py-1.5 rounded-lg bg-amber-400 hover:bg-amber-300 text-slate-950 font-extrabold text-[11px]"
+                          >
+                            Tüm Sapmaları Eşitle ({mismatches.length})
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })()}
+
+                  <div className="divide-y divide-white/[0.06] border border-white/[0.06] rounded-xl overflow-hidden">
+                    {auditResults.map((row) => (
+                      <div
+                        key={row.cariId}
+                        className="p-3 bg-black/20 flex flex-col sm:flex-row sm:items-center justify-between gap-2"
+                      >
+                        <div>
+                          <div className="font-bold text-white flex items-center gap-2">
+                            <span>{row.cariUnvan}</span>
+                            {row.hasDiscrepancy ? (
+                              <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-300">
+                                Sapma: {formatCurrency(row.diff)}
+                              </span>
+                            ) : (
+                              <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-500/15 text-emerald-300">
+                                Uyumlu
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-[11px] text-slate-400 mt-0.5 font-mono">
+                            Kayıtlı: {formatCurrency(row.recordedBakiye)} · Hesaplanan:{' '}
+                            {formatCurrency(row.calculatedBakiye)} ({row.faturaCount} Fatura,{' '}
+                            {row.islemCount} İşlem)
+                          </div>
+                        </div>
+
+                        {row.hasDiscrepancy && (
+                          <button
+                            type="button"
+                            disabled={syncingAuditCariId === row.cariId}
+                            onClick={() => void handleSyncAuditRow(row)}
+                            className="min-h-[36px] px-3 py-1.5 rounded-lg bg-teal-400 hover:bg-teal-300 disabled:opacity-50 text-slate-950 font-extrabold text-[11px] shrink-0"
+                          >
+                            {syncingAuditCariId === row.cariId ? 'Eşitleniyor...' : 'Bakiyeyi Eşitle'}
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* WHATSAPP BORÇ / MUTABAKAT HATIRLATMA MODALI */}
+      <WhatsAppReminderModal
+        isOpen={Boolean(waCariTarget)}
+        onClose={() => setWaCariTarget(null)}
+        title={`Cari Bakiye Hatırlatma: ${waCariTarget?.cari.unvan || ''}`}
+        subtitle={`Güncel Bakiye: ${formatCurrency(Number(waCariTarget?.cari.bakiye) || 0)}`}
+        initialPhone={waCariTarget?.cari.telefon}
+        defaultMessage={waCariTarget?.defaultMessage || ''}
+        badgeText="Cari Hatırlatma"
+      />
     </div>
   );
 };

@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { Islem, IslemDurum, IslemTip } from '../types/database';
-import { formatCurrency, formatDate } from '../lib/formatters';
+import { formatCurrency, formatDate, getTodayIsoLocal } from '../lib/formatters';
 import {
   ReceiptText,
   Search,
@@ -129,7 +129,7 @@ export const IslemlerPage: React.FC<IslemlerPageProps> = ({
       i.aciklama || '-',
       Number(i.tutar) || 0,
     ]);
-    const today = new Date().toISOString().split('T')[0];
+    const today = getTodayIsoLocal();
     exportToExcel(`islem_gecmisi_${today}`, headers, rows);
   };
 

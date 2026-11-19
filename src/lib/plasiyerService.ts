@@ -198,6 +198,103 @@ CREATE POLICY "faturalar_firma_delete" ON public.faturalar FOR DELETE
     firma_id = public.get_my_firma_id()
     OR public.get_my_rol() = 'superadmin'
   );
+
+-- 5. İŞLEMLER (Makbuz / Tahsilat / Tediye) RLS Politikaları
+-- Ana hesap tüm firma ve plasiyer işlemlerini görebilmeli ve gün sonu devrinde güncelleyebilmelidir
+ALTER TABLE public.islemler ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "islemler_firma_select" ON public.islemler;
+CREATE POLICY "islemler_firma_select" ON public.islemler FOR SELECT
+  USING (
+    firma_id = public.get_my_firma_id()
+    OR yapan_user_id = auth.uid()
+    OR public.get_my_rol() = 'superadmin'
+  );
+
+DROP POLICY IF EXISTS "islemler_firma_insert" ON public.islemler;
+CREATE POLICY "islemler_firma_insert" ON public.islemler FOR INSERT
+  WITH CHECK (
+    firma_id = public.get_my_firma_id()
+    OR public.get_my_rol() = 'superadmin'
+  );
+
+DROP POLICY IF EXISTS "islemler_firma_update" ON public.islemler;
+CREATE POLICY "islemler_firma_update" ON public.islemler FOR UPDATE
+  USING (
+    firma_id = public.get_my_firma_id()
+    OR yapan_user_id = auth.uid()
+    OR public.get_my_rol() = 'superadmin'
+  )
+  WITH CHECK (
+    firma_id = public.get_my_firma_id()
+    OR public.get_my_rol() = 'superadmin'
+  );
+
+DROP POLICY IF EXISTS "islemler_firma_delete" ON public.islemler;
+CREATE POLICY "islemler_firma_delete" ON public.islemler FOR DELETE
+  USING (
+    firma_id = public.get_my_firma_id()
+    OR public.get_my_rol() = 'superadmin'
+  );
+
+-- 6. Kasa / Gelir-Gider RLS ve Plasiyer -> Firma veri eşitleme onarımı
+DO $$
+BEGIN
+  IF to_regclass('public.kasalar') IS NOT NULL THEN
+    ALTER TABLE public.kasalar ENABLE ROW LEVEL SECURITY;
+    DROP POLICY IF EXISTS "kasalar_firma_select" ON public.kasalar;
+    CREATE POLICY "kasalar_firma_select" ON public.kasalar FOR SELECT
+      USING (firma_id = public.get_my_firma_id() OR public.get_my_rol() = 'superadmin');
+    DROP POLICY IF EXISTS "kasalar_firma_insert" ON public.kasalar;
+    CREATE POLICY "kasalar_firma_insert" ON public.kasalar FOR INSERT
+      WITH CHECK (firma_id = public.get_my_firma_id() OR public.get_my_rol() = 'superadmin');
+    DROP POLICY IF EXISTS "kasalar_firma_update" ON public.kasalar;
+    CREATE POLICY "kasalar_firma_update" ON public.kasalar FOR UPDATE
+      USING (firma_id = public.get_my_firma_id() OR public.get_my_rol() = 'superadmin');
+    DROP POLICY IF EXISTS "kasalar_firma_delete" ON public.kasalar;
+    CREATE POLICY "kasalar_firma_delete" ON public.kasalar FOR DELETE
+      USING (firma_id = public.get_my_firma_id() OR public.get_my_rol() = 'superadmin');
+  END IF;
+
+  IF to_regclass('public.gelir_giderler') IS NOT NULL THEN
+    ALTER TABLE public.gelir_giderler ENABLE ROW LEVEL SECURITY;
+    DROP POLICY IF EXISTS "gelir_giderler_firma_select" ON public.gelir_giderler;
+    CREATE POLICY "gelir_giderler_firma_select" ON public.gelir_giderler FOR SELECT
+      USING (firma_id = public.get_my_firma_id() OR public.get_my_rol() = 'superadmin');
+    DROP POLICY IF EXISTS "gelir_giderler_firma_insert" ON public.gelir_giderler;
+    CREATE POLICY "gelir_giderler_firma_insert" ON public.gelir_giderler FOR INSERT
+      WITH CHECK (firma_id = public.get_my_firma_id() OR public.get_my_rol() = 'superadmin');
+    DROP POLICY IF EXISTS "gelir_giderler_firma_update" ON public.gelir_giderler;
+    CREATE POLICY "gelir_giderler_firma_update" ON public.gelir_giderler FOR UPDATE
+      USING (firma_id = public.get_my_firma_id() OR public.get_my_rol() = 'superadmin');
+    DROP POLICY IF EXISTS "gelir_giderler_firma_delete" ON public.gelir_giderler;
+    CREATE POLICY "gelir_giderler_firma_delete" ON public.gelir_giderler FOR DELETE
+      USING (firma_id = public.get_my_firma_id() OR public.get_my_rol() = 'superadmin');
+  END IF;
+END $$;
+
+-- 7. Daha önce yanlış firma_id ile kaydedilmiş plasiyer işlemlerini plasiyerin mevcut firmasına hizala
+UPDATE public.islemler i
+SET firma_id = p.firma_id
+FROM public.profiles p
+WHERE i.yapan_user_id = p.id
+  AND p.firma_id IS NOT NULL
+  AND i.firma_id IS DISTINCT FROM p.firma_id;
+
+-- Kasaya [MAKBUZ:id] olarak aktarılmış ama durumu 'plasiyerde' kalmış işlemleri 'aktarildi' yap
+DO $$
+BEGIN
+  IF to_regclass('public.gelir_giderler') IS NOT NULL THEN
+    UPDATE public.islemler i
+    SET durum = 'aktarildi'
+    WHERE i.durum = 'plasiyerde'
+      AND EXISTS (
+        SELECT 1 FROM public.gelir_giderler g
+        WHERE g.firma_id = i.firma_id
+          AND g.aciklama LIKE '%[MAKBUZ:' || i.id::text || ']%'
+      );
+  END IF;
+END $$;
 `;
 
 export interface PlasiyerProfilePayload {

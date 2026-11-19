@@ -90,12 +90,15 @@ test('formatPlasiyerWriteError distinguishes FK errors, RLS errors, and generic 
   assert.equal(genericRes.error, 'network timeout while connecting to supabase');
 });
 
-test('PLASIYER_RLS_SQL cleans dangling ana_hesap_id, enforces ON DELETE SET NULL, and allows profile INSERT', () => {
+test('PLASIYER_RLS_SQL cleans dangling ana_hesap_id, enforces ON DELETE SET NULL, and covers profiles + islemler RLS', () => {
   assert.ok(PLASIYER_RLS_SQL.includes('SET ana_hesap_id = NULL'));
   assert.ok(PLASIYER_RLS_SQL.includes('ON DELETE SET NULL'));
   assert.ok(PLASIYER_RLS_SQL.includes('profiles_self_or_ana_insert'));
   assert.ok(PLASIYER_RLS_SQL.includes('ON public.profiles FOR INSERT'));
   assert.ok(PLASIYER_RLS_SQL.includes('EXISTS (\n        SELECT 1 FROM public.profiles ap'));
+  assert.ok(PLASIYER_RLS_SQL.includes('islemler_firma_select'));
+  assert.ok(PLASIYER_RLS_SQL.includes('islemler_firma_update'));
+  assert.ok(PLASIYER_RLS_SQL.includes('UPDATE public.islemler i'));
 });
 
 test('accountDeleteHelper clears ana_hesap_id before deleting profiles', () => {

@@ -8,6 +8,25 @@ export function formatCurrency(amount: number | null | undefined, includeSymbol:
   return includeSymbol ? `${formatted} ₺` : formatted;
 }
 
+export function getTodayIsoLocal(date: Date = new Date()): string {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+export function normalizeDateKey(dateValue?: string | null): string {
+  const raw = (dateValue || '').trim();
+  if (!raw) return '';
+  const isoMatch = raw.match(/^(\d{4}-\d{2}-\d{2})/);
+  if (isoMatch) return isoMatch[1];
+  const trMatch = raw.match(/^(\d{2})\.(\d{2})\.(\d{4})$/);
+  if (trMatch) return `${trMatch[3]}-${trMatch[2]}-${trMatch[1]}`;
+  const parsed = new Date(raw);
+  if (isNaN(parsed.getTime())) return '';
+  return getTodayIsoLocal(parsed);
+}
+
 export function formatDate(dateString: string | null | undefined): string {
   if (!dateString) return '-';
   try {

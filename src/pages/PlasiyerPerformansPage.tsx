@@ -2,10 +2,15 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { supabase } from '../lib/supabase';
 import { Islem, Profile } from '../types/database';
-import { formatCurrency, formatDate } from '../lib/formatters';
+import { formatCurrency, formatDate, getTodayIsoLocal } from '../lib/formatters';
 import { exportToExcel, printPdfReport } from '../lib/exportService';
 import { useQuery } from '../hooks/useQuery';
-import { fetchIslemlerList } from '../lib/receiptQueryService';
+import {
+  computeDateRangeKeys,
+  DateRangeFilter,
+  fetchIslemlerList,
+  isDateKeyInRange,
+} from '../lib/receiptQueryService';
 import {
   TrendingUp,
   ArrowDownLeft,
@@ -35,8 +40,6 @@ interface PlasiyerPerformansPageProps {
   onNavigate: (tab: string, state?: unknown) => void;
   refreshKey?: number;
 }
-
-type DateRangeFilter = 'today' | 'week' | 'month' | 'year' | 'all' | 'custom';
 
 export const PlasiyerPerformansPage: React.FC<PlasiyerPerformansPageProps> = ({
   onOpenMakbuz,
@@ -109,40 +112,13 @@ export const PlasiyerPerformansPage: React.FC<PlasiyerPerformansPageProps> = ({
       }),
   });
 
-  // 3. Tarih Aralığı ve Ek Filtreleri Uygula
+  // 3. Tarih Aralığı ve Ek Filtreleri Uygula (Yerel YYYY-MM-DD karşılaştırması — UTC saat dilimi kaymasını önler)
   const filteredIslemler = useMemo(() => {
-    const now = new Date();
-    const todayStr = now.toISOString().split('T')[0];
-
-    // Tarih başlangıç ve bitiş sınırlarını hesapla
-    let startLimit: Date | null = null;
-    let endLimit: Date | null = null;
-
-    if (dateFilter === 'today') {
-      startLimit = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0);
-      endLimit = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59);
-    } else if (dateFilter === 'week') {
-      const dayOfWeek = now.getDay() || 7; // 1 = Pazartesi, 7 = Pazar
-      startLimit = new Date(now);
-      startLimit.setDate(now.getDate() - dayOfWeek + 1);
-      startLimit.setHours(0, 0, 0, 0);
-      endLimit = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59);
-    } else if (dateFilter === 'month') {
-      startLimit = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0);
-      endLimit = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
-    } else if (dateFilter === 'year') {
-      startLimit = new Date(now.getFullYear(), 0, 1, 0, 0, 0);
-      endLimit = new Date(now.getFullYear(), 11, 31, 23, 59, 59);
-    } else if (dateFilter === 'custom') {
-      if (customStartDate) {
-        startLimit = new Date(customStartDate);
-        startLimit.setHours(0, 0, 0, 0);
-      }
-      if (customEndDate) {
-        endLimit = new Date(customEndDate);
-        endLimit.setHours(23, 59, 59, 999);
-      }
-    }
+    const { startKey, endKey } = computeDateRangeKeys(
+      dateFilter,
+      customStartDate,
+      customEndDate
+    );
 
     return islemler.filter((islem) => {
       // Tip Filtresi
@@ -152,10 +128,8 @@ export const PlasiyerPerformansPage: React.FC<PlasiyerPerformansPageProps> = ({
       if (turFilter !== 'all' && islem.tur !== turFilter) return false;
 
       // Tarih Filtresi
-      if (islem.tarih) {
-        const itemDate = new Date(islem.tarih);
-        if (startLimit && itemDate < startLimit) return false;
-        if (endLimit && itemDate > endLimit) return false;
+      if (!isDateKeyInRange(islem.tarih, startKey, endKey)) {
+        return false;
       }
 
       // Arama Filtresi
@@ -296,7 +270,7 @@ export const PlasiyerPerformansPage: React.FC<PlasiyerPerformansPageProps> = ({
       Number(i.tutar) || 0,
     ]);
 
-    const dateStr = new Date().toISOString().split('T')[0];
+    const dateStr = getTodayIsoLocal();
     const cleanPlasiyer = activePlasiyerName.toLowerCase().replace(/[^a-z0-9]/g, '_');
     exportToExcel(`plasiyer_performans_${cleanPlasiyer}_${dateStr}`, headers, rows);
   };
@@ -376,6 +350,15 @@ export const PlasiyerPerformansPage: React.FC<PlasiyerPerformansPageProps> = ({
           >
             <Printer className="w-4 h-4 text-teal-400" />
             <span className="hidden sm:inline">PDF Yazdır</span>
+          </button>
+
+          <button
+            onClick={() => onNavigate('gun_sonu')}
+            data-testid="performans_go_gun_sonu_btn"
+            className="bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 font-bold text-xs px-3.5 py-2.5 rounded-xl transition flex items-center gap-1.5"
+          >
+            <Clock className="w-4 h-4 text-amber-400" />
+            <span>Gün Sonu</span>
           </button>
 
           <button

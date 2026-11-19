@@ -11,13 +11,17 @@ import {
   ArrowRight,
   CheckCircle2,
   RefreshCw,
+  AlertTriangle,
+  Copy,
+  Check,
 } from 'lucide-react';
 import { supabase, handleSupabaseError } from '../lib/supabase';
 import { useAuth } from '../context/AuthContext';
 import { exportToExcel, printPdfReport } from '../lib/exportService';
-import { formatCurrency, formatDate } from '../lib/formatters';
+import { formatCurrency, formatDate, getTodayIsoLocal } from '../lib/formatters';
 import type { Kasa, GelirGider, GelirGiderTip, KasaTur, Islem } from '../types/database';
 import {
+  analyzeGelirGiderMakbuzLinks,
   deleteGelirGiderWithBalanceSync,
   extractMakbuzIdFromAciklama,
   fetchSyncedMakbuzMap,
@@ -26,10 +30,13 @@ import {
   stripMakbuzTagFromAciklama,
   syncIslemToKasa,
 } from '../lib/kasaSyncService';
+import { PLASIYER_RLS_SQL } from '../lib/plasiyerService';
 
 interface Props {
   onNavigate: (tab: string, state?: unknown) => void;
   initialModal?: 'gelir' | 'gider';
+  refreshKey?: number;
+  onTransferSuccess?: () => void;
 }
 
 const inp = 'w-full rounded-xl bg-white/5 border border-white/10 px-3 py-2.5 text-sm text-white focus:outline-none focus:border-teal-400';
@@ -40,17 +47,24 @@ const TIP_AD: Record<GelirGiderTip, string> = { gelir: 'Gelir', gider: 'Gider', 
 const TUR_AD: Record<KasaTur, string> = { nakit: 'Nakit', banka: 'Banka', pos: 'POS' };
 
 const pad = (n: number) => String(n).padStart(2, '0');
-const today = () => { const d = new Date(); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; };
-const monthStart = () => { const d = new Date(); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-01`; };
+const today = () => getTodayIsoLocal();
+const monthStart = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`; };
 const isMissing = (e: any) => e?.code === '42P01' || e?.code === 'PGRST205' || /schema cache|does not exist/i.test(e?.message ?? '');
 
 type ModalState = { tip: GelirGiderTip; edit?: GelirGider } | null;
 
-export const KasaGelirGiderPage: React.FC<Props> = ({ onNavigate, initialModal }) => {
+export const KasaGelirGiderPage: React.FC<Props> = ({
+  onNavigate,
+  initialModal,
+  refreshKey = 0,
+  onTransferSuccess,
+}) => {
   const { firma, profile } = useAuth();
-  const firmaId = firma?.id;
+  const firmaId = firma?.id || profile?.firma_id;
   const [kasalar, setKasalar] = useState<Kasa[]>([]);
   const [hareketler, setHareketler] = useState<GelirGider[]>([]);
+  const [visibleIslemRefs, setVisibleIslemRefs] = useState<Array<{ id: string; durum?: string | null }>>([]);
+  const [copiedRlsSql, setCopiedRlsSql] = useState(false);
   const [loading, setLoading] = useState(true);
   const [setup, setSetup] = useState(false);
   const [err, setErr] = useState('');
@@ -93,9 +107,28 @@ export const KasaGelirGiderPage: React.FC<Props> = ({ onNavigate, initialModal }
       .limit(1000);
     if (g.error) setErr(handleSupabaseError(g.error));
 
+    const gRows = (g.data ?? []) as GelirGider[];
     const kList = (k.data ?? []) as Kasa[];
     setKasalar(kList);
-    setHareketler((g.data ?? []) as GelirGider[]);
+    setHareketler(gRows);
+
+    // [MAKBUZ:<id>] bağlantılarının islemler tablosunda okunabilir olup olmadığını kontrol et (RLS kopukluğu tespiti)
+    const makbuzIds = Array.from(
+      new Set(
+        gRows
+          .map((row) => extractMakbuzIdFromAciklama(row.aciklama))
+          .filter((id): id is string => Boolean(id))
+      )
+    );
+    if (makbuzIds.length > 0) {
+      const { data: linkedIslemRows } = await supabase
+        .from('islemler')
+        .select('id, durum')
+        .in('id', makbuzIds);
+      setVisibleIslemRefs((linkedIslemRows ?? []) as Array<{ id: string; durum?: string | null }>);
+    } else {
+      setVisibleIslemRefs([]);
+    }
 
     const bestNakit = pickBestKasaForTur(kList, 'nakit');
     const bestKart = pickBestKasaForTur(kList, 'kredi_karti');
@@ -105,7 +138,7 @@ export const KasaGelirGiderPage: React.FC<Props> = ({ onNavigate, initialModal }
     setLoading(false);
   }, [firmaId, from, to]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { load(); }, [load, refreshKey]);
 
   const loadOzetAndSyncState = useCallback(async () => {
     if (!firmaId) return;
@@ -134,7 +167,7 @@ export const KasaGelirGiderPage: React.FC<Props> = ({ onNavigate, initialModal }
     if (firmaId) {
       loadOzetAndSyncState();
     }
-  }, [firmaId, loadOzetAndSyncState]);
+  }, [firmaId, refreshKey, loadOzetAndSyncState]);
 
   const ozet = useMemo(() => {
     const o: Record<string, number> = {};
@@ -183,6 +216,26 @@ export const KasaGelirGiderPage: React.FC<Props> = ({ onNavigate, initialModal }
     if (error) setErr(error.code === '23503' ? 'Bu kasada hareket kayıtları var. Silmek yerine pasif yapın.' : handleSupabaseError(error)); else load();
   };
 
+  const makbuzLinkAnalysis = useMemo(
+    () => analyzeGelirGiderMakbuzLinks(hareketler, visibleIslemRefs),
+    [hareketler, visibleIslemRefs]
+  );
+
+  const missingIslemIdSet = useMemo(
+    () => new Set(makbuzLinkAnalysis.missingIslemIds),
+    [makbuzLinkAnalysis.missingIslemIds]
+  );
+
+  const handleCopyRlsSql = async () => {
+    try {
+      await navigator.clipboard.writeText(PLASIYER_RLS_SQL);
+      setCopiedRlsSql(true);
+      setTimeout(() => setCopiedRlsSql(false), 2500);
+    } catch {
+      setErr('SQL metni panoya kopyalanamadı.');
+    }
+  };
+
   const handleSingleMakbuzSync = async (islem: Islem) => {
     if (!firmaId) return;
     setSyncingId(islem.id);
@@ -205,6 +258,7 @@ export const KasaGelirGiderPage: React.FC<Props> = ({ onNavigate, initialModal }
     }
     setSuccessMsg(`${islem.makbuz_no || 'Makbuz'} "${res.kasaAd}" kasasına aktarıldı.`);
     await Promise.all([load(), loadOzetAndSyncState()]);
+    onTransferSuccess?.();
   };
 
   const handleBulkMakbuzSync = async () => {
@@ -213,6 +267,7 @@ export const KasaGelirGiderPage: React.FC<Props> = ({ onNavigate, initialModal }
     setErr('');
     setSuccessMsg('');
     let count = 0;
+    let firstSyncErr = '';
     for (const item of bekleyenMakbuzlar) {
       const overrideId = item.tur === 'kredi_karti' ? targetKartKasaId || null : targetNakitKasaId || null;
       const res = await syncIslemToKasa({
@@ -225,10 +280,16 @@ export const KasaGelirGiderPage: React.FC<Props> = ({ onNavigate, initialModal }
         forceTransferFromPlasiyer: true,
       });
       if (res.synced) count++;
+      else if (res.error && !firstSyncErr) firstSyncErr = res.error;
     }
     setBulkSyncing(false);
+    if (firstSyncErr && count === 0) {
+      setErr(firstSyncErr);
+      return;
+    }
     setSuccessMsg(`${count} adet makbuz kasalara başarıyla aktarıldı.`);
     await Promise.all([load(), loadOzetAndSyncState()]);
+    onTransferSuccess?.();
   };
 
   const rowsFor = () => liste.map((h) => [
@@ -295,6 +356,33 @@ export const KasaGelirGiderPage: React.FC<Props> = ({ onNavigate, initialModal }
       </div>
 
       {err && <div className="rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-300">{err}</div>}
+      {makbuzLinkAnalysis.missingIslemIds.length > 0 && (
+        <div
+          data-testid="kasa_rls_orphan_warning"
+          className="rounded-xl border border-amber-500/35 bg-amber-500/10 p-3.5 text-xs text-amber-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+        >
+          <div className="flex items-start gap-2.5">
+            <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+            <div>
+              <p className="font-bold text-amber-300">
+                Kasada {makbuzLinkAnalysis.missingIslemIds.length} adet makbuz kaydı görünüyor ancak ana tahsilat/cari ekranlarında okunamıyor
+              </p>
+              <p className="text-amber-200/80 mt-0.5">
+                Plasiyerin kestiği makbuzlar Supabase "islemler" tablosu okuma yetkisi (RLS) veya firma eşleşmesi nedeniyle ana hesapta gizleniyor olabilir. Onarım SQL kodunu Supabase SQL Editor&apos;de çalıştırın.
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={handleCopyRlsSql}
+            data-testid="kasa_copy_rls_sql_btn"
+            className="min-h-[38px] px-3 py-1.5 rounded-xl bg-amber-400 hover:bg-amber-300 text-[#0a0e13] font-bold text-xs inline-flex items-center gap-1.5 shrink-0"
+          >
+            {copiedRlsSql ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+            <span>{copiedRlsSql ? 'Onarım SQL Kopyalandı' : 'Onarım SQL Kopyala'}</span>
+          </button>
+        </div>
+      )}
       {successMsg && (
         <div className="rounded-xl border border-teal-500/30 bg-teal-500/10 p-3 text-sm text-teal-300 flex items-center gap-2">
           <CheckCircle2 className="w-4 h-4 shrink-0" />
@@ -340,7 +428,9 @@ export const KasaGelirGiderPage: React.FC<Props> = ({ onNavigate, initialModal }
           {liste.length === 0 && <p className="text-sm text-gray-400">Bu dönemde kayıt yok.</p>}
           {liste.map((h) => {
             const cleanAciklama = stripMakbuzTagFromAciklama(h.aciklama);
-            const fromMakbuz = Boolean(extractMakbuzIdFromAciklama(h.aciklama));
+            const makbuzId = extractMakbuzIdFromAciklama(h.aciklama);
+            const fromMakbuz = Boolean(makbuzId);
+            const isMissingIslem = Boolean(makbuzId && missingIslemIdSet.has(makbuzId));
             return (
               <div key={h.id} className={card + ' flex flex-wrap items-center justify-between gap-3'}>
                 <div className="min-w-0">
@@ -349,9 +439,20 @@ export const KasaGelirGiderPage: React.FC<Props> = ({ onNavigate, initialModal }
                       <span className={h.tip === 'gelir' ? 'text-teal-300' : h.tip === 'gider' ? 'text-orange-300' : 'text-sky-300'}>{TIP_AD[h.tip]}</span>
                       {h.kategori ? ` · ${h.kategori}` : ''}
                     </p>
-                    {fromMakbuz && (
-                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-teal-500/15 text-teal-300 border border-teal-500/25">
-                        Makbuzdan Aktarıldı
+                    {fromMakbuz ? (
+                      <>
+                        <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-teal-500/15 text-teal-300 border border-teal-500/25">
+                          Makbuzdan Aktarıldı
+                        </span>
+                        {isMissingIslem && (
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/15 text-amber-300 border border-amber-500/30">
+                            Makbuz Tablosunda Görünmüyor (RLS)
+                          </span>
+                        )}
+                      </>
+                    ) : (
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-white/5 text-gray-400 border border-white/10">
+                        Şirket İçi (Cariye İşlenmez)
                       </span>
                     )}
                   </div>
@@ -408,7 +509,16 @@ export const KasaGelirGiderPage: React.FC<Props> = ({ onNavigate, initialModal }
                   Ana hesapta kesilen nakit ve kredi kartı makbuzları otomatik olarak kasaya yansır. Önceki makbuzları veya plasiyer makbuzlarını buradan tek tuşla aktarabilirsiniz.
                 </p>
               </div>
-              <div className="flex items-center gap-2 shrink-0">
+              <div className="flex items-center gap-2 shrink-0 flex-wrap">
+                <button
+                  type="button"
+                  onClick={() => onNavigate('gun_sonu')}
+                  data-testid="kasa_go_gun_sonu_btn"
+                  className="min-h-[40px] px-3 py-2 rounded-xl bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 text-xs font-bold inline-flex items-center gap-1.5"
+                >
+                  <ArrowRight className="w-3.5 h-3.5" />
+                  <span>Plasiyer Gün Sonu</span>
+                </button>
                 <button
                   type="button"
                   onClick={loadOzetAndSyncState}

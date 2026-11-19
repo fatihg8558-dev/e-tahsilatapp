@@ -1,6 +1,8 @@
 import { supabase } from './supabase';
 import { Islem, IslemTur, Kasa, GelirGider, GelirGiderTip } from '../types/database';
 import { isMissingKasaTableError } from './kasaSql';
+import { getTodayIsoLocal } from './formatters';
+import { stripInternalSystemTags } from './noteTagHelper';
 
 export const MAKBUZ_TAG_PREFIX = '[MAKBUZ:';
 
@@ -19,11 +21,51 @@ export function stripMakbuzTagFromAciklama(aciklama?: string | null): string {
   return aciklama.replace(/\[MAKBUZ:[^\]]+\]\s*/g, '').trim();
 }
 
-const todayIso = () => {
-  const d = new Date();
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-};
+export interface OrphanMakbuzAnalysis {
+  linkedMakbuzIds: string[];
+  missingIslemIds: string[];
+  stillPlasiyerdeIds: string[];
+  missingRows: GelirGider[];
+  stillPlasiyerdeRows: GelirGider[];
+}
+
+export function analyzeGelirGiderMakbuzLinks(
+  hareketler: GelirGider[],
+  visibleIslemler: Array<{ id: string; durum?: string | null }>
+): OrphanMakbuzAnalysis {
+  const islemById = new Map<string, { id: string; durum?: string | null }>();
+  for (const row of visibleIslemler) {
+    if (row?.id) islemById.set(row.id, row);
+  }
+
+  const linkedSet = new Set<string>();
+  const missingSet = new Set<string>();
+  const plasiyerdeSet = new Set<string>();
+  const missingRows: GelirGider[] = [];
+  const stillPlasiyerdeRows: GelirGider[] = [];
+
+  for (const h of hareketler) {
+    const makbuzId = extractMakbuzIdFromAciklama(h.aciklama);
+    if (!makbuzId) continue;
+    linkedSet.add(makbuzId);
+    const matched = islemById.get(makbuzId);
+    if (!matched) {
+      missingSet.add(makbuzId);
+      missingRows.push(h);
+    } else if (matched.durum === 'plasiyerde') {
+      plasiyerdeSet.add(makbuzId);
+      stillPlasiyerdeRows.push(h);
+    }
+  }
+
+  return {
+    linkedMakbuzIds: Array.from(linkedSet),
+    missingIslemIds: Array.from(missingSet),
+    stillPlasiyerdeIds: Array.from(plasiyerdeSet),
+    missingRows,
+    stillPlasiyerdeRows,
+  };
+}
 
 export function pickBestKasaForTur(kasalar: Kasa[], tur: IslemTur): Kasa | null {
   const active = kasalar.filter((k) => k.aktif);
@@ -262,7 +304,7 @@ const isCaprazRow = (islem: Islem) =>
 
 const cleanNoteForKasa = (aciklama?: string | null): string => {
   if (!aciklama) return '';
-  return aciklama
+  return stripInternalSystemTags(aciklama)
     .replace(/\[KARMA MAKBUZ[^\]]*\]\s*/gi, '')
     .replace(/\[DÖVİZ:[^\]]*\]\s*-?\s*/gi, '')
     .replace(/\[MAKBUZ:[^\]]+\]\s*/g, '')
@@ -290,9 +332,6 @@ export async function syncIslemToKasa(params: {
   } = params;
 
   try {
-    // Önce varsa eski kasa kaydını temizle (güncelleme veya tekrar aktarımda çift kayıt olmasın)
-    await removeIslemsFromKasa([islem.id], firmaId);
-
     if (islem.iptal) return { synced: false, reason: 'iptal' };
     if (islem.tur !== 'nakit' && islem.tur !== 'kredi_karti') {
       return { synced: false, reason: 'non_cash' };
@@ -305,6 +344,9 @@ export async function syncIslemToKasa(params: {
 
     const tutar = Number(islem.tutar) || 0;
     if (!(tutar > 0)) return { synced: false, reason: 'zero_amount' };
+
+    // Önce varsa eski kasa kaydını temizle (güncelleme veya tekrar aktarımda çift kayıt olmasın)
+    await removeIslemsFromKasa([islem.id], firmaId);
 
     let targetKasa: Kasa | null = null;
     if (kasaIdOverride) {
@@ -334,11 +376,21 @@ export async function syncIslemToKasa(params: {
     }
 
     if (forceTransferFromPlasiyer && islem.durum === 'plasiyerde') {
-      await supabase
+      const { data: updatedStatusRows, error: statusErr } = await supabase
         .from('islemler')
         .update({ durum: 'aktarildi' })
         .eq('id', islem.id)
-        .eq('firma_id', firmaId);
+        .eq('firma_id', firmaId)
+        .select('id, durum');
+
+      if (statusErr || !updatedStatusRows || updatedStatusRows.length === 0) {
+        return {
+          synced: false,
+          error:
+            statusErr?.message ||
+            'Makbuz durumu "aktarildi" olarak güncellenemedi. Supabase "islemler" tablosu UPDATE yetkisini (RLS) kontrol ediniz.',
+        };
+      }
     }
 
     const ggTip: GelirGiderTip = islem.tip === 'tahsilat' ? 'gelir' : 'gider';
@@ -355,7 +407,7 @@ export async function syncIslemToKasa(params: {
     const cleanNote = cleanNoteForKasa(islem.aciklama);
     const aciklama = `${buildMakbuzTag(islem.id)} ${cariUnvan}${cleanNote ? ` · ${cleanNote}` : ''}`;
     const belgeNo = islem.makbuz_no || islem.belge_no || `MKB-${islem.id.slice(0, 8)}`;
-    const tarih = (islem.tarih || '').slice(0, 10) || todayIso();
+    const tarih = (islem.tarih || '').slice(0, 10) || getTodayIsoLocal();
 
     const { error: insErr } = await insertGelirGiderWithBalanceSync({
       firma_id: firmaId,
@@ -410,13 +462,13 @@ export async function syncTekSatirKarmaToKasa(params: {
   } = params;
 
   try {
-    await removeIslemsFromKasa([islem.id], firmaId);
     if (islem.iptal) return;
     if (skipIfPlasiyerde && islem.durum === 'plasiyerde') return;
+    await removeIslemsFromKasa([islem.id], firmaId);
 
     const cariUnvan = islem.cariler?.unvan || 'Karma Makbuz';
     const belgeNo = islem.makbuz_no || islem.belge_no || `MKB-${islem.id.slice(0, 8)}`;
-    const tarih = (islem.tarih || '').slice(0, 10) || todayIso();
+    const tarih = (islem.tarih || '').slice(0, 10) || getTodayIsoLocal();
     const ggTip: GelirGiderTip = islem.tip === 'tahsilat' ? 'gelir' : 'gider';
 
     if (nakitTutar > 0 && nakitKasaIdOverride !== '__none__') {

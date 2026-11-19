@@ -8,7 +8,9 @@ import { CarilerPage } from './pages/CarilerPage';
 import { IslemFormPage } from './pages/IslemFormPage';
 import { IslemlerPage } from './pages/IslemlerPage';
 import { PlasiyerPerformansPage } from './pages/PlasiyerPerformansPage';
+import { PlasiyerGunSonuPage } from './pages/PlasiyerGunSonuPage';
 import { SuperAdminPage } from './pages/SuperAdminPage';
+import { CekSenetPortfoyPage } from './pages/CekSenetPortfoyPage';
 import { KasaGelirGiderPage } from './pages/KasaGelirGiderPage';
 import { YedeklemePage } from './pages/YedeklemePage';
 import { MakbuzModal } from './components/makbuz/MakbuzModal';
@@ -24,8 +26,10 @@ const VALID_TABS = new Set([
   'tediye',
   'islem_duzenle',
   'islemler',
+  'portfoy',
   'kasa',
   'performans',
+  'gun_sonu',
   'yedekleme',
   'paketler',
   'superadmin',
@@ -401,8 +405,26 @@ export const App: React.FC = () => {
           />
         )}
 
+        {effectiveTab === 'portfoy' && (
+          <CekSenetPortfoyPage
+            onOpenMakbuz={(islem) => setActiveMakbuz(islem)}
+            onNavigate={handleNavigate}
+            refreshKey={receiptRefreshKey}
+            onUpdated={() => {
+              setReceiptRefreshKey((k) => k + 1);
+              setNotificationRefreshKey((k) => k + 1);
+            }}
+          />
+        )}
+
         {effectiveTab === 'kasa' && (
-          <KasaGelirGiderPage key={kasaModal ?? 'kasa'} onNavigate={handleNavigate} initialModal={kasaModal} />
+          <KasaGelirGiderPage
+            key={kasaModal ?? 'kasa'}
+            onNavigate={handleNavigate}
+            initialModal={kasaModal}
+            refreshKey={receiptRefreshKey}
+            onTransferSuccess={() => setReceiptRefreshKey((k) => k + 1)}
+          />
         )}
 
         {effectiveTab === 'performans' && (
@@ -410,6 +432,18 @@ export const App: React.FC = () => {
             onOpenMakbuz={(islem) => setActiveMakbuz(islem)}
             onNavigate={handleNavigate}
             refreshKey={receiptRefreshKey}
+          />
+        )}
+
+        {effectiveTab === 'gun_sonu' && (
+          <PlasiyerGunSonuPage
+            onOpenMakbuz={(islem) => setActiveMakbuz(islem)}
+            onNavigate={handleNavigate}
+            refreshKey={receiptRefreshKey}
+            onTransferSuccess={() => {
+              setReceiptRefreshKey((k) => k + 1);
+              setNotificationRefreshKey((k) => k + 1);
+            }}
           />
         )}
 

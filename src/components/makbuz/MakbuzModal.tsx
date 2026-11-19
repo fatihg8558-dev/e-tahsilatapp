@@ -28,6 +28,7 @@ import {
   parseKarmaFromAciklama,
 } from '../../lib/karmaReceiptHelper';
 import { DeleteReceiptConfirmModal } from './DeleteReceiptConfirmModal';
+import { stripInternalSystemTags } from '../../lib/noteTagHelper';
 
 interface MakbuzModalProps {
   islem: Islem | null;
@@ -342,14 +343,14 @@ export const MakbuzModal: React.FC<MakbuzModalProps> = ({ islem, onClose, onEdit
 
   const cekSatirlari = isKarmaMakbuz ? [] : parseCekSatirlari(displayIslem.aciklama);
   const plainAciklama = isKarmaMakbuz
-    ? parsedKarmaFromSingle.cleanNote
+    ? stripInternalSystemTags(parsedKarmaFromSingle.cleanNote)
         .split('\n')
         .map((l) => l.trim())
         .filter((l) => l && !l.startsWith('[DÖVİZ:') && !l.startsWith('[CİRO]') && !isCheckDetailLine(l))
         .join('\n')
         .trim()
     : displayIslem.aciklama
-    ? displayIslem.aciklama
+    ? stripInternalSystemTags(displayIslem.aciklama)
         .split('\n')
         .map((l) => l.trim())
         .filter((l) => l && !isCheckDetailLine(l))

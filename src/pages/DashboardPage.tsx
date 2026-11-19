@@ -21,6 +21,7 @@ import {
   TrendingUp,
   LayoutGrid,
   RefreshCw,
+  MessageCircle,
 } from 'lucide-react';
 import { useQuery } from '../hooks/useQuery';
 import {
@@ -29,6 +30,9 @@ import {
   VadeItem,
   fetchDashboardReceiptsSnapshot,
 } from '../lib/receiptQueryService';
+import { buildVadeHatirlatmaMesaji } from '../lib/whatsappTemplates';
+import { resolvePortfoyDurumu } from '../lib/portfoyService';
+import { WhatsAppReminderModal } from '../components/common/WhatsAppReminderModal';
 
 export type { VadeItem };
 
@@ -57,6 +61,10 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
   });
   const [vadeFilter, setVadeFilter] = useState<'all' | 'tahsilat' | 'tediye'>('all');
   const [fabOpen, setFabOpen] = useState(false);
+  const [waReminderTarget, setWaReminderTarget] = useState<{
+    item: VadeItem;
+    defaultMessage: string;
+  } | null>(null);
 
   const handleVadeAraligiChange = (gun: number) => {
     setVadeAraligiGun(gun);
@@ -327,6 +335,14 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
                         {vadesiYaklasanlar.length} Adet
                       </span>
                     )}
+                    <button
+                      type="button"
+                      onClick={() => onNavigate('portfoy')}
+                      data-testid="dashboard_open_portfoy_btn"
+                      className="text-[11px] font-bold text-teal-400 hover:text-teal-300 underline ml-1"
+                    >
+                      Portföyü Aç →
+                    </button>
                   </div>
                   <p className="text-[11px] text-gray-400 mt-0.5">
                     Önümüzdeki {vadeAraligiGun} gün içinde vadesi gelen veya vadesi geçmiş portföy hareketleri
@@ -463,14 +479,38 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
                       </div>
                     </div>
 
-                    <div className="flex sm:flex-col items-center sm:items-end justify-between sm:justify-center border-t sm:border-t-0 pt-2 sm:pt-0 border-white/[0.05]">
+                    <div className="flex sm:flex-col items-center sm:items-end justify-between sm:justify-center gap-2 border-t sm:border-t-0 pt-2 sm:pt-0 border-white/[0.05]">
                       <span className="text-sm sm:text-base font-black text-white font-mono tracking-tight group-hover:text-teal-400 transition">
                         {formatCurrency(item.islem.tutar)}
                       </span>
-                      <span className="text-[10px] text-gray-400 group-hover:text-teal-300 flex items-center gap-1 font-medium mt-0.5">
-                        <span>Makbuzu Aç</span>
-                        <ChevronRight className="w-3 h-3" />
-                      </span>
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            const msg = buildVadeHatirlatmaMesaji({
+                              firmaUnvan: firma?.unvan,
+                              cariUnvan: item.islem.cariler?.unvan,
+                              evrakTur: item.islem.tur === 'senet' ? 'senet' : 'cek',
+                              belgeNo: item.islem.belge_no,
+                              tutar: Number(item.islem.tutar) || 0,
+                              vadeTarihi: item.islem.vade,
+                              diffDays: item.diffDays,
+                              portfoyDurumu: resolvePortfoyDurumu(item.islem),
+                            });
+                            setWaReminderTarget({ item, defaultMessage: msg });
+                          }}
+                          data-testid={`dashboard_vade_wa_btn_${item.islem.id}`}
+                          className="min-h-[32px] px-2.5 py-1 rounded-lg bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/30 text-[10px] font-bold inline-flex items-center gap-1 transition"
+                        >
+                          <MessageCircle className="w-3 h-3" />
+                          <span>WhatsApp</span>
+                        </button>
+                        <span className="text-[10px] text-gray-400 group-hover:text-teal-300 flex items-center gap-1 font-medium">
+                          <span>Makbuzu Aç</span>
+                          <ChevronRight className="w-3 h-3" />
+                        </span>
+                      </div>
                     </div>
                   </div>
                 ))}
@@ -779,6 +819,17 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
         </div>
       )}
 
+      <WhatsAppReminderModal
+        isOpen={Boolean(waReminderTarget)}
+        onClose={() => setWaReminderTarget(null)}
+        title={`Vade Hatırlatma: ${waReminderTarget?.item.islem.cariler?.unvan || 'Cari'}`}
+        subtitle={`${waReminderTarget?.item.islem.tur === 'cek' ? 'Çek' : 'Senet'} ${
+          waReminderTarget?.item.islem.belge_no || ''
+        } · ${formatCurrency(Number(waReminderTarget?.item.islem.tutar) || 0)}`}
+        initialPhone={waReminderTarget?.item.islem.cariler?.telefon}
+        defaultMessage={waReminderTarget?.defaultMessage || ''}
+        badgeText={waReminderTarget?.item.durumLabel}
+      />
     </div>
   );
 };

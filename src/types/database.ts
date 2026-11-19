@@ -5,6 +5,13 @@ export type IslemTur = 'nakit' | 'kredi_karti' | 'cek' | 'senet';
 export type IslemDurum = 'aktif' | 'plasiyerde' | 'aktarildi';
 export type FaturaYon = 'alis' | 'satis';
 export type BildirimDurum = 'bekliyor' | 'onaylandi' | 'red';
+export type PortfoyDurum =
+  | 'portfoyde'
+  | 'tahsilde'
+  | 'tahsil_edildi'
+  | 'ciro_edildi'
+  | 'karsiliksiz';
+export type GunSonuOnayDurum = 'onay_bekliyor' | 'onaylandi' | 'reddedildi';
 
 export interface Firma {
   id: string;
@@ -43,6 +50,7 @@ export interface Cari {
   email?: string | null;
   bakiye: number;
   tur: CariTur;
+  risk_limiti?: number | null;
 }
 
 export interface Islem {
@@ -64,9 +72,35 @@ export interface Islem {
   iptal_nedeni?: string | null;
   iptal_tarihi?: string | null;
   iptal_eden?: string | null;
+  portfoy_durumu?: PortfoyDurum | null;
+  portfoy_not?: string | null;
+  ciro_cari_id?: string | null;
+  tahsil_kasa_id?: string | null;
+  portfoy_islem_tarihi?: string | null;
   // Join fields
   cariler?: Cari | null;
   profiles?: { ad_soyad: string } | null;
+}
+
+export interface GunSonuKapanis {
+  id: string;
+  firma_id: string;
+  plasiyer_user_id: string;
+  plasiyer_ad?: string | null;
+  kapanis_tarihi: string;
+  beklenen_nakit: number;
+  sayilan_nakit: number | null;
+  kasa_farki: number;
+  kart_toplam: number;
+  cek_toplam: number;
+  senet_toplam: number;
+  islem_idler: string[];
+  teslim_notu?: string | null;
+  durum: GunSonuOnayDurum;
+  red_nedeni?: string | null;
+  onaylayan_user_id?: string | null;
+  onay_tarihi?: string | null;
+  created_at?: string;
 }
 
 export interface Fatura {

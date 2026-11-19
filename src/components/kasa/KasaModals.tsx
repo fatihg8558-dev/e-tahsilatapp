@@ -19,6 +19,7 @@ import {
   KASA_SETUP_SQL,
   KASA_TUR_LABELS,
 } from '../../lib/kasaSql';
+import { getTodayIsoLocal } from '../../lib/formatters';
 
 export async function syncKasaBalanceAfterInsert(
   kasaId: string,
@@ -137,7 +138,7 @@ export const GelirGiderFormModal: React.FC<GelirGiderFormModalProps> = ({
   const [hedefKasaId, setHedefKasaId] = useState<string>('');
   const [kategori, setKategori] = useState<string>('');
   const [tutar, setTutar] = useState<string>('');
-  const [tarih, setTarih] = useState<string>(new Date().toISOString().split('T')[0]);
+  const [tarih, setTarih] = useState<string>(() => getTodayIsoLocal());
   const [belgeNo, setBelgeNo] = useState<string>('');
   const [aciklama, setAciklama] = useState<string>('');
   const [saving, setSaving] = useState(false);
@@ -168,7 +169,7 @@ export const GelirGiderFormModal: React.FC<GelirGiderFormModalProps> = ({
           : GIDER_KATEGORILERI[0]
       );
       setTutar('');
-      setTarih(new Date().toISOString().split('T')[0]);
+      setTarih(getTodayIsoLocal());
       setBelgeNo('');
       setAciklama('');
     }

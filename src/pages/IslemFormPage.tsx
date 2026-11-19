@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { supabase, handleSupabaseError } from '../lib/supabase';
 import { Cari, IslemTip, IslemTur, Islem, Kasa } from '../types/database';
-import { formatCurrency, formatDate } from '../lib/formatters';
+import { formatCurrency, formatDate, getTodayIsoLocal } from '../lib/formatters';
 import { getExchangeRates, ExchangeRates } from '../lib/currencyService';
 import {
   getPosConfig,
@@ -57,6 +57,14 @@ import {
   syncIslemToKasa,
   syncTekSatirKarmaToKasa,
 } from '../lib/kasaSyncService';
+import {
+  fetchCariBalanceSnapshot,
+  syncCariBalanceAfterInsertIfTriggerMissing,
+} from '../lib/receiptDeleteHelper';
+import {
+  evaluateCariRiskStatus,
+  getEffectiveCariRiskLimit,
+} from '../lib/cariRiskAndMutabakat';
 import {
   CekRowItem as KarmaCekRowItem,
   KarmaNakitState,
@@ -356,7 +364,7 @@ export const IslemFormPage: React.FC<IslemFormPageProps> = ({
     return `${d}.${m}.${y}`;
   });
   const [tarih, setTarih] = useState<string>(
-    () => editingIslem?.tarih?.slice(0, 10) || new Date().toISOString().split('T')[0]
+    () => editingIslem?.tarih?.slice(0, 10) || getTodayIsoLocal()
   );
   const [aciklama, setAciklama] = useState<string>(() =>
     initialIsKarma ? initialKarmaParsed.cleanNote : initialParsed.aciklamaClean
@@ -685,7 +693,7 @@ export const IslemFormPage: React.FC<IslemFormPageProps> = ({
   };
 
   const parseDateToIso = (val: string): string => {
-    if (!val) return new Date().toISOString().split('T')[0];
+    if (!val) return getTodayIsoLocal();
     const digits = val.replace(/\D/g, '');
     if (digits.length === 8) {
       const d = digits.slice(0, 2);
@@ -694,7 +702,7 @@ export const IslemFormPage: React.FC<IslemFormPageProps> = ({
       return `${y}-${m}-${d}`;
     }
     if (/^\d{4}-\d{2}-\d{2}$/.test(val)) return val;
-    return new Date().toISOString().split('T')[0];
+    return getTodayIsoLocal();
   };
 
   const parseVadeToIso = (val: string): string | null => {
@@ -907,6 +915,8 @@ export const IslemFormPage: React.FC<IslemFormPageProps> = ({
 
     const combinedAciklama = [nfcPayload.aciklamaTag, nfcPayload.userNote].filter(Boolean).join('\n');
 
+    const beforeBalance = await fetchCariBalanceSnapshot(nfcPayload.cariId);
+
     // Kural: islemler insert ederken makbuz_no, yapan_user_id, durum ALANLARINI GÖNDERME!
     const insertPayload: Record<string, any> = {
       firma_id: effectiveFirmaId,
@@ -914,7 +924,7 @@ export const IslemFormPage: React.FC<IslemFormPageProps> = ({
       tip: 'tahsilat',
       tur: 'kredi_karti',
       tutar: nfcPayload.tutar,
-      tarih: parseDateToIso(tarihDisplay) || tarih || new Date().toISOString().split('T')[0],
+      tarih: parseDateToIso(tarihDisplay) || tarih || getTodayIsoLocal(),
       belge_no: nfcPayload.slipNo || null,
       vade: null,
       banka_adi: nfcPayload.bankaAdi || null,
@@ -928,6 +938,14 @@ export const IslemFormPage: React.FC<IslemFormPageProps> = ({
       .single();
 
     if (insertErr) throw insertErr;
+
+    await syncCariBalanceAfterInsertIfTriggerMissing({
+      firmaId: effectiveFirmaId,
+      cariId: nfcPayload.cariId,
+      tip: 'tahsilat',
+      tutar: nfcPayload.tutar,
+      beforeVal: beforeBalance,
+    });
 
     const savedRecord = insertedData as Islem;
     if (isCentralAccount && !kasaTableMissing) {
@@ -1048,7 +1066,7 @@ export const IslemFormPage: React.FC<IslemFormPageProps> = ({
         }
 
         const refNo = slipNo.trim() || `ÇPZ-${Date.now().toString().slice(-6)}`;
-        const parsedTarih = parseDateToIso(tarihDisplay) || tarih || new Date().toISOString().split('T')[0];
+        const parsedTarih = parseDateToIso(tarihDisplay) || tarih || getTodayIsoLocal();
 
         let dovizNotu = '';
         if (paraBirimi !== 'TRY' && dovizTutari) {
@@ -1166,7 +1184,7 @@ export const IslemFormPage: React.FC<IslemFormPageProps> = ({
           return;
         }
 
-        const parsedTarih = parseDateToIso(tarihDisplay) || tarih || new Date().toISOString().split('T')[0];
+        const parsedTarih = parseDateToIso(tarihDisplay) || tarih || getTodayIsoLocal();
         const cleanUserNote = aciklama.trim();
 
         const formatOrigCurrency = (
@@ -1292,6 +1310,7 @@ export const IslemFormPage: React.FC<IslemFormPageProps> = ({
           };
 
           if (!isEditing) {
+            const beforeBalance = await fetchCariBalanceSnapshot(cariId);
             payload.firma_id = effectiveFirmaId;
             const { data: insertedData, error: insertErr } = await supabase
               .from('islemler')
@@ -1299,6 +1318,13 @@ export const IslemFormPage: React.FC<IslemFormPageProps> = ({
               .select('*, cariler:cari_id(unvan, vergi_tc_no, telefon, email, bakiye), profiles:yapan_user_id(ad_soyad)')
               .single();
             if (insertErr) throw insertErr;
+            await syncCariBalanceAfterInsertIfTriggerMissing({
+              firmaId: effectiveFirmaId,
+              cariId,
+              tip,
+              tutar: karmaGrandTotal,
+              beforeVal: beforeBalance,
+            });
             if (isCentralAccount && !kasaTableMissing) {
               await syncTekSatirKarmaToKasa({
                 islem: insertedData as Islem,
@@ -1436,6 +1462,7 @@ export const IslemFormPage: React.FC<IslemFormPageProps> = ({
           }
 
           if (!isEditing) {
+            const beforeBalance = await fetchCariBalanceSnapshot(cariId);
             const insertPayloads = entries.map((item) => ({
               ...item.payload,
               firma_id: effectiveFirmaId,
@@ -1448,6 +1475,17 @@ export const IslemFormPage: React.FC<IslemFormPageProps> = ({
 
             if (insertErr) throw insertErr;
             if (insertedRows && insertedRows.length > 0) {
+              const totalInserted = (insertedRows as Islem[]).reduce(
+                (acc, r) => acc + (Number(r.tutar) || 0),
+                0
+              );
+              await syncCariBalanceAfterInsertIfTriggerMissing({
+                firmaId: effectiveFirmaId,
+                cariId,
+                tip,
+                tutar: totalInserted,
+                beforeVal: beforeBalance,
+              });
               if (isCentralAccount && !kasaTableMissing) {
                 for (const row of insertedRows as Islem[]) {
                   if (row.tur === 'nakit' || row.tur === 'kredi_karti') {
@@ -1608,7 +1646,7 @@ export const IslemFormPage: React.FC<IslemFormPageProps> = ({
         tip,
         tur,
         tutar: numTutar,
-        tarih: parseDateToIso(tarihDisplay) || tarih || new Date().toISOString().split('T')[0],
+        tarih: parseDateToIso(tarihDisplay) || tarih || getTodayIsoLocal(),
         belge_no: null,
         vade: null,
         banka_adi: null,
@@ -1699,6 +1737,7 @@ export const IslemFormPage: React.FC<IslemFormPageProps> = ({
         if (updateErr) throw updateErr;
         savedRecord = updatedData as Islem;
       } else {
+        const beforeBalance = await fetchCariBalanceSnapshot(cariId);
         const { data: insertedData, error: insertErr } = await supabase
           .from('islemler')
           .insert(payload)
@@ -1707,6 +1746,13 @@ export const IslemFormPage: React.FC<IslemFormPageProps> = ({
 
         if (insertErr) throw insertErr;
         savedRecord = insertedData as Islem;
+        await syncCariBalanceAfterInsertIfTriggerMissing({
+          firmaId: effectiveFirmaId,
+          cariId,
+          tip,
+          tutar: numTutar,
+          beforeVal: beforeBalance,
+        });
 
         // Ciro edildiyse, portföydeki orijinal çeki ciroya verildi olarak güncelle
         if (isCiro && selectedPortfoyCek) {
@@ -2063,25 +2109,76 @@ export const IslemFormPage: React.FC<IslemFormPageProps> = ({
             </div>
 
             {selectedCari && (
-              <div className="p-3 rounded-xl bg-black/40 border border-white/[0.05] flex items-center justify-between text-xs">
-                <div>
-                  <span className="text-white font-bold">{selectedCari.unvan}</span>
-                  <span className="text-gray-400 ml-2 font-mono">{selectedCari.vergi_tc_no || 'VKN yok'}</span>
+              <div className="space-y-2">
+                <div className="p-3 rounded-xl bg-black/40 border border-white/[0.05] flex items-center justify-between text-xs">
+                  <div>
+                    <span className="text-white font-bold">{selectedCari.unvan}</span>
+                    <span className="text-gray-400 ml-2 font-mono">{selectedCari.vergi_tc_no || 'VKN yok'}</span>
+                  </div>
+                  <div className="text-right">
+                    <span className="text-gray-400 mr-2 text-[11px]">Mevcut Bakiye:</span>
+                    <span
+                      className={`font-bold ${
+                        Number(selectedCari.bakiye) > 0
+                          ? 'text-teal-400'
+                          : Number(selectedCari.bakiye) < 0
+                          ? 'text-red-400'
+                          : 'text-gray-400'
+                      }`}
+                    >
+                      {formatCurrency(selectedCari.bakiye)}
+                    </span>
+                  </div>
                 </div>
-                <div className="text-right">
-                  <span className="text-gray-400 mr-2 text-[11px]">Mevcut Bakiye:</span>
-                  <span
-                    className={`font-bold ${
-                      Number(selectedCari.bakiye) > 0
-                        ? 'text-teal-400'
-                        : Number(selectedCari.bakiye) < 0
-                        ? 'text-red-400'
-                        : 'text-gray-400'
-                    }`}
-                  >
-                    {formatCurrency(selectedCari.bakiye)}
-                  </span>
-                </div>
+
+                {(() => {
+                  const limit = getEffectiveCariRiskLimit(selectedCari, effectiveFirmaId);
+                  if (!limit) return null;
+                  const enteredAmount = isKarma
+                    ? karmaGrandTotal
+                    : isCekSenet && !isCiro
+                    ? cekToplamTL
+                    : parseAmountInput(tutar);
+                  const pendingDelta = tip === 'tediye' ? enteredAmount : -enteredAmount;
+                  const risk = evaluateCariRiskStatus({
+                    currentBakiye: Number(selectedCari.bakiye) || 0,
+                    pendingDelta,
+                    riskLimit: limit,
+                  });
+                  const curRisk = evaluateCariRiskStatus({
+                    currentBakiye: Number(selectedCari.bakiye) || 0,
+                    pendingDelta: 0,
+                    riskLimit: limit,
+                  });
+                  const activeEval = risk.level === 'exceeded' || risk.level === 'warning' ? risk : curRisk;
+                  if (activeEval.level !== 'warning' && activeEval.level !== 'exceeded') {
+                    return null;
+                  }
+                  const isExceeded = activeEval.level === 'exceeded';
+                  return (
+                    <div
+                      data-testid="islem_risk_limit_warning"
+                      className={`p-3 rounded-xl border text-[11px] flex items-start gap-2 ${
+                        isExceeded
+                          ? 'bg-rose-500/15 border-rose-500/35 text-rose-200'
+                          : 'bg-amber-500/15 border-amber-500/35 text-amber-200'
+                      }`}
+                    >
+                      <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                      <div>
+                        <span className="font-extrabold">
+                          {isExceeded
+                            ? `Risk Limiti Aşıldı (%${activeEval.percent})`
+                            : `Risk Limitine Yaklaşıldı (%${activeEval.percent})`}
+                        </span>
+                        <span className="ml-1.5 opacity-90">
+                          — Limit: {formatCurrency(activeEval.riskLimit)} · Öngörülen Bakiye:{' '}
+                          {formatCurrency(activeEval.projectedBakiye)}
+                        </span>
+                      </div>
+                    </div>
+                  );
+                })()}
               </div>
             )}
           </div>
