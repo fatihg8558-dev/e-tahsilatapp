@@ -7,8 +7,8 @@ import { DashboardPage } from './pages/DashboardPage';
 import { CarilerPage } from './pages/CarilerPage';
 import { IslemFormPage } from './pages/IslemFormPage';
 import { IslemlerPage } from './pages/IslemlerPage';
-import { PlasiyerPerformansPage } from './pages/PlasiyerPerformansPage';
-import { PlasiyerGunSonuPage } from './pages/PlasiyerGunSonuPage';
+import { GunSonuRaporlarPage } from './pages/GunSonuRaporlarPage';
+import { MutabakatlarPage } from './pages/MutabakatlarPage';
 import { SuperAdminPage } from './pages/SuperAdminPage';
 import { CekSenetPortfoyPage } from './pages/CekSenetPortfoyPage';
 import { KasaGelirGiderPage } from './pages/KasaGelirGiderPage';
@@ -25,12 +25,15 @@ import { Islem } from './types/database';
 const VALID_TABS = new Set([
   'dashboard',
   'cariler',
+  'makbuz',
   'tahsilat',
   'tediye',
   'islem_duzenle',
   'islemler',
   'portfoy',
   'kasa',
+  'mutabakat',
+  'gun_sonu_raporlar',
   'performans',
   'gun_sonu',
   'yedekleme',
@@ -49,7 +52,7 @@ const isTabAuthorized = (
   if (tab === 'portfoy' && !isWeb) return false;
   if (tab === 'superadmin') return isSuperAdmin;
   if (tab === 'kasa' && role === 'plasiyer') return false;
-  if ((tab === 'tahsilat' || tab === 'tediye' || tab === 'islem_duzenle') && role === 'muhasebeci') {
+  if ((tab === 'makbuz' || tab === 'tahsilat' || tab === 'tediye' || tab === 'islem_duzenle') && role === 'muhasebeci') {
     return false;
   }
   if (tab === 'islem_duzenle' && !hasEditingIslem) return false;
@@ -385,22 +388,10 @@ export const App: React.FC = () => {
           />
         )}
 
-        {effectiveTab === 'tahsilat' && (
+        {(effectiveTab === 'makbuz' || effectiveTab === 'tahsilat' || effectiveTab === 'tediye') && (
           <IslemFormPage
-            key="new-tahsilat"
-            initialTip="tahsilat"
-            preSelectedCariId={preSelectedCariId}
-            onSuccess={handleIslemSuccess}
-            onCancel={() => handleSelectTab('dashboard')}
-            onUpgradePackage={() => handleSelectTab('paketler')}
-            onPreviewPaymentLink={(params) => setPosPayParams(params)}
-          />
-        )}
-
-        {effectiveTab === 'tediye' && (
-          <IslemFormPage
-            key="new-tediye"
-            initialTip="tediye"
+            key={effectiveTab === 'tediye' ? 'new-tediye' : 'new-makbuz'}
+            initialTip={effectiveTab === 'tediye' ? 'tediye' : 'tahsilat'}
             preSelectedCariId={preSelectedCariId}
             onSuccess={handleIslemSuccess}
             onCancel={() => handleSelectTab('dashboard')}
@@ -453,16 +444,17 @@ export const App: React.FC = () => {
           />
         )}
 
-        {effectiveTab === 'performans' && (
-          <PlasiyerPerformansPage
-            onOpenMakbuz={(islem) => setActiveMakbuz(islem)}
+        {effectiveTab === 'mutabakat' && (
+          <MutabakatlarPage
             onNavigate={handleNavigate}
+            onPreviewMutabakatLink={(code) => setMutabakatCode(code)}
             refreshKey={receiptRefreshKey}
           />
         )}
 
-        {effectiveTab === 'gun_sonu' && (
-          <PlasiyerGunSonuPage
+        {(effectiveTab === 'gun_sonu_raporlar' || effectiveTab === 'gun_sonu' || effectiveTab === 'performans') && (
+          <GunSonuRaporlarPage
+            initialSubTab={effectiveTab === 'performans' ? 'performans' : 'gun_sonu'}
             onOpenMakbuz={(islem) => setActiveMakbuz(islem)}
             onNavigate={handleNavigate}
             refreshKey={receiptRefreshKey}

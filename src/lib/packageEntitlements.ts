@@ -31,6 +31,7 @@ export interface PackageEntitlements {
   canUsePaymentLink: boolean;
   canUseNfc: boolean;
   canUseUblImport: boolean;
+  canUseMutabakat: boolean;
 }
 
 export type FirmaEkPlasiyerMap = Record<string, number>;
@@ -80,7 +81,7 @@ function inferTierFromCustomPaket(paket: Paket | null | undefined): PackageTierK
   if (byName) return byName;
 
   const lines = normalizePackageFeatures(paket.ozellikler).join(' ').toLocaleLowerCase('tr-TR');
-  if (lines.includes('ubl') || lines.includes('xml')) {
+  if (lines.includes('ubl') || lines.includes('xml') || lines.includes('mutabakat')) {
     return 'kurumsal';
   }
   if (lines.includes('nfc') || lines.includes('link')) {
@@ -117,6 +118,7 @@ export function resolvePackageEntitlements(params: {
       canUsePaymentLink: true,
       canUseNfc: true,
       canUseUblImport: true,
+      canUseMutabakat: true,
     };
   }
 
@@ -135,6 +137,7 @@ export function resolvePackageEntitlements(params: {
       canUsePaymentLink: true,
       canUseNfc: true,
       canUseUblImport: true,
+      canUseMutabakat: true,
     };
   }
 
@@ -153,6 +156,7 @@ export function resolvePackageEntitlements(params: {
     canUsePaymentLink: tierKey === 'profesyonel' || tierKey === 'kurumsal',
     canUseNfc: tierKey === 'profesyonel' || tierKey === 'kurumsal',
     canUseUblImport: tierKey === 'kurumsal',
+    canUseMutabakat: tierKey === 'kurumsal',
   };
 }
 

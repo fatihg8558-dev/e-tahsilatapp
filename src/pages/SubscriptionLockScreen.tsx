@@ -57,11 +57,13 @@ interface SubscriptionLockScreenProps {
 
 const PAKET_OZELLIKLERI = [
   'Sınırsız Tahsilat ve Tediye Makbuzu',
+  'Elle Alış / Satış Faturası (Web)',
   'Cari Hesap Takibi, Bakiyeler ve Ekstreler',
   'Çek / Senet Vade & Ciro Takibi',
   'Kasa & Gelir-Gider Yönetimi',
   'PDF Makbuz & WhatsApp / E-posta Paylaşımı',
   'UBL / XML Fatura İçe Aktarma',
+  'Cari Mutabakat (A4 PDF & Online Link)',
   'Çoklu Kullanıcı / Saha Plasiyer Desteği',
   'Bulut Yedekleme & Mobil/Masaüstü Erişim',
 ];
@@ -666,7 +668,8 @@ export const SubscriptionLockScreen: React.FC<SubscriptionLockScreenProps> = ({ 
                   {periodInfo.bitisTarihi ? ` • Bitiş Tarihi: ${formatDate(periodInfo.bitisTarihi)}` : ''}
                   {' • '}Link: {entitlements.canUsePaymentLink ? 'Açık' : 'Kilitli'} · NFC:{' '}
                   {entitlements.canUseNfc ? 'Açık' : 'Kilitli'} · UBL/XML:{' '}
-                  {entitlements.canUseUblImport ? 'Açık' : 'Kilitli'}
+                  {entitlements.canUseUblImport ? 'Açık' : 'Kilitli'} · Mutabakat:{' '}
+                  {entitlements.canUseMutabakat ? 'Açık' : 'Kilitli'}
                 </p>
               </div>
             </div>
@@ -809,7 +812,6 @@ export const SubscriptionLockScreen: React.FC<SubscriptionLockScreenProps> = ({ 
                   !isLockMode &&
                   periodInfo.status === 'active_package' &&
                   entitlements.tierKey === tier.key;
-                const customFeatures = exactPaket ? getPackageFeatures(exactPaket, paketFeaturesMap) : [];
 
                 return (
                   <div
@@ -876,37 +878,25 @@ export const SubscriptionLockScreen: React.FC<SubscriptionLockScreenProps> = ({ 
                       </div>
 
                       <ul className="space-y-2.5 text-xs mb-6">
-                        {customFeatures.length > 0
-                          ? customFeatures.map((ozellik, idx) => (
-                              <li
-                                key={`${tier.key}-custom-${idx}`}
-                                className="flex items-start gap-2.5 text-gray-200"
-                              >
-                                <span className="inline-flex items-center justify-center w-4 h-4 rounded bg-emerald-500 text-white shrink-0 mt-0.5">
-                                  <Check className="w-3 h-3 stroke-[3]" />
-                                </span>
-                                <span>{ozellik}</span>
-                              </li>
-                            ))
-                          : tier.features.map((feat, idx) => (
-                              <li
-                                key={`${tier.key}-feat-${idx}`}
-                                className={`flex items-center gap-2.5 ${
-                                  feat.included ? 'text-gray-200' : 'text-gray-500'
-                                }`}
-                              >
-                                {feat.included ? (
-                                  <span className="inline-flex items-center justify-center w-4 h-4 rounded bg-emerald-500 text-white shrink-0">
-                                    <Check className="w-3 h-3 stroke-[3]" />
-                                  </span>
-                                ) : (
-                                  <span className="inline-flex items-center justify-center w-4 h-4 text-red-500 shrink-0">
-                                    <X className="w-4 h-4 stroke-[3]" />
-                                  </span>
-                                )}
-                                <span>{feat.label}</span>
-                              </li>
-                            ))}
+                        {tier.features.map((feat, idx) => (
+                          <li
+                            key={`${tier.key}-feat-${idx}`}
+                            className={`flex items-center gap-2.5 ${
+                              feat.included ? 'text-gray-200' : 'text-gray-500'
+                            }`}
+                          >
+                            {feat.included ? (
+                              <span className="inline-flex items-center justify-center w-4 h-4 rounded bg-emerald-500 text-white shrink-0">
+                                <Check className="w-3 h-3 stroke-[3]" />
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center justify-center w-4 h-4 text-red-500 shrink-0">
+                                <X className="w-4 h-4 stroke-[3]" />
+                              </span>
+                            )}
+                            <span>{feat.label}</span>
+                          </li>
+                        ))}
                       </ul>
                     </div>
 

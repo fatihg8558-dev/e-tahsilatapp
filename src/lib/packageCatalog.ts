@@ -49,12 +49,13 @@ export const PACKAGE_TIERS: PackageTierDefinition[] = [
     ekPlasiyerUcreti: 100,
     features: [
       { label: 'Tahsilat & Tediye Makbuzu', included: true },
-      { label: 'Elle Alış/Satış Faturası & Mutabakat', included: true },
+      { label: 'Elle Alış/Satış Faturası', included: true },
       { label: 'WhatsApp & Mail Gönderimi', included: true },
       { label: 'Çoklu Kasa, Banka & Çek/Senet', included: true },
       { label: 'Link ile Tahsilat (iyzico vb.)', included: false },
       { label: 'NFC ile Temassız Tahsilat', included: false },
       { label: 'UBL / XML Fatura Cari İşleme', included: false },
+      { label: 'Cari Mutabakat (A4 PDF & Online Link)', included: false },
     ],
   },
   {
@@ -72,12 +73,13 @@ export const PACKAGE_TIERS: PackageTierDefinition[] = [
     ekPlasiyerUcreti: 100,
     features: [
       { label: 'Tahsilat & Tediye Makbuzu', included: true },
-      { label: 'Elle Alış/Satış Faturası & Mutabakat', included: true },
+      { label: 'Elle Alış/Satış Faturası', included: true },
       { label: 'WhatsApp & Mail Gönderimi', included: true },
       { label: 'Çoklu Kasa, Banka & Çek/Senet', included: true },
       { label: 'Link ile Tahsilat (iyzico vb.)', included: true },
       { label: 'NFC ile Temassız Tahsilat', included: true },
       { label: 'UBL / XML Fatura Cari İşleme', included: false },
+      { label: 'Cari Mutabakat (A4 PDF & Online Link)', included: false },
     ],
   },
   {
@@ -95,12 +97,13 @@ export const PACKAGE_TIERS: PackageTierDefinition[] = [
     ekPlasiyerUcreti: 100,
     features: [
       { label: 'Tahsilat & Tediye Makbuzu', included: true },
-      { label: 'Elle Alış/Satış Faturası & Mutabakat', included: true },
+      { label: 'Elle Alış/Satış Faturası', included: true },
       { label: 'WhatsApp & Mail Gönderimi', included: true },
       { label: 'Çoklu Kasa, Banka & Çek/Senet', included: true },
       { label: 'Link ile Tahsilat (iyzico vb.)', included: true },
       { label: 'NFC ile Temassız Tahsilat', included: true },
       { label: 'UBL / XML Fatura Cari İşleme', included: true },
+      { label: 'Cari Mutabakat (A4 PDF & Online Link)', included: true },
     ],
   },
 ];
@@ -116,7 +119,7 @@ export const COMPARISON_FEATURE_ROWS: ComparisonFeatureRow[] = [
     values: { baslangic: true, profesyonel: true, kurumsal: true },
   },
   {
-    label: 'Elle Alış/Satış Faturası & Cari Mutabakat',
+    label: 'Elle Alış/Satış Faturası',
     values: { baslangic: true, profesyonel: true, kurumsal: true },
   },
   {
@@ -137,6 +140,10 @@ export const COMPARISON_FEATURE_ROWS: ComparisonFeatureRow[] = [
   },
   {
     label: 'UBL / XML Fatura Cari İşleme',
+    values: { baslangic: false, profesyonel: false, kurumsal: true },
+  },
+  {
+    label: 'Cari Mutabakat (A4 PDF & Online Link)',
     values: { baslangic: false, profesyonel: false, kurumsal: true },
   },
 ];

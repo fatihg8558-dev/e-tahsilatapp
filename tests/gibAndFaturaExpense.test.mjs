@@ -514,8 +514,8 @@ test('GİB fetching is removed while all tiers gain manual fatura (web-only) & m
     assert.ok(ublSrc.includes('accept=".xml,.ubl,.zip'));
     assert.ok(ublSrc.includes('data-testid="ubl_bulk_giderlestir_btn"'));
 
-    // 3. packageCatalog includes manual fatura & mutabakat on ALL tiers while keeping UBL Kurumsal-only
-    const { PACKAGE_TIERS } = await loadTsWithMocks('src/lib/packageCatalog.ts');
+    // 3. packageCatalog includes manual fatura on ALL tiers while keeping UBL & Cari Mutabakat Kurumsal-only
+    const { PACKAGE_TIERS, COMPARISON_FEATURE_ROWS } = await loadTsWithMocks('src/lib/packageCatalog.ts');
     for (const pkgId of ['baslangic', 'profesyonel', 'kurumsal']) {
       const pkg = PACKAGE_TIERS.find((p) => p.key === pkgId);
       assert.ok(pkg, `${pkgId} package should exist`);
@@ -525,13 +525,19 @@ test('GİB fetching is removed while all tiers gain manual fatura (web-only) & m
       );
       const ublFeature = pkg.features.find((f) => f.label.includes('UBL / XML'));
       assert.equal(ublFeature?.included, pkgId === 'kurumsal');
+      const mutabakatFeature = pkg.features.find((f) => f.label.includes('Cari Mutabakat'));
+      assert.equal(mutabakatFeature?.included, pkgId === 'kurumsal');
     }
+    const mutabakatRow = COMPARISON_FEATURE_ROWS.find((r) => r.label.includes('Cari Mutabakat'));
+    assert.deepEqual(mutabakatRow?.values, { baslangic: false, profesyonel: false, kurumsal: true });
 
-    // 4. CarilerPage & KasaGelirGiderPage & App.tsx wire Web-only manual fatura & mutabakat link/PDF
+    // 4. CarilerPage & KasaGelirGiderPage & App.tsx wire Web-only manual fatura & Kurumsal-gated mutabakat link/PDF
     const carilerSrc = fs.readFileSync(path.join(rootDir, 'src/pages/CarilerPage.tsx'), 'utf8');
     assert.ok(carilerSrc.includes('data-testid="open_manual_fatura_button"'));
     assert.ok(carilerSrc.includes('data-testid="ekstre_manual_fatura_btn"'));
     assert.ok(carilerSrc.includes('data-testid="ekstre_mutabakat_modal_btn"'));
+    assert.ok(carilerSrc.includes('entitlements.canUseMutabakat'));
+    assert.ok(carilerSrc.includes('data-testid="mutabakat_lock_badge"'));
     assert.ok(carilerSrc.includes('<ManualFaturaModal'));
     assert.ok(carilerSrc.includes('<MutabakatMektubuModal'));
 
@@ -551,3 +557,136 @@ test('GİB fetching is removed while all tiers gain manual fatura (web-only) & m
     }
   }
 });
+
+test('mutabakatService bulk listing, 1-click negative filtering, stats, and discrepancy helpers work accurately', async () => {
+  const state = {
+    cari_mutabakatlar: [
+      {
+        id: 'm-1',
+        firma_id: 'firma-1',
+        cari_id: 'cari-1',
+        mutabakat_kodu: 'MTB-001',
+        firma_unvan: 'Örnek A.Ş.',
+        cari_unvan: 'Alfa Ltd.',
+        mutabakat_tarihi: '2026-11-20',
+        donem_baslik: 'Kasım 2026',
+        bakiye: 12000,
+        durum: 'itiraz',
+        cevaplayan_ad: 'Ali Veli',
+        itiraz_tutari: 10500,
+        itiraz_notu: 'FT-88 henüz işlenmemiş',
+        cevap_tarihi: '2026-11-20T10:00:00Z',
+        created_at: '2026-11-19T09:00:00Z',
+      },
+      {
+        id: 'm-2',
+        firma_id: 'firma-1',
+        cari_id: 'cari-2',
+        mutabakat_kodu: 'MTB-002',
+        firma_unvan: 'Örnek A.Ş.',
+        cari_unvan: 'Beta Ticaret',
+        mutabakat_tarihi: '2026-11-20',
+        donem_baslik: 'Kasım 2026',
+        bakiye: 5000,
+        durum: 'mutabik',
+        cevaplayan_ad: 'Ayşe Demir',
+        cevap_tarihi: '2026-11-20T11:00:00Z',
+        created_at: '2026-11-19T10:00:00Z',
+      },
+      {
+        id: 'm-3',
+        firma_id: 'firma-1',
+        cari_id: 'cari-3',
+        mutabakat_kodu: 'MTB-003',
+        firma_unvan: 'Örnek A.Ş.',
+        cari_unvan: 'Gamma Sanayi',
+        mutabakat_tarihi: '2026-11-20',
+        donem_baslik: 'Kasım 2026',
+        bakiye: -3000,
+        durum: 'bekliyor',
+        created_at: '2026-11-19T11:00:00Z',
+      },
+      {
+        id: 'm-other',
+        firma_id: 'firma-2',
+        cari_id: 'cari-x',
+        mutabakat_kodu: 'MTB-999',
+        firma_unvan: 'Başka Firma',
+        cari_unvan: 'Diğer Cari',
+        mutabakat_tarihi: '2026-11-20',
+        bakiye: 100,
+        durum: 'itiraz',
+        created_at: '2026-11-19T12:00:00Z',
+      },
+    ],
+  };
+
+  const {
+    fetchAllMutabakatlarForFirma,
+    computeItirazDiscrepancy,
+    computeMutabakatStats,
+    filterMutabakatRecords,
+  } = await loadTsWithMocks('src/lib/mutabakatService.ts', buildFakeSupabaseMock(state));
+
+  const { records, missingTable } = await fetchAllMutabakatlarForFirma('firma-1');
+  assert.equal(Boolean(missingTable), false);
+  assert.equal(records.length, 3);
+
+  const stats = computeMutabakatStats(records);
+  assert.deepEqual(stats, {
+    total: 3,
+    itirazCount: 1,
+    mutabikCount: 1,
+    bekliyorCount: 1,
+    totalItirazDiscrepancy: 1500,
+  });
+
+  // Discrepancy calculation: |12000 - 10500| => 10500 - 12000 = -1500
+  assert.equal(computeItirazDiscrepancy(records[0]), -1500);
+  assert.equal(computeItirazDiscrepancy(records[1]), null);
+
+  // 1-click negative filter returns only 'itiraz' records
+  const negativeOnly = filterMutabakatRecords(records, 'itiraz', '');
+  assert.equal(negativeOnly.length, 1);
+  assert.equal(negativeOnly[0].mutabakat_kodu, 'MTB-001');
+
+  // Search within filter narrows down by itiraz_notu / cari_unvan / code
+  const searchedNote = filterMutabakatRecords(records, 'all', 'ft-88');
+  assert.equal(searchedNote.length, 1);
+  assert.equal(searchedNote[0].cari_unvan, 'Alfa Ltd.');
+
+  const searchedApproved = filterMutabakatRecords(records, 'mutabik', 'beta');
+  assert.equal(searchedApproved.length, 1);
+  assert.equal(searchedApproved[0].mutabakat_kodu, 'MTB-002');
+});
+
+test('MutabakatlarPage, GunSonuRaporlarPage, and simplified collapsible Hesabim sidebar are wired cleanly', () => {
+  const mutabakatPageSrc = fs.readFileSync(path.join(rootDir, 'src/pages/MutabakatlarPage.tsx'), 'utf8');
+  assert.ok(mutabakatPageSrc.includes('entitlements.canUseMutabakat'));
+  assert.ok(mutabakatPageSrc.includes('data-testid="mutabakat_kurumsal_lock_screen"'));
+  assert.ok(mutabakatPageSrc.includes('data-testid="mutabakat_filter_itiraz"'));
+  assert.ok(mutabakatPageSrc.includes('data-testid="mutabakat_quick_negative_btn"'));
+  assert.ok(mutabakatPageSrc.includes('data-testid="mutabakat_create_new_btn"'));
+
+  const gunSonuRaporlarSrc = fs.readFileSync(path.join(rootDir, 'src/pages/GunSonuRaporlarPage.tsx'), 'utf8');
+  assert.ok(gunSonuRaporlarSrc.includes('data-testid="gun_sonu_raporlar_tab_gun_sonu"'));
+  assert.ok(gunSonuRaporlarSrc.includes('data-testid="gun_sonu_raporlar_tab_performans"'));
+  assert.ok(gunSonuRaporlarSrc.includes('<PlasiyerGunSonuPage'));
+  assert.ok(gunSonuRaporlarSrc.includes('<PlasiyerPerformansPage'));
+
+  const layoutSrc = fs.readFileSync(path.join(rootDir, 'src/components/layout/AppLayout.tsx'), 'utf8');
+  assert.ok(layoutSrc.includes('const [hesabimOpen, setHesabimOpen] = useState(false);'));
+  assert.ok(layoutSrc.includes('data-testid="nav_makbuz_desktop"'));
+  assert.ok(layoutSrc.includes('data-testid="nav_mutabakat_desktop"'));
+  assert.ok(layoutSrc.includes('data-testid="nav_hesabim_toggle_desktop"'));
+  assert.ok(layoutSrc.includes('data-testid="nav_hesabim_toggle_mobile"'));
+  assert.ok(layoutSrc.includes('data-testid="nav_gun_sonu_desktop"'));
+  assert.ok(layoutSrc.includes('data-testid="nav_gun_sonu_mobile"'));
+
+  const appSrc = fs.readFileSync(path.join(rootDir, 'src/App.tsx'), 'utf8');
+  assert.ok(appSrc.includes("effectiveTab === 'mutabakat'"));
+  assert.ok(appSrc.includes('<MutabakatlarPage'));
+  assert.ok(appSrc.includes('<GunSonuRaporlarPage'));
+  assert.ok(appSrc.includes("effectiveTab === 'makbuz'"));
+});
+

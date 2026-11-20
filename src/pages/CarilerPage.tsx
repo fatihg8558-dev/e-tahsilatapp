@@ -1448,12 +1448,40 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
                 )}
                 <button
                   type="button"
-                  onClick={() => setIsMutabakatModalOpen(true)}
+                  onClick={() => {
+                    if (!entitlements.canUseMutabakat) {
+                      setSelectedCariForDetail(null);
+                      onNavigate('paketler');
+                      return;
+                    }
+                    setIsMutabakatModalOpen(true);
+                  }}
                   data-testid="ekstre_mutabakat_modal_btn"
-                  className="px-3 py-1.5 rounded-lg bg-purple-500/20 text-purple-200 border border-purple-400/35 font-bold text-xs flex items-center gap-1.5 hover:bg-purple-500/30 transition"
+                  title={
+                    entitlements.canUseMutabakat
+                      ? 'A4 PDF Mutabakat Mektubu & Online Onay Linki'
+                      : 'Kurumsal (Pro) pakette açılır — yükseltmek için tıklayın'
+                  }
+                  className={`px-3 py-1.5 rounded-lg font-bold text-xs flex items-center gap-1.5 border transition ${
+                    entitlements.canUseMutabakat
+                      ? 'bg-purple-500/20 text-purple-200 border-purple-400/35 hover:bg-purple-500/30'
+                      : 'bg-amber-500/10 text-amber-200 border-amber-400/40 hover:bg-amber-500/20'
+                  }`}
                 >
-                  <FileCheck2 className="w-3.5 h-3.5" />
+                  {entitlements.canUseMutabakat ? (
+                    <FileCheck2 className="w-3.5 h-3.5" />
+                  ) : (
+                    <Lock className="w-3.5 h-3.5 text-amber-300" />
+                  )}
                   <span>Mutabakat PDF &amp; Link</span>
+                  {!entitlements.canUseMutabakat && (
+                    <span
+                      data-testid="mutabakat_lock_badge"
+                      className="px-1.5 py-0.5 rounded-md bg-amber-400/20 border border-amber-400/40 text-amber-300 text-[10px] font-extrabold"
+                    >
+                      Kurumsal
+                    </span>
+                  )}
                 </button>
               </div>
 
@@ -2147,9 +2175,9 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
         />
       )}
 
-      {/* CARİ MUTABAKAT A4 PDF VE ONLINE ONAY LİNKİ MODALI */}
+      {/* CARİ MUTABAKAT A4 PDF VE ONLINE ONAY LİNKİ MODALI (KURUMSAL PAKET) */}
       <MutabakatMektubuModal
-        isOpen={isMutabakatModalOpen}
+        isOpen={isMutabakatModalOpen && entitlements.canUseMutabakat}
         onClose={() => setIsMutabakatModalOpen(false)}
         cari={selectedCariForDetail}
         movements={detailMovements}

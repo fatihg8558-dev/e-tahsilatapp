@@ -15,9 +15,9 @@ import {
   Building2,
   ShieldCheck,
   ChevronRight,
+  ChevronDown,
   Settings,
   UserCog,
-  TrendingUp,
   Home,
   ArrowLeft,
   Crown,
@@ -28,6 +28,7 @@ import {
   Download,
   ClipboardCheck,
   FileCheck2,
+  Lock,
 } from 'lucide-react';
 import { SettingsModal } from '../settings/SettingsModal';
 import { isWebPlatform } from '../../lib/platform';
@@ -56,8 +57,9 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
   notificationRefreshKey = 0,
   children,
 }) => {
-  const { user, profile, firma, isSuperAdmin, signOut } = useAuth();
+  const { user, profile, firma, isSuperAdmin, entitlements, signOut } = useAuth();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [hesabimOpen, setHesabimOpen] = useState(false);
   const [pendingNotificationCount, setPendingNotificationCount] = useState(0);
   const [pendingGunSonuCount, setPendingGunSonuCount] = useState(0);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -142,15 +144,18 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
 
   const breadcrumbs: Record<string, string> = {
     dashboard: 'Genel Bakış',
-    cariler: 'Cari Hesaplar',
-    tahsilat: 'Yeni Tahsilat Makbuzu',
-    tediye: 'Yeni Tediye Makbuzu',
+    makbuz: 'Makbuz',
+    cariler: 'Cariler',
+    tahsilat: 'Makbuz · Tahsilat',
+    tediye: 'Makbuz · Tediye',
     islem_duzenle: 'Makbuz Güncelle',
-    islemler: 'İşlem Listesi',
+    islemler: 'İşlemler',
     portfoy: 'Çek & Senet Portföyü',
     kasa: 'Kasa & Gelir-Gider',
-    performans: 'Plasiyer Performans Raporu',
-    gun_sonu: 'Plasiyer Gün Sonu',
+    mutabakat: 'Mutabakat',
+    gun_sonu_raporlar: 'Gün Sonu & Raporlar',
+    performans: 'Gün Sonu & Raporlar',
+    gun_sonu: 'Gün Sonu & Raporlar',
     yedekleme: 'Yedekleme & Geri Yükleme',
     paketler: 'Abonelik & Paketler',
     superadmin: 'Süper Admin Paneli',
@@ -158,6 +163,15 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
 
   const homeTab = workspaceMode === 'kasa' ? 'kasa' : 'dashboard';
   const isSubPage = currentTab !== homeTab;
+  const isMakbuzActive =
+    currentTab === 'makbuz' ||
+    currentTab === 'tahsilat' ||
+    currentTab === 'tediye' ||
+    currentTab === 'islem_duzenle';
+  const isGunSonuRaporlarActive =
+    currentTab === 'gun_sonu_raporlar' ||
+    currentTab === 'gun_sonu' ||
+    currentTab === 'performans';
 
   return (
     <div className="min-h-[100dvh] print:min-h-0 bg-[#0b1322] print:bg-white text-slate-100 flex flex-col lg:flex-row relative overflow-x-hidden fintech-glow">
@@ -208,17 +222,19 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
         )}
 
         {/* MENÜ LİSTESİ */}
-        <div className="flex-1 py-4 px-3 space-y-6 overflow-y-auto">
+        <div className="flex-1 py-4 px-3 space-y-4 overflow-y-auto">
           {/* YÖNETİM */}
           <div>
             <div className="px-3 text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-2">
-              {workspaceMode === 'kasa' ? 'GELİR / GİDER & KASA' : 'TAHSİLAT & CARİ'}
+              {workspaceMode === 'kasa' ? 'GELİR / GİDER & KASA' : 'YÖNETİM'}
             </div>
             <nav className="space-y-1">
               {workspaceMode === 'tahsilat' ? (
                 <>
+                  {/* 1. GENEL BAKIŞ */}
                   <button
                     onClick={() => onSelectTab('dashboard')}
+                    data-testid="nav_dashboard_desktop"
                     className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold transition-all ${
                       currentTab === 'dashboard'
                         ? 'bg-teal-400 text-slate-950 shadow-md font-bold'
@@ -229,8 +245,42 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
                     <span>Genel Bakış</span>
                   </button>
 
+                  {/* 2. MAKBUZ (TAHSİLAT & TEDİYE TEK EKRAN) */}
+                  {profile?.rol !== 'muhasebeci' && (
+                    <button
+                      onClick={() => onSelectTab('makbuz')}
+                      data-testid="nav_makbuz_desktop"
+                      className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold transition-all ${
+                        isMakbuzActive
+                          ? 'bg-teal-400 text-slate-950 shadow-md font-bold'
+                          : 'text-teal-300 hover:text-white hover:bg-teal-500/10'
+                      }`}
+                    >
+                      <ReceiptText className="w-4 h-4" />
+                      <span>Makbuz</span>
+                    </button>
+                  )}
+
+                  {/* 3. KASA & GELİR-GİDER */}
+                  {!onChangeWorkspaceMode && profile?.rol !== 'plasiyer' && (
+                    <button
+                      onClick={() => onSelectTab('kasa')}
+                      data-testid="nav_kasa_desktop"
+                      className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold transition-all ${
+                        currentTab === 'kasa'
+                          ? 'bg-emerald-400 text-slate-950 shadow-md font-bold'
+                          : 'text-emerald-300/90 hover:text-emerald-200 hover:bg-emerald-500/10'
+                      }`}
+                    >
+                      <Wallet className={`w-4 h-4 ${currentTab === 'kasa' ? 'text-slate-950' : 'text-emerald-400'}`} />
+                      <span>Kasa &amp; Gelir-Gider</span>
+                    </button>
+                  )}
+
+                  {/* 4. CARİLER */}
                   <button
                     onClick={() => onSelectTab('cariler')}
+                    data-testid="nav_cariler_desktop"
                     className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold transition-all ${
                       currentTab === 'cariler'
                         ? 'bg-teal-400 text-slate-950 shadow-md font-bold'
@@ -241,91 +291,80 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
                     <span>Cariler</span>
                   </button>
 
-                  {profile?.rol !== 'muhasebeci' && (
-                    <>
-                      <button
-                        onClick={() => onSelectTab('tahsilat')}
-                        className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl text-sm font-medium transition-all ${
-                          currentTab === 'tahsilat'
-                            ? 'bg-teal-400 text-[#0a0e13] font-semibold shadow-sm'
-                            : 'text-teal-400/90 hover:text-teal-300 hover:bg-teal-500/10'
-                        }`}
-                      >
-                        <ArrowDownLeft className="w-4 h-4 text-teal-400" />
-                        <span>Tahsilat Yap</span>
-                      </button>
-
-                      <button
-                        onClick={() => onSelectTab('tediye')}
-                        className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl text-sm font-medium transition-all ${
-                          currentTab === 'tediye'
-                            ? 'bg-teal-400 text-[#0a0e13] font-semibold shadow-sm'
-                            : 'text-orange-400/90 hover:text-orange-300 hover:bg-orange-500/10'
-                        }`}
-                      >
-                        <ArrowUpRight className="w-4 h-4 text-orange-400" />
-                        <span>Tediye Yap</span>
-                      </button>
-                    </>
+                  {/* 5. ÇEK & SENET PORTFÖYÜ (SADECE WEB) */}
+                  {isWebPlatform() && (
+                    <button
+                      onClick={() => onSelectTab('portfoy')}
+                      data-testid="nav_portfoy_desktop"
+                      className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold transition-all ${
+                        currentTab === 'portfoy'
+                          ? 'bg-teal-400 text-slate-950 shadow-md font-bold'
+                          : 'text-slate-300 hover:text-white hover:bg-slate-800/70'
+                      }`}
+                    >
+                      <FileCheck2 className={`w-4 h-4 ${currentTab === 'portfoy' ? 'text-slate-950' : 'text-teal-400'}`} />
+                      <span>Çek &amp; Senet Portföyü</span>
+                    </button>
                   )}
 
+                  {/* 6. İŞLEMLER */}
                   <button
                     onClick={() => onSelectTab('islemler')}
-                    className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl text-sm font-medium transition-all ${
+                    data-testid="nav_islemler_desktop"
+                    className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold transition-all ${
                       currentTab === 'islemler'
-                        ? 'bg-teal-400 text-[#0a0e13] font-semibold shadow-sm'
-                        : 'text-gray-300 hover:text-white hover:bg-white/[0.05]'
+                        ? 'bg-teal-400 text-slate-950 shadow-md font-bold'
+                        : 'text-slate-300 hover:text-white hover:bg-slate-800/70'
                     }`}
                   >
                     <ReceiptText className="w-4 h-4" />
                     <span>İşlemler</span>
                   </button>
 
-                  {isWebPlatform() && (
-                    <button
-                      onClick={() => onSelectTab('portfoy')}
-                      data-testid="nav_portfoy_desktop"
-                      className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl text-sm font-medium transition-all ${
-                        currentTab === 'portfoy'
-                          ? 'bg-teal-400 text-[#0a0e13] font-semibold shadow-sm'
-                          : 'text-gray-300 hover:text-white hover:bg-white/[0.05]'
-                      }`}
-                    >
-                      <FileCheck2 className={`w-4 h-4 ${currentTab === 'portfoy' ? 'text-[#0a0e13]' : 'text-teal-400'}`} />
-                      <span>Çek &amp; Senet Portföyü</span>
-                    </button>
-                  )}
-
+                  {/* 7. MUTABAKAT (KURUMSAL PAKET) */}
                   <button
-                    onClick={() => onSelectTab('performans')}
-                    className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl text-sm font-medium transition-all ${
-                      currentTab === 'performans'
-                        ? 'bg-teal-400 text-[#0a0e13] font-semibold shadow-sm'
-                        : 'text-gray-300 hover:text-white hover:bg-white/[0.05]'
-                    }`}
-                  >
-                    <TrendingUp className="w-4 h-4 text-emerald-400" />
-                    <span>{profile?.rol === 'plasiyer' ? 'Performans Raporum' : 'Plasiyer Raporları'}</span>
-                  </button>
-
-                  <button
-                    onClick={() => onSelectTab('gun_sonu')}
-                    data-testid="nav_gun_sonu_desktop"
-                    className={`w-full flex items-center justify-between px-3 py-2 rounded-xl text-sm font-medium transition-all ${
-                      currentTab === 'gun_sonu'
-                        ? 'bg-amber-400 text-[#0a0e13] font-semibold shadow-sm'
-                        : 'text-amber-300/90 hover:text-amber-200 hover:bg-amber-500/10'
+                    onClick={() => onSelectTab('mutabakat')}
+                    data-testid="nav_mutabakat_desktop"
+                    className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-sm font-semibold transition-all ${
+                      currentTab === 'mutabakat'
+                        ? 'bg-teal-400 text-slate-950 shadow-md font-bold'
+                        : 'text-slate-300 hover:text-white hover:bg-slate-800/70'
                     }`}
                   >
                     <span className="flex items-center gap-3">
-                      <ClipboardCheck className={`w-4 h-4 ${currentTab === 'gun_sonu' ? 'text-[#0a0e13]' : 'text-amber-400'}`} />
-                      <span>Plasiyer Gün Sonu</span>
+                      {entitlements.canUseMutabakat ? (
+                        <FileCheck2 className={`w-4 h-4 ${currentTab === 'mutabakat' ? 'text-slate-950' : 'text-purple-400'}`} />
+                      ) : (
+                        <Lock className={`w-4 h-4 ${currentTab === 'mutabakat' ? 'text-slate-950' : 'text-amber-300'}`} />
+                      )}
+                      <span>Mutabakat</span>
+                    </span>
+                    {!entitlements.canUseMutabakat && (
+                      <span className="text-[9.5px] px-1.5 py-0.5 rounded bg-amber-400/20 border border-amber-400/35 text-amber-300 font-extrabold">
+                        Pro
+                      </span>
+                    )}
+                  </button>
+
+                  {/* 8. GÜN SONU & RAPORLAR */}
+                  <button
+                    onClick={() => onSelectTab('gun_sonu_raporlar')}
+                    data-testid="nav_gun_sonu_desktop"
+                    className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-sm font-semibold transition-all ${
+                      isGunSonuRaporlarActive
+                        ? 'bg-amber-400 text-[#0a0e13] font-bold shadow-sm'
+                        : 'text-amber-300/90 hover:text-amber-200 hover:bg-amber-500/10'
+                    }`}
+                  >
+                    <span className="flex items-center gap-3 min-w-0">
+                      <ClipboardCheck className={`w-4 h-4 shrink-0 ${isGunSonuRaporlarActive ? 'text-[#0a0e13]' : 'text-amber-400'}`} />
+                      <span className="truncate">Gün Sonu &amp; Raporlar</span>
                     </span>
                     {pendingGunSonuCount > 0 && profile?.rol !== 'plasiyer' && (
                       <span
                         data-testid="nav_gun_sonu_badge_desktop"
-                        className={`text-[10px] px-1.5 py-0.5 rounded-full font-black ${
-                          currentTab === 'gun_sonu'
+                        className={`text-[10px] px-1.5 py-0.5 rounded-full font-black shrink-0 ${
+                          isGunSonuRaporlarActive
                             ? 'bg-slate-950/20 text-slate-950'
                             : 'bg-amber-400 text-slate-950'
                         }`}
@@ -334,21 +373,6 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
                       </span>
                     )}
                   </button>
-
-                  {!onChangeWorkspaceMode && profile?.rol !== 'plasiyer' && (
-                    <button
-                      onClick={() => onSelectTab('kasa')}
-                      data-testid="nav_kasa_desktop"
-                      className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl text-sm font-medium transition-all ${
-                        currentTab === 'kasa'
-                          ? 'bg-emerald-400 text-[#0a0e13] font-semibold shadow-sm'
-                          : 'text-emerald-300/90 hover:text-emerald-200 hover:bg-emerald-500/10'
-                      }`}
-                    >
-                      <Wallet className="w-4 h-4 text-emerald-400" />
-                      <span>Kasa &amp; Gelir-Gider</span>
-                    </button>
-                  )}
                 </>
               ) : (
                 <button
@@ -367,103 +391,119 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
             </nav>
           </div>
 
-          {/* HESABIM */}
-          <div>
-            <div className="px-3 text-[11px] font-bold text-gray-400 uppercase tracking-wider mb-2">
-              HESABIM
-            </div>
-            <nav className="space-y-1">
-              <button
-                onClick={() => onSelectTab('paketler')}
-                className={`w-full flex items-center justify-between px-3 py-2 rounded-xl text-sm font-medium transition-all ${
-                  currentTab === 'paketler'
-                    ? 'bg-teal-400 text-[#0a0e13] font-semibold shadow-sm'
-                    : 'text-gray-300 hover:text-white hover:bg-white/[0.05]'
-                }`}
-              >
-                <div className="flex items-center gap-3">
-                  <CreditCard className="w-4 h-4" />
-                  <span>Paket Satın Al</span>
-                </div>
-                {firma?.sinirsiz ? (
-                  <span className="text-[10px] bg-teal-500/20 text-teal-300 px-1.5 py-0.5 rounded font-bold">
-                    Sınırsız
-                  </span>
-                ) : (
-                  <span className="text-[10px] bg-white/10 text-gray-300 px-1.5 py-0.5 rounded">
-                    Abonelik
-                  </span>
-                )}
-              </button>
-
-              {/* Tüm Kullanıcılar İçin JSON Yedekleme & Geri Yükleme */}
-              <button
-                onClick={() => onSelectTab('yedekleme')}
-                data-testid="nav_yedekleme_desktop"
-                className={`w-full flex items-center justify-between px-3 py-2 rounded-xl text-sm font-medium transition-all ${
-                  currentTab === 'yedekleme'
-                    ? 'bg-teal-400 text-[#0a0e13] font-semibold shadow-sm'
-                    : 'text-gray-300 hover:text-white hover:bg-white/[0.05]'
-                }`}
-              >
-                <div className="flex items-center gap-3">
-                  <FileJson className="w-4 h-4" />
-                  <span>JSON Yedekleme</span>
-                </div>
+          {/* 9. HESABIM (VARSAYILAN KAPALI AÇILIR-KAPANIR BÖLÜM) */}
+          <div className="pt-2 border-t border-white/[0.06]">
+            <button
+              type="button"
+              onClick={() => setHesabimOpen((v) => !v)}
+              aria-expanded={hesabimOpen}
+              data-testid="nav_hesabim_toggle_desktop"
+              className="w-full flex items-center justify-between px-3 py-2 rounded-xl text-xs font-extrabold text-slate-300 hover:text-white hover:bg-white/[0.04] uppercase tracking-wider transition"
+            >
+              <span className="flex items-center gap-2">
+                <span>Hesabım</span>
                 {fridayReminderDue && (
-                  <span className="text-[10px] bg-amber-400 text-slate-950 px-1.5 py-0.5 rounded font-extrabold">
-                    Cuma
-                  </span>
+                  <span className="w-2 h-2 rounded-full bg-amber-400" title="Cuma yedekleme hatırlatması" />
                 )}
-              </button>
+              </span>
+              <ChevronDown
+                className={`w-4 h-4 text-slate-400 transition-transform duration-200 ${
+                  hesabimOpen ? 'rotate-180 text-teal-400' : ''
+                }`}
+              />
+            </button>
 
-              {/* Ayarlar (Ana Hesap tüm sekmeleri, diğer roller Firma/Widget bölümünü görür) */}
-              {(canManageFirmaSettings || typeof window !== 'undefined' && typeof window.AndroidBridge?.requestPinHomeWidget === 'function') && (
+            {hesabimOpen && (
+              <nav className="space-y-1 mt-1.5 pl-1" data-testid="nav_hesabim_panel_desktop">
                 <button
-                  onClick={() => {
-                    setSettingsInitialTab(defaultSettingsTab);
-                    setIsSettingsOpen(true);
-                  }}
-                  data-testid="nav_settings_desktop"
-                  className="w-full flex items-center justify-between px-3 py-2 rounded-xl text-sm font-medium text-gray-300 hover:text-white hover:bg-white/[0.05] transition-all"
-                >
-                  <div className="flex items-center gap-3">
-                    <UserCog className="w-4 h-4 text-teal-400" />
-                    <span>{canManageFirmaSettings ? 'Plasiyer & Ayarlar' : 'Ayarlar & Widget'}</span>
-                  </div>
-                  <span className="text-[10px] bg-teal-500/10 text-teal-400 px-1.5 py-0.5 rounded border border-teal-500/20 font-bold">
-                    {canManageFirmaSettings ? 'Yönet' : 'Aç'}
-                  </span>
-                </button>
-              )}
-
-              {/* Sadece Süper Admin (conqueror58@gmail.com) Görür */}
-              {isSuperAdmin && (
-                <button
-                  onClick={() => onSelectTab('superadmin')}
-                  data-testid="nav_superadmin_desktop"
-                  className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-sm font-bold transition-all border ${
-                    currentTab === 'superadmin'
-                      ? 'bg-amber-400 text-slate-950 border-amber-400 shadow-md'
-                      : 'bg-amber-500/10 text-amber-300 border-amber-500/30 hover:bg-amber-500/20'
+                  onClick={() => onSelectTab('paketler')}
+                  className={`w-full flex items-center justify-between px-3 py-2 rounded-xl text-sm font-medium transition-all ${
+                    currentTab === 'paketler'
+                      ? 'bg-teal-400 text-[#0a0e13] font-semibold shadow-sm'
+                      : 'text-gray-300 hover:text-white hover:bg-white/[0.05]'
                   }`}
                 >
-                  <div className="flex items-center gap-2.5">
-                    <Crown className="w-4 h-4 shrink-0" />
-                    <span>Süper Admin</span>
+                  <div className="flex items-center gap-3">
+                    <CreditCard className="w-4 h-4" />
+                    <span>Paket Satın Al</span>
                   </div>
-                  <span
-                    className={`text-[10px] px-1.5 py-0.5 rounded font-extrabold ${
+                  {firma?.sinirsiz ? (
+                    <span className="text-[10px] bg-teal-500/20 text-teal-300 px-1.5 py-0.5 rounded font-bold">
+                      Sınırsız
+                    </span>
+                  ) : (
+                    <span className="text-[10px] bg-white/10 text-gray-300 px-1.5 py-0.5 rounded">
+                      Abonelik
+                    </span>
+                  )}
+                </button>
+
+                <button
+                  onClick={() => onSelectTab('yedekleme')}
+                  data-testid="nav_yedekleme_desktop"
+                  className={`w-full flex items-center justify-between px-3 py-2 rounded-xl text-sm font-medium transition-all ${
+                    currentTab === 'yedekleme'
+                      ? 'bg-teal-400 text-[#0a0e13] font-semibold shadow-sm'
+                      : 'text-gray-300 hover:text-white hover:bg-white/[0.05]'
+                  }`}
+                >
+                  <div className="flex items-center gap-3">
+                    <FileJson className="w-4 h-4" />
+                    <span>JSON Yedekleme</span>
+                  </div>
+                  {fridayReminderDue && (
+                    <span className="text-[10px] bg-amber-400 text-slate-950 px-1.5 py-0.5 rounded font-extrabold">
+                      Cuma
+                    </span>
+                  )}
+                </button>
+
+                {(canManageFirmaSettings || (typeof window !== 'undefined' && typeof window.AndroidBridge?.requestPinHomeWidget === 'function')) && (
+                  <button
+                    onClick={() => {
+                      setSettingsInitialTab(defaultSettingsTab);
+                      setIsSettingsOpen(true);
+                    }}
+                    data-testid="nav_settings_desktop"
+                    className="w-full flex items-center justify-between px-3 py-2 rounded-xl text-sm font-medium text-gray-300 hover:text-white hover:bg-white/[0.05] transition-all"
+                  >
+                    <div className="flex items-center gap-3">
+                      <UserCog className="w-4 h-4 text-teal-400" />
+                      <span>{canManageFirmaSettings ? 'Plasiyer & Ayarlar' : 'Ayarlar & Widget'}</span>
+                    </div>
+                    <span className="text-[10px] bg-teal-500/10 text-teal-400 px-1.5 py-0.5 rounded border border-teal-500/20 font-bold">
+                      {canManageFirmaSettings ? 'Yönet' : 'Aç'}
+                    </span>
+                  </button>
+                )}
+
+                {isSuperAdmin && (
+                  <button
+                    onClick={() => onSelectTab('superadmin')}
+                    data-testid="nav_superadmin_desktop"
+                    className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-sm font-bold transition-all border ${
                       currentTab === 'superadmin'
-                        ? 'bg-slate-950/20 text-slate-950'
-                        : 'bg-amber-400/20 text-amber-300'
+                        ? 'bg-amber-400 text-slate-950 border-amber-400 shadow-md'
+                        : 'bg-amber-500/10 text-amber-300 border-amber-500/30 hover:bg-amber-500/20'
                     }`}
                   >
-                    Yönetim
-                  </span>
-                </button>
-              )}
-            </nav>
+                    <div className="flex items-center gap-2.5">
+                      <Crown className="w-4 h-4 shrink-0" />
+                      <span>Süper Admin</span>
+                    </div>
+                    <span
+                      className={`text-[10px] px-1.5 py-0.5 rounded font-extrabold ${
+                        currentTab === 'superadmin'
+                          ? 'bg-slate-950/20 text-slate-950'
+                          : 'bg-amber-400/20 text-amber-300'
+                      }`}
+                    >
+                      Yönetim
+                    </span>
+                  </button>
+                )}
+              </nav>
+            )}
           </div>
         </div>
 
@@ -694,50 +734,65 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
                           onSelectTab('dashboard');
                           setMobileMenuOpen(false);
                         }}
-                        className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-gray-200 hover:bg-white/5"
+                        className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium ${
+                          currentTab === 'dashboard'
+                            ? 'bg-teal-400 text-slate-950 font-bold'
+                            : 'text-gray-200 hover:bg-white/5'
+                        }`}
                       >
-                        <LayoutDashboard className="w-4 h-4 text-teal-400" />
+                        <LayoutDashboard className={`w-4 h-4 ${currentTab === 'dashboard' ? 'text-slate-950' : 'text-teal-400'}`} />
                         <span>Genel Bakış</span>
                       </button>
+
+                      {profile?.rol !== 'muhasebeci' && (
+                        <button
+                          onClick={() => {
+                            onSelectTab('makbuz');
+                            setMobileMenuOpen(false);
+                          }}
+                          data-testid="nav_makbuz_mobile"
+                          className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium ${
+                            isMakbuzActive
+                              ? 'bg-teal-400 text-slate-950 font-bold'
+                              : 'text-teal-300 hover:bg-teal-500/10'
+                          }`}
+                        >
+                          <ReceiptText className="w-4 h-4" />
+                          <span>Makbuz</span>
+                        </button>
+                      )}
+
+                      {!onChangeWorkspaceMode && profile?.rol !== 'plasiyer' && (
+                        <button
+                          onClick={() => {
+                            onSelectTab('kasa');
+                            setMobileMenuOpen(false);
+                          }}
+                          data-testid="nav_kasa_mobile"
+                          className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium ${
+                            currentTab === 'kasa'
+                              ? 'bg-emerald-400 text-slate-950 font-bold'
+                              : 'text-emerald-300 hover:bg-emerald-500/10'
+                          }`}
+                        >
+                          <Wallet className={`w-4 h-4 ${currentTab === 'kasa' ? 'text-slate-950' : 'text-emerald-400'}`} />
+                          <span>Kasa &amp; Gelir-Gider</span>
+                        </button>
+                      )}
+
                       <button
                         onClick={() => {
                           onSelectTab('cariler');
                           setMobileMenuOpen(false);
                         }}
-                        className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-gray-200 hover:bg-white/5"
+                        className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium ${
+                          currentTab === 'cariler'
+                            ? 'bg-teal-400 text-slate-950 font-bold'
+                            : 'text-gray-200 hover:bg-white/5'
+                        }`}
                       >
-                        <Users className="w-4 h-4 text-teal-400" />
+                        <Users className={`w-4 h-4 ${currentTab === 'cariler' ? 'text-slate-950' : 'text-teal-400'}`} />
                         <span>Cariler</span>
-                      </button>
-                      <button
-                        onClick={() => {
-                          onSelectTab('tahsilat');
-                          setMobileMenuOpen(false);
-                        }}
-                        className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-teal-400 hover:bg-teal-500/10"
-                      >
-                        <ArrowDownLeft className="w-4 h-4" />
-                        <span>Tahsilat Yap</span>
-                      </button>
-                      <button
-                        onClick={() => {
-                          onSelectTab('tediye');
-                          setMobileMenuOpen(false);
-                        }}
-                        className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-orange-400 hover:bg-orange-500/10"
-                      >
-                        <ArrowUpRight className="w-4 h-4" />
-                        <span>Tediye Yap</span>
-                      </button>
-                      <button
-                        onClick={() => {
-                          onSelectTab('islemler');
-                          setMobileMenuOpen(false);
-                        }}
-                        className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-gray-200 hover:bg-white/5"
-                      >
-                        <ReceiptText className="w-4 h-4 text-teal-400" />
-                        <span>İşlemler</span>
                       </button>
 
                       {isWebPlatform() && (
@@ -760,36 +815,67 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
 
                       <button
                         onClick={() => {
-                          onSelectTab('performans');
+                          onSelectTab('islemler');
                           setMobileMenuOpen(false);
                         }}
-                        className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-gray-200 hover:bg-white/5"
+                        className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium ${
+                          currentTab === 'islemler'
+                            ? 'bg-teal-400 text-slate-950 font-bold'
+                            : 'text-gray-200 hover:bg-white/5'
+                        }`}
                       >
-                        <TrendingUp className="w-4 h-4 text-emerald-400" />
-                        <span>{profile?.rol === 'plasiyer' ? 'Performans Raporum' : 'Plasiyer Raporları'}</span>
+                        <ReceiptText className={`w-4 h-4 ${currentTab === 'islemler' ? 'text-slate-950' : 'text-teal-400'}`} />
+                        <span>İşlemler</span>
                       </button>
 
                       <button
                         onClick={() => {
-                          onSelectTab('gun_sonu');
+                          onSelectTab('mutabakat');
+                          setMobileMenuOpen(false);
+                        }}
+                        data-testid="nav_mutabakat_mobile"
+                        className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-sm font-medium ${
+                          currentTab === 'mutabakat'
+                            ? 'bg-teal-400 text-slate-950 font-bold'
+                            : 'text-gray-200 hover:bg-white/5'
+                        }`}
+                      >
+                        <span className="flex items-center gap-3">
+                          {entitlements.canUseMutabakat ? (
+                            <FileCheck2 className={`w-4 h-4 ${currentTab === 'mutabakat' ? 'text-slate-950' : 'text-purple-400'}`} />
+                          ) : (
+                            <Lock className={`w-4 h-4 ${currentTab === 'mutabakat' ? 'text-slate-950' : 'text-amber-300'}`} />
+                          )}
+                          <span>Mutabakat</span>
+                        </span>
+                        {!entitlements.canUseMutabakat && (
+                          <span className="text-[9.5px] px-1.5 py-0.5 rounded bg-amber-400/20 border border-amber-400/35 text-amber-300 font-extrabold">
+                            Pro
+                          </span>
+                        )}
+                      </button>
+
+                      <button
+                        onClick={() => {
+                          onSelectTab('gun_sonu_raporlar');
                           setMobileMenuOpen(false);
                         }}
                         data-testid="nav_gun_sonu_mobile"
                         className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-sm font-medium ${
-                          currentTab === 'gun_sonu'
+                          isGunSonuRaporlarActive
                             ? 'bg-amber-400 text-slate-950 font-bold'
                             : 'text-amber-300 hover:bg-amber-500/10'
                         }`}
                       >
                         <span className="flex items-center gap-3">
-                          <ClipboardCheck className={`w-4 h-4 ${currentTab === 'gun_sonu' ? 'text-slate-950' : 'text-amber-400'}`} />
-                          <span>Plasiyer Gün Sonu</span>
+                          <ClipboardCheck className={`w-4 h-4 ${isGunSonuRaporlarActive ? 'text-slate-950' : 'text-amber-400'}`} />
+                          <span>Gün Sonu &amp; Raporlar</span>
                         </span>
                         {pendingGunSonuCount > 0 && profile?.rol !== 'plasiyer' && (
                           <span
                             data-testid="nav_gun_sonu_badge_mobile"
                             className={`text-[10px] px-1.5 py-0.5 rounded-full font-black ${
-                              currentTab === 'gun_sonu'
+                              isGunSonuRaporlarActive
                                 ? 'bg-slate-950/20 text-slate-950'
                                 : 'bg-amber-400 text-slate-950'
                             }`}
@@ -798,20 +884,6 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
                           </span>
                         )}
                       </button>
-
-                      {!onChangeWorkspaceMode && profile?.rol !== 'plasiyer' && (
-                        <button
-                          onClick={() => {
-                            onSelectTab('kasa');
-                            setMobileMenuOpen(false);
-                          }}
-                          data-testid="nav_kasa_mobile"
-                          className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-emerald-300 hover:bg-emerald-500/10"
-                        >
-                          <Wallet className="w-4 h-4 text-emerald-400" />
-                          <span>Kasa &amp; Gelir-Gider</span>
-                        </button>
-                      )}
                     </>
                   ) : (
                     <button
@@ -827,75 +899,102 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
                     </button>
                   )}
 
-                  <button
-                    onClick={() => {
-                      onSelectTab('paketler');
-                      setMobileMenuOpen(false);
-                    }}
-                    className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-gray-200 hover:bg-white/5"
-                  >
-                    <CreditCard className="w-4 h-4 text-teal-400" />
-                    <span>Paket Satın Al</span>
-                  </button>
-
-                  <button
-                    onClick={() => {
-                      onSelectTab('yedekleme');
-                      setMobileMenuOpen(false);
-                    }}
-                    data-testid="nav_yedekleme_mobile"
-                    className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-sm font-medium ${
-                      currentTab === 'yedekleme'
-                        ? 'bg-teal-400 text-slate-950 font-bold'
-                        : 'text-gray-200 hover:bg-white/5'
-                    }`}
-                  >
-                    <span className="flex items-center gap-3">
-                      <FileJson className={`w-4 h-4 ${currentTab === 'yedekleme' ? 'text-slate-950' : 'text-teal-400'}`} />
-                      <span>JSON Yedekleme &amp; Geri Yükle</span>
-                    </span>
-                    {fridayReminderDue && (
-                      <span className="text-[10px] bg-amber-400 text-slate-950 px-1.5 py-0.5 rounded font-extrabold">
-                        Cuma
+                  {/* MOBİL: HESABIM AÇILIR-KAPANIR BÖLÜM (VARSAYILAN KAPALI) */}
+                  <div className="pt-2 mt-2 border-t border-white/10">
+                    <button
+                      type="button"
+                      onClick={() => setHesabimOpen((v) => !v)}
+                      aria-expanded={hesabimOpen}
+                      data-testid="nav_hesabim_toggle_mobile"
+                      className="w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-xs font-extrabold text-slate-300 hover:text-white hover:bg-white/[0.04] uppercase tracking-wider transition"
+                    >
+                      <span className="flex items-center gap-2">
+                        <span>Hesabım</span>
+                        {fridayReminderDue && (
+                          <span className="w-2 h-2 rounded-full bg-amber-400" />
+                        )}
                       </span>
-                    )}
-                  </button>
-
-                  {(canManageFirmaSettings || (typeof window !== 'undefined' && typeof window.AndroidBridge?.requestPinHomeWidget === 'function')) && (
-                    <button
-                      onClick={() => {
-                        setSettingsInitialTab(defaultSettingsTab);
-                        setIsSettingsOpen(true);
-                        setMobileMenuOpen(false);
-                      }}
-                      data-testid="nav_settings_mobile"
-                      className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-teal-300 hover:bg-teal-500/10"
-                    >
-                      <UserCog className="w-4 h-4 text-teal-400" />
-                      <span>{canManageFirmaSettings ? 'Plasiyer & Ayarlar' : 'Ayarlar & Widget'}</span>
+                      <ChevronDown
+                        className={`w-4 h-4 text-slate-400 transition-transform duration-200 ${
+                          hesabimOpen ? 'rotate-180 text-teal-400' : ''
+                        }`}
+                      />
                     </button>
-                  )}
 
-                  {isSuperAdmin && (
-                    <button
-                      onClick={() => {
-                        onSelectTab('superadmin');
-                        setMobileMenuOpen(false);
-                      }}
-                      data-testid="nav_superadmin_mobile"
-                      className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-sm font-bold border mt-2 ${
-                        currentTab === 'superadmin'
-                          ? 'bg-amber-400 text-slate-950 border-amber-400'
-                          : 'bg-amber-500/15 text-amber-300 border-amber-500/30 hover:bg-amber-500/25'
-                      }`}
-                    >
-                      <div className="flex items-center gap-3">
-                        <Crown className="w-4 h-4" />
-                        <span>Süper Admin Paneli</span>
+                    {hesabimOpen && (
+                      <div className="space-y-1 mt-1 pl-1" data-testid="nav_hesabim_panel_mobile">
+                        <button
+                          onClick={() => {
+                            onSelectTab('paketler');
+                            setMobileMenuOpen(false);
+                          }}
+                          className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-gray-200 hover:bg-white/5"
+                        >
+                          <CreditCard className="w-4 h-4 text-teal-400" />
+                          <span>Paket Satın Al</span>
+                        </button>
+
+                        <button
+                          onClick={() => {
+                            onSelectTab('yedekleme');
+                            setMobileMenuOpen(false);
+                          }}
+                          data-testid="nav_yedekleme_mobile"
+                          className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-sm font-medium ${
+                            currentTab === 'yedekleme'
+                              ? 'bg-teal-400 text-slate-950 font-bold'
+                              : 'text-gray-200 hover:bg-white/5'
+                          }`}
+                        >
+                          <span className="flex items-center gap-3">
+                            <FileJson className={`w-4 h-4 ${currentTab === 'yedekleme' ? 'text-slate-950' : 'text-teal-400'}`} />
+                            <span>JSON Yedekleme</span>
+                          </span>
+                          {fridayReminderDue && (
+                            <span className="text-[10px] bg-amber-400 text-slate-950 px-1.5 py-0.5 rounded font-extrabold">
+                              Cuma
+                            </span>
+                          )}
+                        </button>
+
+                        {(canManageFirmaSettings || (typeof window !== 'undefined' && typeof window.AndroidBridge?.requestPinHomeWidget === 'function')) && (
+                          <button
+                            onClick={() => {
+                              setSettingsInitialTab(defaultSettingsTab);
+                              setIsSettingsOpen(true);
+                              setMobileMenuOpen(false);
+                            }}
+                            data-testid="nav_settings_mobile"
+                            className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-teal-300 hover:bg-teal-500/10"
+                          >
+                            <UserCog className="w-4 h-4 text-teal-400" />
+                            <span>{canManageFirmaSettings ? 'Plasiyer & Ayarlar' : 'Ayarlar & Widget'}</span>
+                          </button>
+                        )}
+
+                        {isSuperAdmin && (
+                          <button
+                            onClick={() => {
+                              onSelectTab('superadmin');
+                              setMobileMenuOpen(false);
+                            }}
+                            data-testid="nav_superadmin_mobile"
+                            className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-sm font-bold border mt-1 ${
+                              currentTab === 'superadmin'
+                                ? 'bg-amber-400 text-slate-950 border-amber-400'
+                                : 'bg-amber-500/15 text-amber-300 border-amber-500/30 hover:bg-amber-500/25'
+                            }`}
+                          >
+                            <div className="flex items-center gap-3">
+                              <Crown className="w-4 h-4" />
+                              <span>Süper Admin</span>
+                            </div>
+                            <span className="text-[10px] uppercase font-extrabold">Yetki</span>
+                          </button>
+                        )}
                       </div>
-                      <span className="text-[10px] uppercase font-extrabold">Yetki</span>
-                    </button>
-                  )}
+                    )}
+                  </div>
                 </div>
               </div>
 
@@ -992,29 +1091,19 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
                 <span>Cariler</span>
               </button>
 
-              <button
-                onClick={() => onSelectTab('tahsilat')}
-                className={`flex flex-col items-center gap-1 py-1.5 px-3 rounded-xl text-[10px] font-semibold transition ${
-                  currentTab === 'tahsilat' ? 'text-teal-400 font-bold bg-teal-400/20' : 'text-teal-400/80 hover:text-teal-300'
-                }`}
-              >
-                <div className="w-7 h-7 rounded-full bg-teal-400/20 border border-teal-400/30 flex items-center justify-center">
-                  <ArrowDownLeft className="w-4 h-4 text-teal-400" />
-                </div>
-                <span>Tahsilat</span>
-              </button>
-
-              <button
-                onClick={() => onSelectTab('tediye')}
-                className={`flex flex-col items-center gap-1 py-1.5 px-3 rounded-xl text-[10px] font-semibold transition ${
-                  currentTab === 'tediye' ? 'text-orange-400 font-bold bg-orange-400/20' : 'text-orange-400/80 hover:text-orange-300'
-                }`}
-              >
-                <div className="w-7 h-7 rounded-full bg-orange-400/20 border border-orange-400/30 flex items-center justify-center">
-                  <ArrowUpRight className="w-4 h-4 text-orange-400" />
-                </div>
-                <span>Tediye</span>
-              </button>
+              {profile?.rol !== 'muhasebeci' && (
+                <button
+                  onClick={() => onSelectTab('makbuz')}
+                  className={`flex flex-col items-center gap-1 py-1.5 px-3 rounded-xl text-[10px] font-semibold transition ${
+                    isMakbuzActive ? 'text-teal-400 font-bold bg-teal-400/20' : 'text-teal-400/80 hover:text-teal-300'
+                  }`}
+                >
+                  <div className="w-7 h-7 rounded-full bg-teal-400/20 border border-teal-400/30 flex items-center justify-center">
+                    <ReceiptText className="w-4 h-4 text-teal-400" />
+                  </div>
+                  <span>Makbuz</span>
+                </button>
+              )}
 
               <button
                 onClick={() => onSelectTab('islemler')}
@@ -1024,6 +1113,16 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
               >
                 <ReceiptText className="w-5 h-5" />
                 <span>İşlemler</span>
+              </button>
+
+              <button
+                onClick={() => onSelectTab('mutabakat')}
+                className={`flex flex-col items-center gap-1 py-1.5 px-3 rounded-xl text-[10px] font-semibold transition ${
+                  currentTab === 'mutabakat' ? 'text-teal-400 font-bold bg-teal-400/15' : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <FileCheck2 className="w-5 h-5" />
+                <span>Mutabakat</span>
               </button>
             </div>
           ) : (

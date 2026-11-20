@@ -58,6 +58,7 @@ test('7 günlük ücretsiz deneme (active_trial) Kurumsal seviye tüm özellikle
   assert.equal(ent.canUsePaymentLink, true);
   assert.equal(ent.canUseNfc, true);
   assert.equal(ent.canUseUblImport, true);
+  assert.equal(ent.canUseMutabakat, true);
   assert.equal(ent.includedPlasiyerLimit, 9);
   assert.equal(ent.ekPlasiyerSayisi, 1);
   assert.equal(ent.totalPlasiyerLimit, 10);
@@ -75,6 +76,7 @@ test('Başlangıç (Basic) paketinde Link, NFC ve UBL kapalıdır; dahil plasiye
   assert.equal(ent.canUsePaymentLink, false);
   assert.equal(ent.canUseNfc, false);
   assert.equal(ent.canUseUblImport, false);
+  assert.equal(ent.canUseMutabakat, false);
   assert.equal(ent.includedPlasiyerLimit, 1);
   assert.equal(ent.ekPlasiyerSayisi, 2);
   assert.equal(ent.totalPlasiyerLimit, 3);
@@ -92,6 +94,7 @@ test('Profesyonel (Plus) paketinde Link ve NFC açıktır, UBL kapalıdır; dahi
   assert.equal(ent.canUsePaymentLink, true);
   assert.equal(ent.canUseNfc, true);
   assert.equal(ent.canUseUblImport, false);
+  assert.equal(ent.canUseMutabakat, false);
   assert.equal(ent.includedPlasiyerLimit, 3);
   assert.equal(ent.totalPlasiyerLimit, 4);
 });
@@ -108,6 +111,7 @@ test('Kurumsal (Pro) paketinde Link, NFC ve UBL açıktır; dahil plasiyer 9 dur
   assert.equal(ent.canUsePaymentLink, true);
   assert.equal(ent.canUseNfc, true);
   assert.equal(ent.canUseUblImport, true);
+  assert.equal(ent.canUseMutabakat, true);
   assert.equal(ent.includedPlasiyerLimit, 9);
   assert.equal(ent.totalPlasiyerLimit, 12);
 });
@@ -125,6 +129,7 @@ test('Sınırsız firma veya Süper Admin tüm Kurumsal yetkilere sahiptir', () 
   assert.equal(ent.canUsePaymentLink, true);
   assert.equal(ent.canUseNfc, true);
   assert.equal(ent.canUseUblImport, true);
+  assert.equal(ent.canUseMutabakat, true);
 });
 
 test('Ek plasiyer ücreti tüm dönemlerde sabit +100 TL olarak toplam tutara eklenir', () => {

@@ -40,7 +40,9 @@ interface MutabakatMektubuModalProps {
   cari: Cari | null;
   movements: RawEkstreMovement[];
   initialEndDate?: string;
+  initialRecord?: CariMutabakatRecord | null;
   onPreviewLink?: (code: string) => void;
+  onMutabakatChanged?: () => void;
 }
 
 export const MutabakatMektubuModal: React.FC<MutabakatMektubuModalProps> = ({
@@ -49,7 +51,9 @@ export const MutabakatMektubuModal: React.FC<MutabakatMektubuModalProps> = ({
   cari,
   movements,
   initialEndDate,
+  initialRecord = null,
   onPreviewLink,
+  onMutabakatChanged,
 }) => {
   const { firma } = useAuth();
   const letterRef = useRef<HTMLDivElement | null>(null);
@@ -70,20 +74,23 @@ export const MutabakatMektubuModal: React.FC<MutabakatMektubuModalProps> = ({
 
   useEffect(() => {
     if (!isOpen || !cari || !firma?.id) return;
-    setMutabakatTarihi(initialEndDate || getTodayIsoLocal());
+    setMutabakatTarihi(initialRecord?.mutabakat_tarihi || initialEndDate || getTodayIsoLocal());
     const d = new Date();
     const monthName = d.toLocaleDateString('tr-TR', { month: 'long', year: 'numeric' });
-    setDonemBaslik(`${monthName.charAt(0).toUpperCase() + monthName.slice(1)} Cari Mutabakatı`);
-    setActiveRecord(null);
+    setDonemBaslik(
+      initialRecord?.donem_baslik ||
+        `${monthName.charAt(0).toUpperCase() + monthName.slice(1)} Cari Mutabakatı`
+    );
+    setActiveRecord(initialRecord || null);
     setFeedback(null);
     setMissingTable(false);
     setShowSql(false);
 
     void fetchCloudPosConfig(firma.id).then((cfg) => setPosConfig(cfg));
-    void loadHistory();
-  }, [isOpen, cari?.id, firma?.id, initialEndDate]);
+    void loadHistory(initialRecord);
+  }, [isOpen, cari?.id, firma?.id, initialEndDate, initialRecord?.id]);
 
-  const loadHistory = async () => {
+  const loadHistory = async (preferredRecord?: CariMutabakatRecord | null) => {
     if (!firma?.id || !cari?.id) return;
     setLoadingHistory(true);
     try {
@@ -93,7 +100,10 @@ export const MutabakatMektubuModal: React.FC<MutabakatMektubuModalProps> = ({
         setMissingTable(true);
         setShowSql(true);
       }
-      if (res.records.length > 0 && !activeRecord) {
+      if (preferredRecord) {
+        const refreshed = res.records.find((r) => r.id === preferredRecord.id);
+        setActiveRecord(refreshed || preferredRecord);
+      } else if (res.records.length > 0 && !activeRecord) {
         setActiveRecord(res.records[0]);
       }
     } finally {
@@ -182,6 +192,7 @@ export const MutabakatMektubuModal: React.FC<MutabakatMektubuModalProps> = ({
 
       setActiveRecord(res.record);
       setHistoryRecords((prev) => [res.record!, ...prev.filter((r) => r.id !== res.record!.id)]);
+      onMutabakatChanged?.();
       setFeedback({
         type: 'success',
         text: `Mutabakat kaydı ve online cevap linki oluşturuldu (${res.record.mutabakat_kodu}).`,
@@ -229,6 +240,7 @@ export const MutabakatMektubuModal: React.FC<MutabakatMektubuModalProps> = ({
 
       setActiveRecord(res.record);
       setHistoryRecords((prev) => [res.record!, ...prev]);
+      onMutabakatChanged?.();
       setFeedback({
         type: 'success',
         text: `Yeni mutabakat linki hazır: ${res.record.mutabakat_kodu}`,

@@ -383,3 +383,111 @@ export async function submitCounterpartyMutabakatResponse(params: {
     };
   }
 }
+
+export type MutabakatStatusFilter = 'all' | 'itiraz' | 'mutabik' | 'bekliyor';
+
+export interface MutabakatStats {
+  total: number;
+  itirazCount: number;
+  mutabikCount: number;
+  bekliyorCount: number;
+  totalItirazDiscrepancy: number;
+}
+
+export async function fetchAllMutabakatlarForFirma(
+  firmaId: string,
+  limitCount: number = 250
+): Promise<{ records: CariMutabakatRecord[]; missingTable?: boolean; error?: string }> {
+  if (!firmaId) return { records: [] };
+
+  try {
+    const { data, error } = await supabase
+      .from('cari_mutabakatlar')
+      .select('*')
+      .eq('firma_id', firmaId)
+      .order('created_at', { ascending: false })
+      .limit(limitCount);
+
+    if (error) {
+      if (isMissingMutabakatTableError(error)) {
+        return { records: [], missingTable: true };
+      }
+      return { records: [], error: error.message };
+    }
+
+    return { records: (data as CariMutabakatRecord[]) || [] };
+  } catch (err: unknown) {
+    return {
+      records: [],
+      error: err instanceof Error ? err.message : 'Mutabakat kayıtları yüklenemedi.',
+    };
+  }
+}
+
+export function computeItirazDiscrepancy(
+  record: Pick<CariMutabakatRecord, 'bakiye' | 'itiraz_tutari'>
+): number | null {
+  if (record.itiraz_tutari === null || record.itiraz_tutari === undefined) return null;
+  const rawItiraz = Number(record.itiraz_tutari);
+  if (!Number.isFinite(rawItiraz)) return null;
+  const oursAbs = Math.abs(Number(record.bakiye) || 0);
+  const diff = Math.round((rawItiraz - oursAbs) * 100) / 100;
+  return Object.is(diff, -0) ? 0 : diff;
+}
+
+export function computeMutabakatStats(records: CariMutabakatRecord[]): MutabakatStats {
+  let itirazCount = 0;
+  let mutabikCount = 0;
+  let bekliyorCount = 0;
+  let totalItirazDiscrepancy = 0;
+
+  for (const rec of records) {
+    if (rec.durum === 'itiraz') {
+      itirazCount += 1;
+      const diff = computeItirazDiscrepancy(rec);
+      if (diff !== null) {
+        totalItirazDiscrepancy += Math.abs(diff);
+      }
+    } else if (rec.durum === 'mutabik') {
+      mutabikCount += 1;
+    } else {
+      bekliyorCount += 1;
+    }
+  }
+
+  return {
+    total: records.length,
+    itirazCount,
+    mutabikCount,
+    bekliyorCount,
+    totalItirazDiscrepancy: Math.round(totalItirazDiscrepancy * 100) / 100,
+  };
+}
+
+export function filterMutabakatRecords(
+  records: CariMutabakatRecord[],
+  statusFilter: MutabakatStatusFilter,
+  searchQuery: string = ''
+): CariMutabakatRecord[] {
+  const q = (searchQuery || '').trim().toLocaleLowerCase('tr-TR');
+
+  return records.filter((rec) => {
+    if (statusFilter !== 'all' && rec.durum !== statusFilter) {
+      return false;
+    }
+    if (!q) return true;
+    const haystack = [
+      rec.cari_unvan,
+      rec.mutabakat_kodu,
+      rec.donem_baslik,
+      rec.cevaplayan_ad,
+      rec.itiraz_notu,
+      rec.cari_vergi_no,
+    ]
+      .filter(Boolean)
+      .join(' ')
+      .toLocaleLowerCase('tr-TR');
+    return haystack.includes(q);
+  });
+}
+

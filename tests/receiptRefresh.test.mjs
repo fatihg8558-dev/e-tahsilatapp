@@ -138,10 +138,13 @@ test('IslemlerPage and DashboardPage wire receiptRefreshKey into useQuery queryK
   const dashboardSrc = fs.readFileSync(path.join(rootDir, 'src/pages/DashboardPage.tsx'), 'utf8');
   const performansSrc = fs.readFileSync(path.join(rootDir, 'src/pages/PlasiyerPerformansPage.tsx'), 'utf8');
 
+  const gunSonuRaporlarSrc = fs.readFileSync(path.join(rootDir, 'src/pages/GunSonuRaporlarPage.tsx'), 'utf8');
+
   assert.match(appSrc, /const handleIslemSuccess = [\s\S]*?setReceiptRefreshKey\(\(k\) => k \+ 1\)/);
   assert.match(appSrc, /<DashboardPage[\s\S]*?refreshKey=\{receiptRefreshKey\}/);
   assert.match(appSrc, /<IslemlerPage[\s\S]*?refreshKey=\{receiptRefreshKey\}/);
-  assert.match(appSrc, /<PlasiyerPerformansPage[\s\S]*?refreshKey=\{receiptRefreshKey\}/);
+  assert.match(appSrc, /<GunSonuRaporlarPage[\s\S]*?refreshKey=\{receiptRefreshKey\}/);
+  assert.match(gunSonuRaporlarSrc, /<PlasiyerPerformansPage[\s\S]*?refreshKey=\{refreshKey\}/);
   assert.match(appSrc, /<MakbuzModal[\s\S]*?onDeleted=\{[\s\S]*?setReceiptRefreshKey\(\(k\) => k \+ 1\)/);
 
   assert.match(islemlerSrc, /useQuery<Islem\[\]>\(\{[\s\S]*?queryKey:\s*\[[\s\S]*?'islemler'[\s\S]*?refreshKey[\s\S]*?\]/);
