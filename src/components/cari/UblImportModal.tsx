@@ -3,8 +3,6 @@ import {
   X,
   Upload,
   FileCode2,
-  FileArchive,
-  CloudDownload,
   CheckCircle2,
   AlertCircle,
   UserPlus,
@@ -18,18 +16,15 @@ import {
   Info,
   Eye,
   Receipt,
-  Settings,
-  RefreshCw,
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { supabase, handleSupabaseError } from '../../lib/supabase';
 import { Cari, CariTur, FaturaYon, Kasa } from '../../types/database';
-import { formatCurrency, formatDate, getTodayIsoLocal } from '../../lib/formatters';
+import { formatCurrency, formatDate } from '../../lib/formatters';
 import {
   parseUblInvoiceXml,
   ParsedUblInvoice,
   normalizeTaxId,
-  sanitizeRenderedGibHtml,
   UblPartyInfo,
 } from '../../lib/ublParser';
 import { isWebPlatform } from '../../lib/platform';
@@ -44,15 +39,8 @@ import {
 } from '../../lib/cariRiskAndMutabakat';
 import { extractXmlFilesFromZip } from '../../lib/zipExtractor';
 import {
-  fetchCloudGibSettings,
-  fetchGibInvoices,
-  GibDirectionFilter,
-  GibFetchedInvoice,
-  GibSettings,
-} from '../../lib/gibService';
-import {
+  FATURA_GIDER_KATEGORILERI,
   fetchExpenseSyncedFaturaNos,
-  GIB_GIDER_KATEGORILERI,
   normalizeFaturaNoKey,
   postFaturaAsKasaGider,
 } from '../../lib/faturaExpenseService';
@@ -85,7 +73,7 @@ interface MissingCariDraft {
 interface ImportRow {
   id: string;
   fileName: string;
-  source: 'xml' | 'zip' | 'gib_portal';
+  source: 'xml' | 'zip';
   parsed?: ParsedUblInvoice;
   error?: string;
   yon: FaturaYon;
@@ -109,15 +97,6 @@ function buildPartyDedupKey(party: UblPartyInfo): string {
   return (party.unvan || '').trim().toLocaleLowerCase('tr-TR').replace(/\s+/g, ' ');
 }
 
-function getDefaultGibStartDate(): string {
-  const d = new Date();
-  d.setDate(d.getDate() - 30);
-  const year = d.getFullYear();
-  const month = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
-}
-
 export const UblImportModal: React.FC<UblImportModalProps> = ({
   isOpen,
   onClose,
@@ -128,24 +107,16 @@ export const UblImportModal: React.FC<UblImportModalProps> = ({
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const missingPanelRef = useRef<HTMLDivElement | null>(null);
 
-  const [modeTab, setModeTab] = useState<'upload' | 'gib'>('upload');
   const [rows, setRows] = useState<ImportRow[]>([]);
   const [missingCariDrafts, setMissingCariDrafts] = useState<Record<string, MissingCariDraft>>({});
   const [sessionCreatedCaris, setSessionCreatedCaris] = useState<Cari[]>([]);
   const [existingInvoices, setExistingInvoices] = useState<ExistingFaturaKey[]>([]);
   const [expenseSyncedNos, setExpenseSyncedNos] = useState<Set<string>>(new Set());
   const [kasalar, setKasalar] = useState<Kasa[]>([]);
-  const [gibSettings, setGibSettings] = useState<GibSettings | null>(null);
 
   // Toplu giderleştirme varsayılanları
   const [bulkGiderKasaId, setBulkGiderKasaId] = useState('');
   const [bulkGiderKategori, setBulkGiderKategori] = useState('Mal / Hizmet Alımı');
-
-  // GİB Portal filtreleri
-  const [gibStartDate, setGibStartDate] = useState(getDefaultGibStartDate);
-  const [gibEndDate, setGibEndDate] = useState(getTodayIsoLocal);
-  const [gibDirection, setGibDirection] = useState<GibDirectionFilter>('all');
-  const [fetchingGib, setFetchingGib] = useState(false);
 
   const [isDragging, setIsDragging] = useState(false);
   const [parsing, setParsing] = useState(false);
@@ -189,7 +160,7 @@ export const UblImportModal: React.FC<UblImportModalProps> = ({
 
   const loadModalDependencies = async () => {
     if (!firma?.id) return;
-    const [, syncedSet, kasaRes, cloudGib] = await Promise.all([
+    const [, syncedSet, kasaRes] = await Promise.all([
       loadExistingInvoices(),
       fetchExpenseSyncedFaturaNos(firma.id),
       supabase
@@ -198,22 +169,18 @@ export const UblImportModal: React.FC<UblImportModalProps> = ({
         .eq('firma_id', firma.id)
         .eq('aktif', true)
         .order('created_at', { ascending: true }),
-      fetchCloudGibSettings(firma.id),
     ]);
 
     setExpenseSyncedNos(syncedSet);
     const activeKasalar = (!kasaRes.error && Array.isArray(kasaRes.data) ? (kasaRes.data as Kasa[]) : []);
     setKasalar(activeKasalar);
-    setGibSettings(cloudGib);
 
     const preferredKasa =
-      (cloudGib.varsayilanGiderKasaId &&
-        activeKasalar.find((k) => k.id === cloudGib.varsayilanGiderKasaId)?.id) ||
       activeKasalar.find((k) => k.tur === 'nakit')?.id ||
       activeKasalar[0]?.id ||
       '';
     setBulkGiderKasaId(preferredKasa);
-    setBulkGiderKategori(cloudGib.varsayilanGiderKategori || 'Mal / Hizmet Alımı');
+    setBulkGiderKategori(FATURA_GIDER_KATEGORILERI[0]);
   };
 
   useEffect(() => {
@@ -222,7 +189,6 @@ export const UblImportModal: React.FC<UblImportModalProps> = ({
       loadModalDependencies();
     }
     if (!isOpen) {
-      setModeTab('upload');
       setRows([]);
       setMissingCariDrafts({});
       setSessionCreatedCaris([]);
@@ -230,7 +196,6 @@ export const UblImportModal: React.FC<UblImportModalProps> = ({
       setIsDragging(false);
       setShowSqlHelp(false);
       setPreviewRow(null);
-      setFetchingGib(false);
     }
   }, [isOpen, firma?.id]);
 
@@ -468,200 +433,6 @@ export const UblImportModal: React.FC<UblImportModalProps> = ({
       if (fileInputRef.current) {
         fileInputRef.current.value = '';
       }
-    }
-  };
-
-  const buildParsedFromGibItem = (inv: GibFetchedInvoice): ParsedUblInvoice => {
-    const fileLabel = `GİB-${inv.belgeNumarasi || inv.ettn}`;
-    if (inv.xmlContent && inv.xmlContent.trim()) {
-      try {
-        const parsed = parseUblInvoiceXml(
-          inv.xmlContent,
-          `${fileLabel}.xml`,
-          firma?.vergi_no,
-          allCariler
-        );
-        parsed.detectedYon = inv.yon;
-        parsed.detectionReason =
-          inv.yon === 'alis'
-            ? 'GİB Portal Adıma Kesilen (Gelen) Fatura'
-            : 'GİB Portal Düzenlenen (Kesilen) Fatura';
-        if (inv.htmlContent && !parsed.renderedGibHtml) {
-          parsed.renderedGibHtml = sanitizeRenderedGibHtml(inv.htmlContent);
-        }
-        return parsed;
-      } catch {
-        // XML ayrıştırma başarısız olursa özet alanlardan oluşturmaya düş
-      }
-    }
-
-    const currencyCode = (inv.paraBirimi || 'TRY').toUpperCase();
-    const tutar = Math.round((Number(inv.toplamTutar) || 0) * 100) / 100;
-    const ownParty: UblPartyInfo = {
-      vkn: normalizeTaxId(firma?.vergi_no),
-      unvan: firma?.unvan || 'Firmamız',
-      telefon: firma?.telefon || '',
-      email: firma?.email || '',
-    };
-    const otherParty: UblPartyInfo = {
-      vkn: normalizeTaxId(inv.vkn),
-      unvan: inv.unvan?.trim() || 'Bilinmeyen Cari',
-      telefon: '',
-      email: '',
-    };
-
-    return {
-      fileName: fileLabel,
-      faturaNo: inv.belgeNumarasi || inv.ettn,
-      uuid: inv.ettn,
-      profileId: 'EARSIVFATURA',
-      tarih: inv.tarih || getTodayIsoLocal(),
-      issueTime: '',
-      invoiceTypeCode: (inv.tip || 'SATIS').toUpperCase(),
-      currencyCode,
-      exchangeRate: 1,
-      originalAmount: tutar,
-      tutarTL: tutar,
-      supplier: inv.yon === 'satis' ? ownParty : otherParty,
-      customer: inv.yon === 'satis' ? otherParty : ownParty,
-      detectedYon: inv.yon,
-      detectionReason:
-        inv.yon === 'alis'
-          ? 'GİB Portal Adıma Kesilen (Gelen) Fatura'
-          : 'GİB Portal Düzenlenen (Kesilen) Fatura',
-      notes: inv.onayDurumu ? [`GİB Durumu: ${inv.onayDurumu}`] : [],
-      lines: [],
-      totals: {
-        lineExtensionAmount: tutar,
-        allowanceTotalAmount: 0,
-        taxExclusiveAmount: tutar,
-        taxTotalAmount: 0,
-        withholdingTaxAmount: 0,
-        taxInclusiveAmount: tutar,
-        payableAmount: tutar,
-        taxSubtotals: [],
-      },
-      hasEmbeddedXslt: Boolean(inv.htmlContent),
-      renderedGibHtml: inv.htmlContent ? sanitizeRenderedGibHtml(inv.htmlContent) : undefined,
-    };
-  };
-
-  const handleOpenGibSettings = () => {
-    window.dispatchEvent(new CustomEvent('openSettingsModal', { detail: { tab: 'gib' } }));
-  };
-
-  const handleFetchGibInvoices = async () => {
-    if (!firma?.id) return;
-    setFeedback(null);
-
-    const freshSettings = await fetchCloudGibSettings(firma.id);
-    setGibSettings(freshSettings);
-
-    if (!freshSettings.kullaniciKodu || !freshSettings.sifreSet) {
-      setFeedback({
-        type: 'error',
-        text: 'GİB Portal kullanıcı kodu veya şifresi tanımlı değil. Ayarlar > GİB E-Fatura / E-Arşiv sekmesinden bilgilerinizi kaydediniz.',
-      });
-      return;
-    }
-
-    if (!gibStartDate || !gibEndDate || gibStartDate > gibEndDate) {
-      setFeedback({
-        type: 'error',
-        text: 'Lütfen geçerli bir başlangıç ve bitiş tarihi seçiniz.',
-      });
-      return;
-    }
-
-    setFetchingGib(true);
-    try {
-      const [latestInvoices, latestSyncedNos, gibRes] = await Promise.all([
-        loadExistingInvoices(),
-        fetchExpenseSyncedFaturaNos(firma.id),
-        fetchGibInvoices({
-          firmaId: firma.id,
-          settings: freshSettings,
-          startDate: gibStartDate,
-          endDate: gibEndDate,
-          direction: gibDirection,
-          includeXml: true,
-        }),
-      ]);
-      setExpenseSyncedNos(latestSyncedNos);
-
-      if (!gibRes.ok) {
-        setFeedback({
-          type: 'error',
-          text:
-            gibRes.error ||
-            'GİB Portaldan faturalar çekilemedi. GİB Portaldan indirdiğiniz .zip/.xml dosyalarını "XML / ZIP Yükle" sekmesinden aktarabilirsiniz.',
-        });
-        return;
-      }
-
-      if (gibRes.invoices.length === 0) {
-        setFeedback({
-          type: 'success',
-          text:
-            gibRes.warnings?.length
-              ? `Seçili tarih aralığında fatura bulunamadı. (${gibRes.warnings.join(' ')})`
-              : 'Seçili tarih aralığında GİB Portalda fatura bulunamadı.',
-        });
-        return;
-      }
-
-      const nextDrafts: Record<string, MissingCariDraft> = { ...missingCariDrafts };
-      const newRows: ImportRow[] = gibRes.invoices.map((inv, idx) => {
-        const parsed = buildParsedFromGibItem(inv);
-        const yon = inv.yon;
-        const counterparty = yon === 'satis' ? parsed.customer : parsed.supplier;
-        const selectedCariId = findMatchingCariId(counterparty);
-        const missingCariKey =
-          selectedCariId === AUTO_CREATE_VALUE
-            ? ensureDraftForRow(nextDrafts, counterparty, yon)
-            : undefined;
-        const duplicate = isDuplicateFatura(parsed.faturaNo, yon, latestInvoices);
-        const alreadySynced = latestSyncedNos.has(normalizeFaturaNoKey(parsed.faturaNo));
-
-        return {
-          id: `gib-${inv.ettn || inv.belgeNumarasi}-${idx}-${Date.now()}`,
-          fileName: parsed.fileName,
-          source: 'gib_portal',
-          parsed,
-          yon,
-          selectedCariId,
-          missingCariKey,
-          exchangeRate: parsed.exchangeRate,
-          tutarTL: parsed.tutarTL,
-          isDuplicate: duplicate,
-          include: !duplicate && parsed.tutarTL > 0 && Boolean(selectedCariId),
-          giderlestir: false,
-          kasaId: bulkGiderKasaId,
-          giderKategori: bulkGiderKategori,
-          alreadyExpenseSynced: alreadySynced,
-        };
-      });
-
-      setMissingCariDrafts(nextDrafts);
-      await syncDuplicateSnapshotsIfNeeded(newRows);
-      mergeRowsDeduplicated(newRows);
-
-      setFeedback({
-        type: 'success',
-        text: `GİB Portaldan ${newRows.length} adet fatura çekildi.${
-          gibRes.warnings?.length ? ` Not: ${gibRes.warnings.join(' ')}` : ''
-        }`,
-      });
-    } catch (err: unknown) {
-      setFeedback({
-        type: 'error',
-        text:
-          err instanceof Error
-            ? err.message
-            : 'GİB Portaldan faturalar getirilirken beklenmeyen bir hata oluştu.',
-      });
-    } finally {
-      setFetchingGib(false);
     }
   };
 
@@ -1264,12 +1035,12 @@ ALTER TABLE public.faturalar ADD COLUMN IF NOT EXISTS ubl_detay jsonb;
             </div>
             <div>
               <h3 className="text-sm sm:text-base font-extrabold text-white">
-                UBL / XML / ZIP Fatura &amp; GİB Portal Aktarımı
+                UBL / XML / ZIP Fatura Yükleme
               </h3>
               <p className="text-[11px] text-gray-400 mt-0.5">
                 E-Fatura / E-Arşiv <code className="text-teal-300">.xml</code>,{' '}
-                <code className="text-teal-300">.ubl</code>,{' '}
-                <code className="text-teal-300">.zip</code> yükleyin veya GİB Portaldan çekip cariye ve kasaya gider işleyin.
+                <code className="text-teal-300">.ubl</code> veya toplu{' '}
+                <code className="text-teal-300">.zip</code> dosyalarını yükleyip cariye ve kasaya gider işleyin.
               </p>
             </div>
           </div>
@@ -1298,36 +1069,6 @@ ALTER TABLE public.faturalar ADD COLUMN IF NOT EXISTS ubl_detay jsonb;
 
         {/* GÖVDE */}
         <div className="flex-1 overflow-y-auto p-4 sm:p-5 space-y-4">
-          {/* MOD SEKMELERİ */}
-          <div className="grid grid-cols-2 gap-2 p-1 rounded-xl bg-black/35 border border-white/10">
-            <button
-              type="button"
-              onClick={() => setModeTab('upload')}
-              data-testid="ubl_tab_upload"
-              className={`px-3 py-2.5 rounded-lg text-xs font-extrabold flex items-center justify-center gap-2 transition ${
-                modeTab === 'upload'
-                  ? 'bg-teal-400 text-[#0a0e13] shadow-sm'
-                  : 'text-gray-300 hover:text-white hover:bg-white/5'
-              }`}
-            >
-              <FileArchive className="w-4 h-4" />
-              <span>XML / UBL / Toplu ZIP Yükle</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => setModeTab('gib')}
-              data-testid="ubl_tab_gib"
-              className={`px-3 py-2.5 rounded-lg text-xs font-extrabold flex items-center justify-center gap-2 transition ${
-                modeTab === 'gib'
-                  ? 'bg-teal-400 text-[#0a0e13] shadow-sm'
-                  : 'text-gray-300 hover:text-white hover:bg-white/5'
-              }`}
-            >
-              <CloudDownload className="w-4 h-4" />
-              <span>GİB Portaldan Çek (Gelen / Kesilen)</span>
-            </button>
-          </div>
-
           {/* FİRMA VKN BİLGİ ŞERİDİ */}
           <div className="p-3 rounded-xl bg-blue-500/10 border border-blue-500/20 flex items-start gap-2.5 text-[11px] text-blue-200">
             <Info className="w-4 h-4 text-blue-400 shrink-0 mt-0.5" />
@@ -1388,26 +1129,6 @@ ALTER TABLE public.faturalar ADD COLUMN IF NOT EXISTS ubl_detay jsonb;
                   )}
                   <span className="leading-relaxed">{feedback.text}</span>
                 </div>
-                {feedback.type === 'error' && modeTab === 'gib' && (
-                  <div className="flex flex-wrap items-center gap-2 pl-6">
-                    <button
-                      type="button"
-                      onClick={handleOpenGibSettings}
-                      className="px-2.5 py-1 rounded-lg bg-white/10 hover:bg-white/15 text-[11px] font-bold text-white flex items-center gap-1 transition"
-                    >
-                      <Settings className="w-3 h-3" />
-                      <span>GİB Ayarlarını Aç</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setModeTab('upload')}
-                      className="px-2.5 py-1 rounded-lg bg-teal-400/20 hover:bg-teal-400/30 text-[11px] font-bold text-teal-300 flex items-center gap-1 transition"
-                    >
-                      <FileArchive className="w-3 h-3" />
-                      <span>ZIP / XML Yüklemeye Geç</span>
-                    </button>
-                  </div>
-                )}
               </div>
               <button
                 type="button"
@@ -1419,147 +1140,56 @@ ALTER TABLE public.faturalar ADD COLUMN IF NOT EXISTS ubl_detay jsonb;
             </div>
           )}
 
-          {/* SEÇİLİ MOD 1: DOSYA / TOPLU ZIP DROPZONE */}
-          {modeTab === 'upload' ? (
-            <div
-              onDragOver={(e) => {
-                e.preventDefault();
-                setIsDragging(true);
-              }}
-              onDragLeave={() => setIsDragging(false)}
-              onDrop={(e) => {
-                e.preventDefault();
-                setIsDragging(false);
-                if (e.dataTransfer.files?.length) {
-                  processFiles(e.dataTransfer.files);
+          {/* DOSYA / TOPLU ZIP DROPZONE */}
+          <div
+            onDragOver={(e) => {
+              e.preventDefault();
+              setIsDragging(true);
+            }}
+            onDragLeave={() => setIsDragging(false)}
+            onDrop={(e) => {
+              e.preventDefault();
+              setIsDragging(false);
+              if (e.dataTransfer.files?.length) {
+                processFiles(e.dataTransfer.files);
+              }
+            }}
+            onClick={() => fileInputRef.current?.click()}
+            data-testid="ubl_dropzone"
+            className={`border-2 border-dashed rounded-2xl p-6 text-center cursor-pointer transition ${
+              isDragging
+                ? 'border-teal-400 bg-teal-400/10'
+                : 'border-white/15 bg-black/20 hover:border-teal-400/50 hover:bg-black/30'
+            }`}
+          >
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".xml,.ubl,.zip,text/xml,application/xml,application/zip"
+              multiple
+              onClick={(e) => e.stopPropagation()}
+              onChange={(e) => {
+                if (e.target.files?.length) {
+                  processFiles(e.target.files);
                 }
               }}
-              onClick={() => fileInputRef.current?.click()}
-              data-testid="ubl_dropzone"
-              className={`border-2 border-dashed rounded-2xl p-6 text-center cursor-pointer transition ${
-                isDragging
-                  ? 'border-teal-400 bg-teal-400/10'
-                  : 'border-white/15 bg-black/20 hover:border-teal-400/50 hover:bg-black/30'
-              }`}
-            >
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept=".xml,.ubl,.zip,text/xml,application/xml,application/zip"
-                multiple
-                onClick={(e) => e.stopPropagation()}
-                onChange={(e) => {
-                  if (e.target.files?.length) {
-                    processFiles(e.target.files);
-                  }
-                }}
-                className="hidden"
-                data-testid="ubl_file_input"
-              />
-              <div className="w-12 h-12 rounded-2xl bg-teal-400/15 text-teal-400 flex items-center justify-center mx-auto mb-3">
-                <Upload className="w-6 h-6" />
-              </div>
-              <div className="text-xs sm:text-sm font-bold text-white">
-                {parsing
-                  ? 'Faturalar çözümleniyor...'
-                  : 'XML / UBL veya GİB Toplu ZIP Arşivi Seçin / Sürükleyin'}
-              </div>
-              <p className="text-[11px] text-gray-400 mt-1">
-                Birden fazla <span className="text-gray-200 font-semibold">.xml</span>,{' '}
-                <span className="text-gray-200 font-semibold">.ubl</span> veya GİB Portaldan toplu indirilen{' '}
-                <span className="text-teal-300 font-semibold">.zip</span> paketini doğrudan yükleyebilirsiniz.
-              </p>
+              className="hidden"
+              data-testid="ubl_file_input"
+            />
+            <div className="w-12 h-12 rounded-2xl bg-teal-400/15 text-teal-400 flex items-center justify-center mx-auto mb-3">
+              <Upload className="w-6 h-6" />
             </div>
-          ) : (
-            /* SEÇİLİ MOD 2: GİB PORTALDAN ÇEKME PANELİ */
-            <div
-              data-testid="ubl_gib_fetch_panel"
-              className="p-4 rounded-2xl bg-black/30 border border-white/10 space-y-3.5"
-            >
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div>
-                  <h4 className="text-xs sm:text-sm font-extrabold text-white flex items-center gap-2">
-                    <CloudDownload className="w-4 h-4 text-teal-400" />
-                    <span>GİB E-Arşiv / İnteraktif Portal Fatura Sorgulama</span>
-                  </h4>
-                  <p className="text-[11px] text-gray-400 mt-0.5">
-                    {gibSettings?.kullaniciKodu
-                      ? `Kayıtlı Kullanıcı Kodu: ${gibSettings.kullaniciKodu} (${
-                          gibSettings.ortam === 'test' ? 'Test' : 'Canlı'
-                        })`
-                      : 'Henüz GİB kullanıcı kodu kayıtlı değil.'}
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  onClick={handleOpenGibSettings}
-                  data-testid="ubl_open_gib_settings_btn"
-                  className="px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-xs font-bold text-gray-200 flex items-center gap-1.5 transition"
-                >
-                  <Settings className="w-3.5 h-3.5 text-teal-400" />
-                  <span>GİB Ayarları</span>
-                </button>
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                <div>
-                  <label className="block text-[10px] font-bold uppercase text-gray-400 mb-1">
-                    Başlangıç Tarihi
-                  </label>
-                  <input
-                    type="date"
-                    value={gibStartDate}
-                    onChange={(e) => setGibStartDate(e.target.value)}
-                    data-testid="gib_start_date_input"
-                    className="w-full bg-[#0a0e13] border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-teal-400"
-                  />
-                </div>
-                <div>
-                  <label className="block text-[10px] font-bold uppercase text-gray-400 mb-1">
-                    Bitiş Tarihi
-                  </label>
-                  <input
-                    type="date"
-                    value={gibEndDate}
-                    onChange={(e) => setGibEndDate(e.target.value)}
-                    data-testid="gib_end_date_input"
-                    className="w-full bg-[#0a0e13] border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-teal-400"
-                  />
-                </div>
-                <div>
-                  <label className="block text-[10px] font-bold uppercase text-gray-400 mb-1">
-                    Fatura Yönü
-                  </label>
-                  <select
-                    value={gibDirection}
-                    onChange={(e) => setGibDirection(e.target.value as GibDirectionFilter)}
-                    data-testid="gib_direction_select"
-                    className="w-full bg-[#0a0e13] border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-teal-400"
-                  >
-                    <option value="all">Tümü (Gelen + Kesilen)</option>
-                    <option value="alis">Adıma Kesilen (Gelen / Gider)</option>
-                    <option value="satis">Düzenlenen (Kesilen / Satış)</option>
-                  </select>
-                </div>
-              </div>
-
-              <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
-                <span className="text-[11px] text-gray-400">
-                  Adıma kesilen faturaları çektikten sonra aşağıdan <strong className="text-amber-300">Giderleştir</strong> ile seçtiğiniz kasaya gider ekleyebilirsiniz.
-                </span>
-                <button
-                  type="button"
-                  disabled={fetchingGib}
-                  onClick={handleFetchGibInvoices}
-                  data-testid="gib_fetch_invoices_btn"
-                  className="px-4 py-2.5 rounded-xl bg-teal-400 hover:bg-teal-300 disabled:opacity-50 text-[#0a0e13] text-xs font-extrabold flex items-center gap-2 transition"
-                >
-                  <RefreshCw className={`w-4 h-4 ${fetchingGib ? 'animate-spin' : ''}`} />
-                  <span>{fetchingGib ? 'GİB Portaldan Çekiliyor...' : "GİB'den Faturaları Getir"}</span>
-                </button>
-              </div>
+            <div className="text-xs sm:text-sm font-bold text-white">
+              {parsing
+                ? 'Faturalar çözümleniyor...'
+                : 'XML / UBL veya Toplu ZIP Arşivi Seçin / Sürükleyin'}
             </div>
-          )}
+            <p className="text-[11px] text-gray-400 mt-1">
+              Birden fazla <span className="text-gray-200 font-semibold">.xml</span>,{' '}
+              <span className="text-gray-200 font-semibold">.ubl</span> veya toplu{' '}
+              <span className="text-teal-300 font-semibold">.zip</span> fatura paketini doğrudan yükleyebilirsiniz.
+            </p>
+          </div>
 
           {/* SİSTEMDE OLMAYAN CARİLER İÇİN DÜZENLENEBİLİR ONAY PANELİ */}
           {activeMissingCaris.length > 0 && (
@@ -1765,7 +1395,7 @@ ALTER TABLE public.faturalar ADD COLUMN IF NOT EXISTS ubl_detay jsonb;
                   data-testid="ubl_default_gider_kategori_select"
                   className="bg-[#0a0e13] border border-white/15 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-orange-400"
                 >
-                  {GIB_GIDER_KATEGORILERI.map((kat) => (
+                  {FATURA_GIDER_KATEGORILERI.map((kat) => (
                     <option key={kat} value={kat}>
                       Kategori: {kat}
                     </option>
@@ -1873,11 +1503,6 @@ ALTER TABLE public.faturalar ADD COLUMN IF NOT EXISTS ubl_detay jsonb;
                               {row.source === 'zip' && (
                                 <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-indigo-500/15 text-indigo-300 border border-indigo-500/30">
                                   ZIP
-                                </span>
-                              )}
-                              {row.source === 'gib_portal' && (
-                                <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-sky-500/15 text-sky-300 border border-sky-500/30">
-                                  GİB
                                 </span>
                               )}
                               {p.invoiceTypeCode === 'IADE' && (
@@ -2142,7 +1767,7 @@ ALTER TABLE public.faturalar ADD COLUMN IF NOT EXISTS ubl_detay jsonb;
                                 data-testid={`ubl_row_kategori_${row.id}`}
                                 className="bg-[#111820] border border-orange-400/35 rounded-lg px-2 py-1 text-[11px] text-white focus:outline-none focus:border-orange-400"
                               >
-                                {GIB_GIDER_KATEGORILERI.map((kat) => (
+                                {FATURA_GIDER_KATEGORILERI.map((kat) => (
                                   <option key={kat} value={kat}>
                                     {kat}
                                   </option>
@@ -2192,7 +1817,7 @@ ALTER TABLE public.faturalar ADD COLUMN IF NOT EXISTS ubl_detay jsonb;
                 )}
               </span>
             ) : (
-              <span>Yüklemek için yukarıdan .xml, .ubl, .zip seçiniz veya GİB Portaldan faturaları getiriniz.</span>
+              <span>Yüklemek için yukarıdan .xml, .ubl veya .zip fatura dosyası seçiniz.</span>
             )}
           </div>
 

@@ -1,5 +1,5 @@
 import { supabase } from './supabase';
-import { Kasa } from '../types/database';
+import { GelirGiderTip, Kasa } from '../types/database';
 import { isMissingKasaTableError } from './kasaSql';
 import {
   deleteGelirGiderWithBalanceSync,
@@ -10,7 +10,7 @@ import { getTodayIsoLocal } from './formatters';
 
 export const FATURA_KASA_TAG_PREFIX = '[FATURA:';
 
-export const GIB_GIDER_KATEGORILERI = [
+export const FATURA_GIDER_KATEGORILERI = [
   'Mal / Hizmet Alımı',
   'Fatura Gideri',
   'Kira',
@@ -29,6 +29,18 @@ export const GIB_GIDER_KATEGORILERI = [
   'Diğer Gider',
 ];
 
+export const FATURA_GELIR_KATEGORILERI = [
+  'Satış Faturası Geliri',
+  'Hizmet Geliri',
+  'Peşin Satış',
+  'Kira Geliri',
+  'Kur Farkı Geliri',
+  'Diğer Gelir',
+];
+
+// Geriye dönük uyumluluk alias'ı
+export const GIB_GIDER_KATEGORILERI = FATURA_GIDER_KATEGORILERI;
+
 export function normalizeFaturaNoKey(faturaNo?: string | null): string {
   return (faturaNo || '').trim().toUpperCase();
 }
@@ -44,7 +56,7 @@ export function extractFaturaNoFromAciklama(aciklama?: string | null): string | 
 }
 
 /**
- * Kasaya "Giderleştir" ile zaten aktarılmış fatura numaralarını döndürür (mükerrer gider düşümünü önler).
+ * Kasaya [FATURA:NO] ile zaten aktarılmış fatura numaralarını döndürür (mükerrer kasa kaydını önler).
  */
 export async function fetchExpenseSyncedFaturaNos(firmaId: string): Promise<Set<string>> {
   const result = new Set<string>();
@@ -55,7 +67,7 @@ export async function fetchExpenseSyncedFaturaNos(firmaId: string): Promise<Set<
       .from('gelir_giderler')
       .select('aciklama, belge_no')
       .eq('firma_id', firmaId)
-      .eq('tip', 'gider')
+      .in('tip', ['gider', 'gelir'])
       .ilike('aciklama', `%${FATURA_KASA_TAG_PREFIX}%`);
 
     if (error || !data) return result;
@@ -72,12 +84,13 @@ export async function fetchExpenseSyncedFaturaNos(firmaId: string): Promise<Set<
   return result;
 }
 
-export async function postFaturaAsKasaGider(params: {
+export async function postFaturaAsKasaHareket(params: {
   firmaId: string;
   faturaNo: string;
   cariUnvan: string;
   tutar: number;
   tarih: string;
+  tip: Extract<GelirGiderTip, 'gelir' | 'gider'>;
   kasaId?: string | null;
   kategori?: string | null;
   userId?: string | null;
@@ -95,6 +108,7 @@ export async function postFaturaAsKasaGider(params: {
     cariUnvan,
     tutar,
     tarih,
+    tip,
     kasaId,
     kategori,
     userId,
@@ -110,12 +124,12 @@ export async function postFaturaAsKasaGider(params: {
   try {
     const tag = buildFaturaKasaTag(cleanNo);
 
-    // Mükerrer gider kontrolü
+    // Mükerrer kasa hareketi kontrolü
     const { data: existingRows, error: checkErr } = await supabase
       .from('gelir_giderler')
       .select('id')
       .eq('firma_id', firmaId)
-      .eq('tip', 'gider')
+      .eq('tip', tip)
       .ilike('aciklama', `%${tag}%`)
       .limit(1);
 
@@ -123,7 +137,7 @@ export async function postFaturaAsKasaGider(params: {
       if (isMissingKasaTableError(checkErr)) {
         return { posted: false, reason: 'kasa_table_missing' };
       }
-      return { posted: false, error: checkErr.message || 'Gider kontrolü yapılamadı.' };
+      return { posted: false, error: checkErr.message || 'Kasa hareketi kontrolü yapılamadı.' };
     }
 
     if (existingRows && existingRows.length > 0) {
@@ -156,18 +170,20 @@ export async function postFaturaAsKasaGider(params: {
     }
 
     const cleanDate = (tarih || '').slice(0, 10) || getTodayIsoLocal();
-    const cleanKat = (kategori || '').trim() || 'Mal / Hizmet Alımı';
-    const cleanCari = (cariUnvan || 'Tedarikçi').trim();
+    const defaultKat = tip === 'gelir' ? 'Satış Faturası Geliri' : 'Mal / Hizmet Alımı';
+    const cleanKat = (kategori || '').trim() || defaultKat;
+    const cleanCari = (cariUnvan || (tip === 'gelir' ? 'Müşteri' : 'Tedarikçi')).trim();
+    const labelSuffix = tip === 'gelir' ? 'Fatura Gelir İşleme' : 'Fatura Giderleştirme';
 
     const { error: insErr } = await insertGelirGiderWithBalanceSync({
       firma_id: firmaId,
       kasa_id: targetKasa.id,
       hedef_kasa_id: null,
-      tip: 'gider',
+      tip,
       kategori: cleanKat,
       tutar: cleanTutar,
       tarih: cleanDate,
-      aciklama: `${tag} ${cleanCari} · Fatura Giderleştirme`,
+      aciklama: `${tag} ${cleanCari} · ${labelSuffix}`,
       belge_no: faturaNo.trim(),
       yapan_user_id: userId || null,
     });
@@ -176,7 +192,7 @@ export async function postFaturaAsKasaGider(params: {
       if (isMissingKasaTableError(insErr)) {
         return { posted: false, reason: 'kasa_table_missing' };
       }
-      return { posted: false, error: insErr.message || 'Kasaya gider eklenemedi.' };
+      return { posted: false, error: insErr.message || 'Kasaya kayıt eklenemedi.' };
     }
 
     return { posted: true, kasaAd: targetKasa.ad };
@@ -186,13 +202,27 @@ export async function postFaturaAsKasaGider(params: {
     }
     return {
       posted: false,
-      error: err instanceof Error ? err.message : 'Fatura kasaya gider olarak işlenemedi.',
+      error: err instanceof Error ? err.message : 'Fatura kasaya işlenemedi.',
     };
   }
 }
 
+export async function postFaturaAsKasaGider(params: {
+  firmaId: string;
+  faturaNo: string;
+  cariUnvan: string;
+  tutar: number;
+  tarih: string;
+  kasaId?: string | null;
+  kategori?: string | null;
+  userId?: string | null;
+  knownKasalar?: Kasa[];
+}) {
+  return postFaturaAsKasaHareket({ ...params, tip: 'gider' });
+}
+
 /**
- * Bir fatura cari ekstrelerinden silindiğinde, varsa kasaya [FATURA:NO] ile işlenmiş gider kaydını da geri alır.
+ * Bir fatura cari ekstrelerinden silindiğinde, varsa kasaya [FATURA:NO] ile işlenmiş gelir veya gider kaydını da geri alır.
  */
 export async function removeFaturaFromKasa(faturaNo: string, firmaId: string): Promise<void> {
   const cleanNo = normalizeFaturaNoKey(faturaNo);
@@ -204,7 +234,7 @@ export async function removeFaturaFromKasa(faturaNo: string, firmaId: string): P
       .from('gelir_giderler')
       .select('*')
       .eq('firma_id', firmaId)
-      .eq('tip', 'gider')
+      .in('tip', ['gider', 'gelir'])
       .ilike('aciklama', `%${tag}%`);
 
     if (error || !data) return;

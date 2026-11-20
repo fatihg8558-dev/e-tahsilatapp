@@ -35,6 +35,127 @@ async function loadTsWithMocks(relPath, mocks = {}) {
   return mod.exports;
 }
 
+function buildFakeSupabaseMock(initialState) {
+  function createQuery(table) {
+    const filters = [];
+    const inFilters = [];
+    const ilikeFilters = [];
+    let pendingInsert = null;
+    let pendingUpdate = null;
+    let isDelete = false;
+    let limitCount = null;
+    let wantSingle = false;
+
+    const matchRows = () => {
+      const rows = initialState[table] || [];
+      return rows.filter((row) => {
+        for (const [col, val] of filters) {
+          if (row[col] !== val) return false;
+        }
+        for (const [col, vals] of inFilters) {
+          if (!Array.isArray(vals) || !vals.includes(row[col])) return false;
+        }
+        for (const [col, pattern] of ilikeFilters) {
+          const needle = String(pattern).replace(/%/g, '').toLowerCase();
+          if (!String(row[col] || '').toLowerCase().includes(needle)) return false;
+        }
+        return true;
+      });
+    };
+
+    const execute = async () => {
+      if (!initialState[table]) initialState[table] = [];
+      if (pendingInsert) {
+        const inserted = pendingInsert.map((item, idx) => ({
+          id: item.id || `${table}-${initialState[table].length + idx + 1}`,
+          ...item,
+        }));
+        initialState[table].push(...inserted);
+        return { data: wantSingle ? inserted[0] : inserted, error: null };
+      }
+
+      const matched = matchRows();
+      if (pendingUpdate) {
+        for (const row of matched) {
+          Object.assign(row, pendingUpdate);
+        }
+        return { data: wantSingle ? matched[0] ?? null : matched, error: null };
+      }
+
+      if (isDelete) {
+        const matchedIds = new Set(matched.map((r) => r.id));
+        initialState[table] = initialState[table].filter((r) => !matchedIds.has(r.id));
+        return { data: matched, error: null };
+      }
+
+      const sliced = limitCount !== null ? matched.slice(0, limitCount) : matched;
+      return { data: wantSingle ? sliced[0] ?? null : sliced, error: null };
+    };
+
+    const builder = {
+      select() { return builder; },
+      insert(payload) {
+        pendingInsert = Array.isArray(payload) ? payload : [payload];
+        return builder;
+      },
+      update(patch) {
+        pendingUpdate = patch;
+        return builder;
+      },
+      delete() {
+        isDelete = true;
+        return builder;
+      },
+      eq(col, val) {
+        filters.push([col, val]);
+        return builder;
+      },
+      in(col, vals) {
+        inFilters.push([col, vals]);
+        return builder;
+      },
+      ilike(col, pat) {
+        ilikeFilters.push([col, pat]);
+        return builder;
+      },
+      order() { return builder; },
+      limit(n) {
+        limitCount = n;
+        return builder;
+      },
+      single() {
+        wantSingle = true;
+        return execute();
+      },
+      maybeSingle() {
+        wantSingle = true;
+        return execute();
+      },
+      then(resolve, reject) {
+        return execute().then(resolve, reject);
+      },
+    };
+    return builder;
+  }
+
+  return {
+    '@supabase/supabase-js': {
+      createClient() {
+        return {
+          from(table) {
+            return createQuery(table);
+          },
+          auth: {
+            async getSession() {
+              return { data: { session: null } };
+            },
+          },
+        };
+      },
+    },
+  };
+}
+
 /**
  * Helper: Builds a standard ZIP archive buffer in memory (supporting Stored=0 and Deflate=8).
  */
@@ -50,22 +171,22 @@ function buildTestZip(entries) {
     const payload = entry.deflate ? zlib.deflateRawSync(rawBuf) : rawBuf;
 
     const localHeader = Buffer.alloc(30);
-    localHeader.writeUInt32LE(0x04034b50, 0); // local file header sig
-    localHeader.writeUInt16LE(20, 4); // version needed
-    localHeader.writeUInt16LE(0, 6); // flags
-    localHeader.writeUInt16LE(method, 8); // compression method
+    localHeader.writeUInt32LE(0x04034b50, 0);
+    localHeader.writeUInt16LE(20, 4);
+    localHeader.writeUInt16LE(0, 6);
+    localHeader.writeUInt16LE(method, 8);
     localHeader.writeUInt16LE(0, 10);
     localHeader.writeUInt16LE(0, 12);
-    localHeader.writeUInt32LE(0, 14); // crc32 (not checked by extractor)
-    localHeader.writeUInt32LE(payload.length, 18); // compressed size
-    localHeader.writeUInt32LE(rawBuf.length, 22); // uncompressed size
+    localHeader.writeUInt32LE(0, 14);
+    localHeader.writeUInt32LE(payload.length, 18);
+    localHeader.writeUInt32LE(rawBuf.length, 22);
     localHeader.writeUInt16LE(nameBuf.length, 26);
-    localHeader.writeUInt16LE(0, 28); // extra length
+    localHeader.writeUInt16LE(0, 28);
 
     localParts.push(localHeader, nameBuf, payload);
 
     const centralHeader = Buffer.alloc(46);
-    centralHeader.writeUInt32LE(0x02014b50, 0); // central dir sig
+    centralHeader.writeUInt32LE(0x02014b50, 0);
     centralHeader.writeUInt16LE(20, 4);
     centralHeader.writeUInt16LE(20, 6);
     centralHeader.writeUInt16LE(0, 8);
@@ -81,7 +202,7 @@ function buildTestZip(entries) {
     centralHeader.writeUInt16LE(0, 34);
     centralHeader.writeUInt16LE(0, 36);
     centralHeader.writeUInt32LE(0, 38);
-    centralHeader.writeUInt32LE(offset, 42); // local header offset
+    centralHeader.writeUInt32LE(offset, 42);
 
     centralParts.push(centralHeader, nameBuf);
     offset += localHeader.length + nameBuf.length + payload.length;
@@ -89,7 +210,7 @@ function buildTestZip(entries) {
 
   const centralDirBuf = Buffer.concat(centralParts);
   const eocd = Buffer.alloc(22);
-  eocd.writeUInt32LE(0x06054b50, 0); // EOCD sig
+  eocd.writeUInt32LE(0x06054b50, 0);
   eocd.writeUInt16LE(0, 4);
   eocd.writeUInt16LE(0, 6);
   eocd.writeUInt16LE(entries.length, 8);
@@ -129,7 +250,7 @@ test('zipExtractor extracts stored and deflated .xml/.ubl entries and ignores ma
   );
 });
 
-test('faturaExpenseService tags, deduplicates, posts kasa gider, and cleans up on delete', async () => {
+test('faturaExpenseService handles both gider and gelir movements, dedupes, and rolls back on delete', async () => {
   const state = {
     kasalar: [
       {
@@ -144,122 +265,14 @@ test('faturaExpenseService tags, deduplicates, posts kasa gider, and cleans up o
     gelir_giderler: [],
   };
 
-  function createQuery(table) {
-    const filters = [];
-    const ilikeFilters = [];
-    let pendingInsert = null;
-    let pendingUpdate = null;
-    let isDelete = false;
-    let limitCount = null;
-    let wantSingle = false;
-
-    const matchRows = () => {
-      return state[table].filter((row) => {
-        for (const [col, val] of filters) {
-          if (row[col] !== val) return false;
-        }
-        for (const [col, pattern] of ilikeFilters) {
-          const needle = String(pattern).replace(/%/g, '').toLowerCase();
-          if (!String(row[col] || '').toLowerCase().includes(needle)) return false;
-        }
-        return true;
-      });
-    };
-
-    const execute = async () => {
-      if (pendingInsert) {
-        const inserted = pendingInsert.map((item, idx) => ({
-          id: `${table}-${state[table].length + idx + 1}`,
-          ...item,
-        }));
-        state[table].push(...inserted);
-        return { data: wantSingle ? inserted[0] : inserted, error: null };
-      }
-
-      const matched = matchRows();
-      if (pendingUpdate) {
-        for (const row of matched) {
-          Object.assign(row, pendingUpdate);
-        }
-        return { data: matched, error: null };
-      }
-
-      if (isDelete) {
-        const matchedIds = new Set(matched.map((r) => r.id));
-        state[table] = state[table].filter((r) => !matchedIds.has(r.id));
-        return { data: matched, error: null };
-      }
-
-      const sliced = limitCount !== null ? matched.slice(0, limitCount) : matched;
-      return { data: wantSingle ? sliced[0] ?? null : sliced, error: null };
-    };
-
-    const builder = {
-      select() { return builder; },
-      insert(payload) {
-        pendingInsert = Array.isArray(payload) ? payload : [payload];
-        return builder;
-      },
-      update(patch) {
-        pendingUpdate = patch;
-        return builder;
-      },
-      delete() {
-        isDelete = true;
-        return builder;
-      },
-      eq(col, val) {
-        filters.push([col, val]);
-        return builder;
-      },
-      ilike(col, pat) {
-        ilikeFilters.push([col, pat]);
-        return builder;
-      },
-      order() { return builder; },
-      limit(n) {
-        limitCount = n;
-        return builder;
-      },
-      single() {
-        wantSingle = true;
-        return execute();
-      },
-      maybeSingle() {
-        wantSingle = true;
-        return execute();
-      },
-      then(resolve, reject) {
-        return execute().then(resolve, reject);
-      },
-    };
-    return builder;
-  }
-
-  const fakeSupabaseMock = {
-    '@supabase/supabase-js': {
-      createClient() {
-        return {
-          from(table) {
-            return createQuery(table);
-          },
-          auth: {
-            async getSession() {
-              return { data: { session: null } };
-            },
-          },
-        };
-      },
-    },
-  };
-
   const {
     buildFaturaKasaTag,
     extractFaturaNoFromAciklama,
     fetchExpenseSyncedFaturaNos,
     postFaturaAsKasaGider,
+    postFaturaAsKasaHareket,
     removeFaturaFromKasa,
-  } = await loadTsWithMocks('src/lib/faturaExpenseService.ts', fakeSupabaseMock);
+  } = await loadTsWithMocks('src/lib/faturaExpenseService.ts', buildFakeSupabaseMock(state));
 
   assert.equal(buildFaturaKasaTag('abc2026001'), '[FATURA:ABC2026001]');
   assert.equal(
@@ -267,7 +280,7 @@ test('faturaExpenseService tags, deduplicates, posts kasa gider, and cleans up o
     'ABC2026001'
   );
 
-  // 1. Post fatura as kasa gider
+  // 1. Post alis fatura as kasa gider
   const firstPost = await postFaturaAsKasaGider({
     firmaId: 'firma-1',
     faturaNo: 'GIB202600001',
@@ -299,167 +312,237 @@ test('faturaExpenseService tags, deduplicates, posts kasa gider, and cleans up o
   assert.equal(dupPost.skippedDuplicate, true);
   assert.equal(state.kasalar[0].guncel_bakiye, 7500);
 
-  // 3. fetchExpenseSyncedFaturaNos returns synced fatura key
+  // 3. Post satis fatura as kasa gelir
+  const gelirPost = await postFaturaAsKasaHareket({
+    firmaId: 'firma-1',
+    faturaNo: 'SAT202600002',
+    cariUnvan: 'Müşteri A.Ş.',
+    tutar: 1500,
+    tarih: '2026-11-20',
+    tip: 'gelir',
+    kasaId: 'kasa-1',
+    kategori: 'Mal / Hizmet Satış Geliri',
+    userId: 'user-1',
+    knownKasalar: state.kasalar,
+  });
+  assert.equal(gelirPost.posted, true);
+  assert.equal(state.kasalar[0].guncel_bakiye, 9000);
+
+  // 4. fetchExpenseSyncedFaturaNos returns both keys
   const syncedSet = await fetchExpenseSyncedFaturaNos('firma-1');
   assert.equal(syncedSet.has('GIB202600001'), true);
+  assert.equal(syncedSet.has('SAT202600002'), true);
 
-  // 4. Deleting fatura rolls back kasa gider and restores balance
+  // 5. Rolling back both restores exact starting balance
   await removeFaturaFromKasa('GIB202600001', 'firma-1');
+  await removeFaturaFromKasa('SAT202600002', 'firma-1');
   assert.equal(state.gelir_giderler.length, 0);
   assert.equal(state.kasalar[0].guncel_bakiye, 10000);
 });
 
-test('gibService resolves URL and handles fetch_invoices and test_login proxy responses', async () => {
-  const prevFetch = globalThis.fetch;
-  try {
-    const supabaseStub = {
-      '@supabase/supabase-js': {
-        createClient() {
-          return {
-            from() { return {}; },
-            auth: {
-              async getSession() {
-                return { data: { session: { access_token: 'jwt-token-123' } } };
-              },
-            },
-          };
-        },
-      },
-    };
+test('manualFaturaService calculates VAT, blocks duplicate fatura numbers, updates cari balance, and optionally syncs kasa', async () => {
+  const state = {
+    cariler: [
+      { id: 'cari-alici', firma_id: 'firma-1', unvan: 'Müşteri Ltd.', tur: 'alici', bakiye: 1000 },
+      { id: 'cari-tedarikci', firma_id: 'firma-1', unvan: 'Tedarik A.Ş.', tur: 'tedarikci', bakiye: 0 },
+    ],
+    faturalar: [],
+    kasalar: [
+      { id: 'kasa-1', firma_id: 'firma-1', ad: 'Merkez Kasa', tur: 'nakit', guncel_bakiye: 5000, aktif: true },
+    ],
+    gelir_giderler: [],
+  };
 
-    const {
-      resolveGibFunctionUrl,
-      testGibConnection,
-      fetchGibInvoices,
-    } = await loadTsWithMocks('src/lib/gibService.ts', supabaseStub);
+  const {
+    calculateGrossFromNetAndVat,
+    splitGrossToNetAndVat,
+    createManualFaturaRecord,
+  } = await loadTsWithMocks('src/lib/manualFaturaService.ts', buildFakeSupabaseMock(state));
 
-    assert.ok(resolveGibFunctionUrl().endsWith('/functions/v1/gib-portal-proxy'));
-    assert.equal(
-      resolveGibFunctionUrl('https://custom.example.com/gib-proxy/'),
-      'https://custom.example.com/gib-proxy'
-    );
+  assert.equal(calculateGrossFromNetAndVat(1000, 20), 1200);
+  assert.deepEqual(splitGrossToNetAndVat(1200, 20), { matrah: 1000, kdvTutar: 200 });
 
-    globalThis.fetch = async (_url, init) => {
-      const body = JSON.parse(init.body);
-      if (body.action === 'test_login') {
-        return {
-          ok: true,
-          status: 200,
-          async json() {
-            return { ok: true, message: 'GİB test bağlantısı başarılı' };
-          },
-        };
-      }
-      if (body.action === 'fetch_invoices') {
-        return {
-          ok: true,
-          status: 200,
-          async json() {
-            return {
-              ok: true,
-              invoices: [
-                {
-                  ettn: 'ettn-1',
-                  belgeNumarasi: 'GIB2026000001',
-                  tarih: '2026-11-18',
-                  yon: 'alis',
-                  tip: 'SATIS',
-                  unvan: 'Tedarikçi Ltd',
-                  vkn: '1234567890',
-                  toplamTutar: 1200,
-                  paraBirimi: 'TRY',
-                },
-              ],
-            };
-          },
-        };
-      }
-      return { ok: false, status: 404, async json() { return {}; } };
-    };
+  // 1. Satış faturası (cari bakiyesi +tutar olur, kasa senkronu kapalı)
+  const satisRes = await createManualFaturaRecord({
+    firmaId: 'firma-1',
+    firma: { id: 'firma-1', unvan: 'Benim Firmam', vergi_no: '1111111111' },
+    cari: state.cariler[0],
+    faturaNo: 'SAT2026-001',
+    tarih: '2026-11-20',
+    yon: 'satis',
+    toplamTutar: 1200,
+    kdvOrani: 20,
+    syncToKasa: false,
+  });
+  assert.equal(satisRes.success, true);
+  assert.equal(state.cariler[0].bakiye, 2200);
+  assert.equal(state.kasalar[0].guncel_bakiye, 5000);
 
-    const testRes = await testGibConnection({
-      firmaId: 'firma-1',
-      settings: {
-        kullaniciKodu: '111111',
-        sifreSet: true,
-        ortam: 'prod',
-        varsayilanGiderKasaId: '',
-        varsayilanGiderKategori: 'Mal / Hizmet Alımı',
-      },
-    });
-    assert.equal(testRes.ok, true);
+  // 2. Aynı fatura numarası ve yönde mükerrer engellenir
+  const dupRes = await createManualFaturaRecord({
+    firmaId: 'firma-1',
+    cari: state.cariler[0],
+    faturaNo: 'sat2026-001',
+    tarih: '2026-11-20',
+    yon: 'satis',
+    toplamTutar: 1200,
+  });
+  assert.equal(dupRes.success, false);
+  assert.match(dupRes.error || '', /zaten kayıtlı/);
 
-    const fetchRes = await fetchGibInvoices({
-      firmaId: 'firma-1',
-      settings: {
-        kullaniciKodu: '111111',
-        sifreSet: true,
-        ortam: 'prod',
-        varsayilanGiderKasaId: '',
-        varsayilanGiderKategori: 'Mal / Hizmet Alımı',
-      },
-      startDate: '2026-11-01',
-      endDate: '2026-11-19',
-      direction: 'alis',
-    });
-    assert.equal(fetchRes.ok, true);
-    assert.equal(fetchRes.invoices.length, 1);
-    assert.equal(fetchRes.invoices[0].belgeNumarasi, 'GIB2026000001');
-  } finally {
-    globalThis.fetch = prevFetch;
-  }
+  // 3. Alış faturası + Kasaya gider işle (cari -800, kasa -800)
+  const alisRes = await createManualFaturaRecord({
+    firmaId: 'firma-1',
+    cari: state.cariler[1],
+    faturaNo: 'ALS2026-009',
+    tarih: '2026-11-20',
+    yon: 'alis',
+    toplamTutar: 800,
+    kdvOrani: 20,
+    syncToKasa: true,
+    kasaId: 'kasa-1',
+    kasaKategori: 'Mal / Hizmet Alımı',
+    knownKasalar: state.kasalar,
+  });
+  assert.equal(alisRes.success, true);
+  assert.equal(alisRes.kasaPosted, true);
+  assert.equal(state.cariler[1].bakiye, -800);
+  assert.equal(state.kasalar[0].guncel_bakiye, 4200);
+  assert.equal(state.gelir_giderler.length, 1);
+  assert.equal(state.gelir_giderler[0].tip, 'gider');
 });
 
-test('platform gating hides UBL import & Cek/Senet Portfoy on Android APK, keeps mobile web open, and moves widget pin to Settings', async () => {
+test('mutabakatService parses URL query, builds public URL, creates record, and submits approval/dispute', async () => {
+  const state = {
+    cari_mutabakatlar: [],
+  };
+
+  const {
+    parseMutabakatCodeFromSearch,
+    buildMutabakatPublicUrl,
+    describeMutabakatBalance,
+    buildMutabakatWhatsAppMessage,
+    createCloudMutabakatRecord,
+    fetchMutabakatByCode,
+    submitCounterpartyMutabakatResponse,
+  } = await loadTsWithMocks('src/lib/mutabakatService.ts', buildFakeSupabaseMock(state));
+
+  assert.equal(parseMutabakatCodeFromSearch('?mutabakat=MTB-AB123'), 'MTB-AB123');
+  assert.equal(parseMutabakatCodeFromSearch('?pos_pay=123'), null);
+
+  const url = buildMutabakatPublicUrl('MTB-AB123', null, 'https://tahsilatim.vercel.app/');
+  assert.equal(url, 'https://tahsilatim.vercel.app/?mutabakat=MTB-AB123');
+
+  assert.match(describeMutabakatBalance(4500).yonLabel, /Borç Bakiyeniz/);
+  assert.match(describeMutabakatBalance(-2000).yonLabel, /Alacak Bakiyeniz/);
+
+  const created = await createCloudMutabakatRecord({
+    firma: { id: 'firma-1', unvan: 'Örnek A.Ş.', vergi_no: '1234567890', telefon: '05550000000' },
+    cari: { id: 'cari-1', unvan: 'Karşı Firma Ltd.', vergi_tc_no: '9999999999' },
+    mutabakatTarihi: '2026-11-20',
+    donemBaslik: 'Kasım 2026 Mutabakatı',
+    bakiye: 4500,
+    faturaSayisi: 2,
+    islemSayisi: 1,
+    ozetKalemler: [
+      { tarih: '2026-11-10', tip: 'Satış Faturası', belgeNo: 'SAT001', borc: 5000, alacak: 0 },
+      { tarih: '2026-11-12', tip: 'Tahsilat', belgeNo: 'THS001', borc: 0, alacak: 500 },
+    ],
+  });
+  assert.ok(created.record);
+  assert.equal(created.record.durum, 'bekliyor');
+
+  const waMsg = buildMutabakatWhatsAppMessage({
+    firmaUnvan: 'Örnek A.Ş.',
+    cariUnvan: 'Karşı Firma Ltd.',
+    mutabakatTarihi: '2026-11-20',
+    bakiye: 4500,
+    mutabakatUrl: buildMutabakatPublicUrl(created.record.mutabakat_kodu, null, 'https://tahsilatim.vercel.app'),
+    mutabakatKodu: created.record.mutabakat_kodu,
+  });
+  assert.ok(waMsg.includes(created.record.mutabakat_kodu));
+  assert.ok(waMsg.includes('https://tahsilatim.vercel.app/?mutabakat='));
+
+  const fetched = await fetchMutabakatByCode(created.record.mutabakat_kodu);
+  assert.equal(fetched.record?.cari_unvan, 'Karşı Firma Ltd.');
+
+  // Approve mutabakat
+  const approved = await submitCounterpartyMutabakatResponse({
+    mutabakatKodu: created.record.mutabakat_kodu,
+    durum: 'mutabik',
+    cevaplayanAd: 'Mehmet Kaya',
+  });
+  assert.equal(approved.ok, true);
+  assert.equal(approved.record?.durum, 'mutabik');
+  assert.equal(approved.record?.cevaplayan_ad, 'Mehmet Kaya');
+
+  // Cannot answer a second time after finalized
+  const secondTry = await submitCounterpartyMutabakatResponse({
+    mutabakatKodu: created.record.mutabakat_kodu,
+    durum: 'itiraz',
+    cevaplayanAd: 'Ali',
+    itirazNotu: 'Fark',
+  });
+  assert.equal(secondTry.ok, false);
+});
+
+test('GİB fetching is removed while all tiers gain manual fatura (web-only) & mutabakat PDF/link', async () => {
   const prevWindow = globalThis.window;
   try {
     const { isWebPlatform, isAndroidNativeBridge } = await loadTsWithMocks('src/lib/platform.ts');
-
-    // 1. Mobile web browser (no AndroidBridge) -> isWebPlatform() === true
     globalThis.window = { innerWidth: 390 };
     assert.equal(isWebPlatform(), true);
     assert.equal(isAndroidNativeBridge(), false);
 
-    // Android APK WebView (AndroidBridge present) -> isWebPlatform() === false
     globalThis.window = { innerWidth: 390, AndroidBridge: {} };
     assert.equal(isWebPlatform(), false);
     assert.equal(isAndroidNativeBridge(), true);
 
-    // 2. CarilerPage gates UBL import button & modal behind isWebPlatform()
+    // 1. Deleted obsolete GİB files stay deleted
+    assert.equal(fs.existsSync(path.join(rootDir, 'src/lib/gibService.ts')), false);
+    assert.equal(fs.existsSync(path.join(rootDir, 'src/lib/gibEdgeFunctionCode.ts')), false);
+    assert.equal(fs.existsSync(path.join(rootDir, 'supabase/functions/gib-portal-proxy/index.ts')), false);
+
+    // 2. SettingsModal & UblImportModal no longer contain GİB Portal fetching UI
+    const settingsSrc = fs.readFileSync(path.join(rootDir, 'src/components/settings/SettingsModal.tsx'), 'utf8');
+    assert.equal(settingsSrc.includes('settings_tab_gib'), false);
+    assert.ok(settingsSrc.includes('data-testid="pin_home_widget_btn"'));
+
+    const ublSrc = fs.readFileSync(path.join(rootDir, 'src/components/cari/UblImportModal.tsx'), 'utf8');
+    assert.equal(ublSrc.includes('ubl_tab_gib'), false);
+    assert.equal(ublSrc.includes('gib_fetch_invoices_btn'), false);
+    assert.ok(ublSrc.includes('accept=".xml,.ubl,.zip'));
+    assert.ok(ublSrc.includes('data-testid="ubl_bulk_giderlestir_btn"'));
+
+    // 3. packageCatalog includes manual fatura & mutabakat on ALL tiers while keeping UBL Kurumsal-only
+    const { PACKAGE_TIERS } = await loadTsWithMocks('src/lib/packageCatalog.ts');
+    for (const pkgId of ['baslangic', 'profesyonel', 'kurumsal']) {
+      const pkg = PACKAGE_TIERS.find((p) => p.key === pkgId);
+      assert.ok(pkg, `${pkgId} package should exist`);
+      assert.ok(
+        pkg.features.some((f) => f.label.includes('Elle Alış/Satış Faturası') && f.included),
+        `${pkgId} should include Elle Alış/Satış Faturası`
+      );
+      const ublFeature = pkg.features.find((f) => f.label.includes('UBL / XML'));
+      assert.equal(ublFeature?.included, pkgId === 'kurumsal');
+    }
+
+    // 4. CarilerPage & KasaGelirGiderPage & App.tsx wire Web-only manual fatura & mutabakat link/PDF
     const carilerSrc = fs.readFileSync(path.join(rootDir, 'src/pages/CarilerPage.tsx'), 'utf8');
-    assert.ok(carilerSrc.includes('{isWebPlatform() && ('));
-    assert.ok(carilerSrc.includes('open_ubl_import_button'));
-    assert.ok(carilerSrc.includes('<UblImportModal'));
+    assert.ok(carilerSrc.includes('data-testid="open_manual_fatura_button"'));
+    assert.ok(carilerSrc.includes('data-testid="ekstre_manual_fatura_btn"'));
+    assert.ok(carilerSrc.includes('data-testid="ekstre_mutabakat_modal_btn"'));
+    assert.ok(carilerSrc.includes('<ManualFaturaModal'));
+    assert.ok(carilerSrc.includes('<MutabakatMektubuModal'));
 
-    // 3. AppLayout gates portfoy desktop & mobile nav behind isWebPlatform()
-    const layoutSrc = fs.readFileSync(path.join(rootDir, 'src/components/layout/AppLayout.tsx'), 'utf8');
-    assert.ok(layoutSrc.includes('isWebPlatform()'));
-    assert.ok(layoutSrc.includes('nav_portfoy_desktop'));
-    assert.ok(layoutSrc.includes('nav_portfoy_mobile'));
-    assert.ok(layoutSrc.includes('openSettingsModal'));
+    const kasaSrc = fs.readFileSync(path.join(rootDir, 'src/pages/KasaGelirGiderPage.tsx'), 'utf8');
+    assert.ok(kasaSrc.includes('data-testid="kasa_open_manual_fatura_btn"'));
+    assert.ok(kasaSrc.includes('defaultSyncToKasa={true}'));
 
-    // 4. App.tsx blocks 'portfoy' tab when !isWeb
     const appSrc = fs.readFileSync(path.join(rootDir, 'src/App.tsx'), 'utf8');
     assert.ok(appSrc.includes("if (tab === 'portfoy' && !isWeb) return false;"));
-    assert.ok(appSrc.includes("effectiveTab === 'portfoy' && isWebPlatform()"));
-
-    // 5. DashboardPage no longer has pin_home_widget_btn; SettingsModal has it
-    const dashSrc = fs.readFileSync(path.join(rootDir, 'src/pages/DashboardPage.tsx'), 'utf8');
-    assert.equal(dashSrc.includes('pin_home_widget_btn'), false);
-    assert.ok(dashSrc.includes('{isWebPlatform() && ('));
-
-    const settingsSrc = fs.readFileSync(path.join(rootDir, 'src/components/settings/SettingsModal.tsx'), 'utf8');
-    assert.ok(settingsSrc.includes('data-testid="pin_home_widget_btn"'));
-    assert.ok(settingsSrc.includes('data-testid="settings_tab_gib"'));
-    assert.ok(settingsSrc.includes('data-testid="settings_gib_panel"'));
-
-    // 6. UblImportModal has ZIP, GİB Portal, and Giderleştir controls
-    const ublSrc = fs.readFileSync(path.join(rootDir, 'src/components/cari/UblImportModal.tsx'), 'utf8');
-    assert.ok(ublSrc.includes('accept=".xml,.ubl,.zip'));
-    assert.ok(ublSrc.includes('data-testid="ubl_tab_gib"'));
-    assert.ok(ublSrc.includes('data-testid="gib_fetch_invoices_btn"'));
-    assert.ok(ublSrc.includes('data-testid="ubl_bulk_giderlestir_btn"'));
-    assert.ok(ublSrc.includes('postFaturaAsKasaGider'));
+    assert.ok(appSrc.includes('parseMutabakatCodeFromSearch'));
+    assert.ok(appSrc.includes('<MutabakatLandingPage'));
   } finally {
     if (prevWindow === undefined) {
       delete globalThis.window;

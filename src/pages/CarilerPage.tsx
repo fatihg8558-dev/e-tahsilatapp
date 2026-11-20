@@ -33,6 +33,7 @@ import {
   Database,
   Copy,
   Check,
+  FileCheck2,
 } from 'lucide-react';
 import { exportToExcel, printPdfReport } from '../lib/exportService';
 import {
@@ -42,6 +43,8 @@ import {
   RawEkstreMovement,
 } from '../lib/cariEkstreHelper';
 import { UblImportModal } from '../components/cari/UblImportModal';
+import { ManualFaturaModal } from '../components/cari/ManualFaturaModal';
+import { MutabakatMektubuModal } from '../components/cari/MutabakatMektubuModal';
 import { CariExcelImportModal } from '../components/cari/CariExcelImportModal';
 import { UblInvoicePreviewModal } from '../components/cari/UblInvoicePreviewModal';
 import {
@@ -77,6 +80,7 @@ interface CarilerPageProps {
   openNewModalInitially?: boolean;
   onOpenMakbuz?: (islem: Islem) => void;
   refreshKey?: number;
+  onPreviewMutabakatLink?: (code: string) => void;
 }
 
 export const CarilerPage: React.FC<CarilerPageProps> = ({
@@ -84,6 +88,7 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
   openNewModalInitially = false,
   onOpenMakbuz,
   refreshKey = 0,
+  onPreviewMutabakatLink,
 }) => {
   const { firma, profile, entitlements } = useAuth();
   const effectiveFirmaId = firma?.id || profile?.firma_id;
@@ -96,6 +101,10 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
   // Modal States
   const [isModalOpen, setIsModalOpen] = useState(openNewModalInitially);
   const [isUblModalOpen, setIsUblModalOpen] = useState(false);
+  const [isManualFaturaOpen, setIsManualFaturaOpen] = useState(false);
+  const [manualFaturaInitialCari, setManualFaturaInitialCari] = useState<Cari | null>(null);
+  const [manualFaturaLockCari, setManualFaturaLockCari] = useState(false);
+  const [isMutabakatModalOpen, setIsMutabakatModalOpen] = useState(false);
   const [isExcelImportModalOpen, setIsExcelImportModalOpen] = useState(false);
   const [editingCari, setEditingCari] = useState<Cari | null>(null);
   const [selectedCariForDetail, setSelectedCariForDetail] = useState<Cari | null>(null);
@@ -781,6 +790,23 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
         </div>
 
         <div className="flex flex-wrap items-center gap-2 self-start sm:self-auto">
+          {isWebPlatform() && profile?.rol !== 'plasiyer' && (
+            <button
+              type="button"
+              onClick={() => {
+                setManualFaturaInitialCari(null);
+                setManualFaturaLockCari(false);
+                setIsManualFaturaOpen(true);
+              }}
+              data-testid="open_manual_fatura_button"
+              title="Alış veya satış faturasını elle cariye (ve isterseniz kasaya) işleyin (Tüm Paketler · Web)"
+              className="font-bold text-xs px-4 py-2.5 rounded-xl transition flex items-center gap-2 border bg-indigo-500/15 hover:bg-indigo-500/25 border-indigo-400/35 text-indigo-200"
+            >
+              <FileText className="w-4 h-4" />
+              <span>Alış / Satış Faturası Gir</span>
+            </button>
+          )}
+
           {isWebPlatform() && (
             <button
               type="button"
@@ -794,7 +820,7 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
               data-testid="open_ubl_import_button"
               title={
                 entitlements.canUseUblImport
-                  ? 'UBL / XML / ZIP Fatura Yükle & GİB Portaldan Çek'
+                  ? 'UBL / XML / ZIP Fatura Yükle'
                   : 'Kurumsal (Pro) pakette açılır — yükseltmek için tıklayın'
               }
               className={`font-bold text-xs px-4 py-2.5 rounded-xl transition flex items-center gap-2 border ${
@@ -808,7 +834,7 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
               ) : (
                 <Lock className="w-4 h-4 text-amber-300" />
               )}
-              <span>UBL / XML &amp; GİB Fatura</span>
+              <span>UBL / XML Fatura Yükle</span>
               {!entitlements.canUseUblImport && (
                 <span
                   data-testid="ubl_lock_badge"
@@ -1404,6 +1430,30 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
                 >
                   <MessageCircle className="w-3.5 h-3.5" />
                   <span>WhatsApp Borç Hatırlat</span>
+                </button>
+                {isWebPlatform() && profile?.rol !== 'plasiyer' && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setManualFaturaInitialCari(selectedCariForDetail);
+                      setManualFaturaLockCari(true);
+                      setIsManualFaturaOpen(true);
+                    }}
+                    data-testid="ekstre_manual_fatura_btn"
+                    className="px-3 py-1.5 rounded-lg bg-indigo-500/20 text-indigo-200 border border-indigo-400/35 font-bold text-xs flex items-center gap-1.5 hover:bg-indigo-500/30 transition"
+                  >
+                    <FileText className="w-3.5 h-3.5" />
+                    <span>+ Alış / Satış Faturası</span>
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setIsMutabakatModalOpen(true)}
+                  data-testid="ekstre_mutabakat_modal_btn"
+                  className="px-3 py-1.5 rounded-lg bg-purple-500/20 text-purple-200 border border-purple-400/35 font-bold text-xs flex items-center gap-1.5 hover:bg-purple-500/30 transition"
+                >
+                  <FileCheck2 className="w-3.5 h-3.5" />
+                  <span>Mutabakat PDF &amp; Link</span>
                 </button>
               </div>
 
@@ -2066,7 +2116,7 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
         }}
       />
 
-      {/* SADECE WEB: UBL / XML / ZIP & GİB FATURA MERKEZİ MODALI */}
+      {/* SADECE WEB: UBL / XML / ZIP FATURA YÜKLEME MODALI */}
       {isWebPlatform() && (
         <UblImportModal
           isOpen={isUblModalOpen && entitlements.canUseUblImport}
@@ -2075,6 +2125,37 @@ export const CarilerPage: React.FC<CarilerPageProps> = ({
           onImported={fetchCariler}
         />
       )}
+
+      {/* SADECE WEB (TÜM PAKETLER): ELLE ALIŞ / SATIŞ FATURASI MODALI */}
+      {isWebPlatform() && (
+        <ManualFaturaModal
+          isOpen={isManualFaturaOpen}
+          onClose={() => setIsManualFaturaOpen(false)}
+          cariler={cariler}
+          initialCari={manualFaturaInitialCari}
+          lockCari={manualFaturaLockCari}
+          initialYon={
+            manualFaturaInitialCari?.tur === 'tedarikci' ? 'alis' : 'satis'
+          }
+          defaultSyncToKasa={false}
+          onSaved={async () => {
+            await fetchCariler();
+            if (selectedCariForDetail) {
+              await openDetail(selectedCariForDetail);
+            }
+          }}
+        />
+      )}
+
+      {/* CARİ MUTABAKAT A4 PDF VE ONLINE ONAY LİNKİ MODALI */}
+      <MutabakatMektubuModal
+        isOpen={isMutabakatModalOpen}
+        onClose={() => setIsMutabakatModalOpen(false)}
+        cari={selectedCariForDetail}
+        movements={detailMovements}
+        initialEndDate={detailEndDate || undefined}
+        onPreviewLink={onPreviewMutabakatLink}
+      />
 
       {/* SADECE WEB: EXCEL / CSV TOPLU CARİ YÜKLEME MODALI */}
       {isWebPlatform() && (

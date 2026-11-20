@@ -14,6 +14,7 @@ import {
   AlertTriangle,
   Copy,
   Check,
+  FileText,
 } from 'lucide-react';
 import { supabase, handleSupabaseError } from '../lib/supabase';
 import { useAuth } from '../context/AuthContext';
@@ -31,6 +32,8 @@ import {
   syncIslemToKasa,
 } from '../lib/kasaSyncService';
 import { PLASIYER_RLS_SQL } from '../lib/plasiyerService';
+import { isWebPlatform } from '../lib/platform';
+import { ManualFaturaModal } from '../components/cari/ManualFaturaModal';
 
 interface Props {
   onNavigate: (tab: string, state?: unknown) => void;
@@ -77,6 +80,7 @@ export const KasaGelirGiderPage: React.FC<Props> = ({
   const [q, setQ] = useState('');
   const [modal, setModal] = useState<ModalState>(initialModal ? { tip: initialModal } : null);
   const [kasaModal, setKasaModal] = useState<{ edit?: Kasa } | null>(null);
+  const [isManualFaturaOpen, setIsManualFaturaOpen] = useState(false);
 
   // Tahsilat / Tediye Kasa Özeti & Aktarım State
   const [makbuzList, setMakbuzList] = useState<Islem[]>([]);
@@ -347,10 +351,21 @@ export const KasaGelirGiderPage: React.FC<Props> = ({
           </div>
         </div>
         <div className={card}>
-          <p className="text-xs font-bold text-white mb-3">Cari Makbuz Girişi <span className="text-gray-400 font-normal">(ana hesapta nakit/kart kasaya otomatik yansır)</span></p>
+          <p className="text-xs font-bold text-white mb-3">Cari Makbuz &amp; Fatura Girişi <span className="text-gray-400 font-normal">(cari ve seçilen kasa bakiyesini birlikte günceller)</span></p>
           <div className="flex flex-wrap gap-2">
             <button onClick={() => onNavigate('tahsilat')} className="px-3 py-2 rounded-xl text-xs font-bold bg-teal-400/15 text-teal-300 border border-teal-400/30 inline-flex items-center gap-1"><ArrowDownLeft className="w-3.5 h-3.5" />Tahsilat Makbuzu</button>
             <button onClick={() => onNavigate('tediye')} className="px-3 py-2 rounded-xl text-xs font-bold bg-orange-500/15 text-orange-300 border border-orange-500/30 inline-flex items-center gap-1"><ArrowUpRight className="w-3.5 h-3.5" />Tediye Makbuzu</button>
+            {isWebPlatform() && (
+              <button
+                type="button"
+                onClick={() => setIsManualFaturaOpen(true)}
+                data-testid="kasa_open_manual_fatura_btn"
+                className="px-3 py-2 rounded-xl text-xs font-bold bg-indigo-500/20 hover:bg-indigo-500/30 text-indigo-200 border border-indigo-400/35 inline-flex items-center gap-1.5 transition"
+              >
+                <FileText className="w-3.5 h-3.5" />
+                <span>+ Alış / Satış Faturası</span>
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -672,6 +687,19 @@ export const KasaGelirGiderPage: React.FC<Props> = ({
 
       {modal && <HareketModal tip={modal.tip} edit={modal.edit} kasalar={aktifKasalar} firmaId={firmaId!} onClose={() => setModal(null)} onSaved={() => { setModal(null); load(); }} />}
       {kasaModal && <KasaModal edit={kasaModal.edit} firmaId={firmaId!} onClose={() => setKasaModal(null)} onSaved={() => { setKasaModal(null); load(); }} />}
+      {isWebPlatform() && (
+        <ManualFaturaModal
+          isOpen={isManualFaturaOpen}
+          onClose={() => setIsManualFaturaOpen(false)}
+          defaultSyncToKasa={true}
+          initialYon="alis"
+          onSaved={async () => {
+            setSuccessMsg('Fatura cariye ve seçilen kasaya işlendi.');
+            await load();
+            onTransferSuccess?.();
+          }}
+        />
+      )}
     </div>
   );
 };

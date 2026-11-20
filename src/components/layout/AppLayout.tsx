@@ -61,7 +61,7 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
   const [pendingNotificationCount, setPendingNotificationCount] = useState(0);
   const [pendingGunSonuCount, setPendingGunSonuCount] = useState(0);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [settingsInitialTab, setSettingsInitialTab] = useState<'firma' | 'plasiyer' | 'pos' | 'gib'>('plasiyer');
+  const [settingsInitialTab, setSettingsInitialTab] = useState<'firma' | 'plasiyer' | 'pos'>('plasiyer');
   const [fridayReminderDue, setFridayReminderDue] = useState(false);
 
   const canManageFirmaSettings = profile?.rol === 'ana' || isSuperAdmin;
@@ -69,9 +69,9 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
 
   useEffect(() => {
     const handleOpenSettings = (e: Event) => {
-      const detail = (e as CustomEvent<{ tab?: 'firma' | 'plasiyer' | 'pos' | 'gib' }>).detail;
+      const detail = (e as CustomEvent<{ tab?: 'firma' | 'plasiyer' | 'pos' }>).detail;
       const requested = detail?.tab || defaultSettingsTab;
-      setSettingsInitialTab(requested === 'gib' && !isWebPlatform() ? 'firma' : requested);
+      setSettingsInitialTab(requested);
       setIsSettingsOpen(true);
     };
     window.addEventListener('openSettingsModal', handleOpenSettings);

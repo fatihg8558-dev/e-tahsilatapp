@@ -49,6 +49,7 @@ export const PACKAGE_TIERS: PackageTierDefinition[] = [
     ekPlasiyerUcreti: 100,
     features: [
       { label: 'Tahsilat & Tediye Makbuzu', included: true },
+      { label: 'Elle Alış/Satış Faturası & Mutabakat', included: true },
       { label: 'WhatsApp & Mail Gönderimi', included: true },
       { label: 'Çoklu Kasa, Banka & Çek/Senet', included: true },
       { label: 'Link ile Tahsilat (iyzico vb.)', included: false },
@@ -71,6 +72,7 @@ export const PACKAGE_TIERS: PackageTierDefinition[] = [
     ekPlasiyerUcreti: 100,
     features: [
       { label: 'Tahsilat & Tediye Makbuzu', included: true },
+      { label: 'Elle Alış/Satış Faturası & Mutabakat', included: true },
       { label: 'WhatsApp & Mail Gönderimi', included: true },
       { label: 'Çoklu Kasa, Banka & Çek/Senet', included: true },
       { label: 'Link ile Tahsilat (iyzico vb.)', included: true },
@@ -93,6 +95,7 @@ export const PACKAGE_TIERS: PackageTierDefinition[] = [
     ekPlasiyerUcreti: 100,
     features: [
       { label: 'Tahsilat & Tediye Makbuzu', included: true },
+      { label: 'Elle Alış/Satış Faturası & Mutabakat', included: true },
       { label: 'WhatsApp & Mail Gönderimi', included: true },
       { label: 'Çoklu Kasa, Banka & Çek/Senet', included: true },
       { label: 'Link ile Tahsilat (iyzico vb.)', included: true },
@@ -110,6 +113,10 @@ export interface ComparisonFeatureRow {
 export const COMPARISON_FEATURE_ROWS: ComparisonFeatureRow[] = [
   {
     label: 'Tahsilat & Tediye Makbuzu',
+    values: { baslangic: true, profesyonel: true, kurumsal: true },
+  },
+  {
+    label: 'Elle Alış/Satış Faturası & Cari Mutabakat',
     values: { baslangic: true, profesyonel: true, kurumsal: true },
   },
   {

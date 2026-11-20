@@ -16,7 +16,9 @@ import { YedeklemePage } from './pages/YedeklemePage';
 import { MakbuzModal } from './components/makbuz/MakbuzModal';
 import { NotificationsModal } from './components/notifications/NotificationsModal';
 import { PosPaymentLinkPage } from './components/pos/PosPaymentLinkPage';
+import { MutabakatLandingPage } from './components/cari/MutabakatLandingPage';
 import { parsePosPayParams, PosPayLinkParams } from './lib/posService';
+import { parseMutabakatCodeFromSearch } from './lib/mutabakatService';
 import { isWebPlatform } from './lib/platform';
 import { Islem } from './types/database';
 
@@ -76,6 +78,10 @@ export const App: React.FC = () => {
   const [posPayParams, setPosPayParams] = useState<PosPayLinkParams | null>(() => {
     if (typeof window === 'undefined') return null;
     return parsePosPayParams(window.location.search);
+  });
+  const [mutabakatCode, setMutabakatCode] = useState<string | null>(() => {
+    if (typeof window === 'undefined') return null;
+    return parseMutabakatCodeFromSearch(window.location.search);
   });
 
   // Klavye açıldığında odaklanılan input'u otomatik olarak klavyenin üzerine kaydır
@@ -258,6 +264,21 @@ export const App: React.FC = () => {
     }
   }, [user, loading, currentTab, profile?.rol, isSuperAdmin, editingIslem]);
 
+  // Mutabakat Linki (?mutabakat=...) doğrudan karşı taraf onay/itiraz ekranını açar (giriş yapmadan erişilebilir)
+  if (mutabakatCode) {
+    return (
+      <MutabakatLandingPage
+        mutabakatKodu={mutabakatCode}
+        onExit={() => {
+          setMutabakatCode(null);
+          if (typeof window !== 'undefined' && window.history?.replaceState) {
+            window.history.replaceState({}, document.title, window.location.pathname);
+          }
+        }}
+      />
+    );
+  }
+
   // Ödeme Linki (?pos_pay=...) doğrudan müşteri ödeme ekranını açar (giriş yapmadan da erişilebilir)
   if (posPayParams) {
     return (
@@ -360,6 +381,7 @@ export const App: React.FC = () => {
             openNewModalInitially={openNewCari}
             onOpenMakbuz={(islem) => setActiveMakbuz(islem)}
             refreshKey={receiptRefreshKey}
+            onPreviewMutabakatLink={(code) => setMutabakatCode(code)}
           />
         )}
 
